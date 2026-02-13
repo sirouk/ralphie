@@ -13,7 +13,7 @@ mkdir my-project && cd my-project
 2. Install and run from GitHub in one line (this writes `./ralphie.sh` in your current folder, then starts onboarding):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh | bash
 ```
 
 3. If you want a health check instead of onboarding first:
