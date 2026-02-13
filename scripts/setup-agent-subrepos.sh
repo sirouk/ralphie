@@ -315,7 +315,7 @@ binaries:
       version: "codex --version"
       help: "codex exec --help"
     steering_constraints:
-      - "Use --config overrides for transient tuning before editing global ~/.codex/config.toml."
+      - "Use --config overrides for transient tuning before editing the global Codex config file."
       - "Respect compatibility limits for model_reasoning_effort in the installed binary."
       - "Do not assume a specific model provider unless explicitly configured."
     source_references:
@@ -343,7 +343,7 @@ binaries:
       - "$claude_path/CHANGELOG.md"
 self_heal_signatures:
   - signature: "Error loading config.toml: unknown variant \`xhigh\` ... model_reasoning_effort"
-    repair_strategy: "Downgrade ~/.codex/config.toml model_reasoning_effort to a supported level (e.g., high) with backup."
+    repair_strategy: "Downgrade the global Codex config file model_reasoning_effort to a supported level (e.g., high) with backup."
 EOF_STEER
 }
 

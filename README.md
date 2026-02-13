@@ -228,6 +228,8 @@ Strict (no prompts; won’t advance phases unless consensus passes):
 ./ralphie.sh --yolo --auto-continue-build --min-consensus 90 --non-interactive
 ```
 
+Note: with `--non-interactive`, `Ctrl+C` exits immediately (no interrupt menu).
+
 Interactive (same run, but you can use `Ctrl+C` interrupt menu and answer prompts):
 
 ```bash

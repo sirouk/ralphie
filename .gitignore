@@ -10,6 +10,8 @@
 # local env/config
 .env
 .env.*
+.envrc
+.direnv/
 
 # ralphie runtime artifacts
 logs/
@@ -34,6 +36,11 @@ htmlcov/
 
 # local tool state
 *.tmp
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
 
 # local history backups from reset operations
 .git_backup_*/

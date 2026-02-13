@@ -7,6 +7,18 @@ export RALPHIE_LIB=1
 # shellcheck disable=SC1091
 source "$ROOT_DIR/ralphie.sh"
 
+# Isolate runtime/config artifacts from the repo's real .ralphie/ directory.
+TEST_TMP_ROOT="$(mktemp -d)"
+CONFIG_DIR="$TEST_TMP_ROOT/.ralphie"
+CONFIG_FILE="$CONFIG_DIR/config.env"
+LOCK_FILE="$CONFIG_DIR/run.lock"
+REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
+STATE_FILE="$CONFIG_DIR/state.env"
+READY_ARCHIVE_DIR="$CONFIG_DIR/ready-archives"
+mkdir -p "$CONFIG_DIR" "$READY_ARCHIVE_DIR"
+trap 'rm -rf "$TEST_TMP_ROOT"' EXIT
+
 FAILURES=0
 
 pass() {
@@ -235,6 +247,35 @@ test_prompt_file_mapping() {
     assert_eq "" "$(prompt_file_for_mode unknown)" "prompt mapping unknown"
 }
 
+test_plan_task_detection_accepts_numbered_tasks() {
+    local tmpdir old_plan_file old_has_plan_tasks
+    tmpdir="$(mktemp -d)"
+    old_plan_file="$PLAN_FILE"
+    old_has_plan_tasks="$HAS_PLAN_TASKS"
+
+    PLAN_FILE="$tmpdir/IMPLEMENTATION_PLAN.md"
+    cat >"$PLAN_FILE" <<'EOF'
+# Implementation Plan
+
+## Goal
+Improve reliability.
+
+## Validation
+1. Run tests.
+
+1. Implement thing
+2. Verify thing
+EOF
+
+    HAS_PLAN_TASKS=false
+    check_plan_tasks
+    assert_eq "true" "$HAS_PLAN_TASKS" "plan task detection accepts numbered tasks"
+
+    PLAN_FILE="$old_plan_file"
+    HAS_PLAN_TASKS="$old_has_plan_tasks"
+    rm -rf "$tmpdir"
+}
+
 test_stream_install_bootstrap() {
     local tmpdir
     tmpdir="$(mktemp -d)"
@@ -459,10 +500,13 @@ test_clean_recursive_artifacts() {
     local tmpdir
     tmpdir="$(mktemp -d)"
 
-    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir
+    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir old_reason_log_file old_gate_feedback_file old_state_file
     old_project_dir="$PROJECT_DIR"
     old_config_dir="$CONFIG_DIR"
     old_lock_file="$LOCK_FILE"
+    old_reason_log_file="$REASON_LOG_FILE"
+    old_gate_feedback_file="$GATE_FEEDBACK_FILE"
+    old_state_file="$STATE_FILE"
     old_log_dir="$LOG_DIR"
     old_consensus_dir="$CONSENSUS_DIR"
     old_completion_log_dir="$COMPLETION_LOG_DIR"
@@ -475,6 +519,9 @@ test_clean_recursive_artifacts() {
     PROJECT_DIR="$tmpdir"
     CONFIG_DIR="$tmpdir/.ralphie"
     LOCK_FILE="$CONFIG_DIR/run.lock"
+    REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+    GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
+    STATE_FILE="$CONFIG_DIR/state.env"
     LOG_DIR="$tmpdir/logs"
     CONSENSUS_DIR="$tmpdir/consensus"
     COMPLETION_LOG_DIR="$tmpdir/completion_log"
@@ -490,6 +537,9 @@ test_clean_recursive_artifacts() {
     echo "runtime" > "$COMPLETION_LOG_DIR/a.md"
     echo "runtime" > "$READY_ARCHIVE_DIR/a.tgz"
     echo "12345" > "$LOCK_FILE"
+    echo "reasons" > "$REASON_LOG_FILE"
+    echo "feedback" > "$GATE_FEEDBACK_FILE"
+    echo "state" > "$STATE_FILE"
     echo "# durable" > "$SPECS_DIR/spec.md"
     echo "# durable" > "$RESEARCH_DIR/RESEARCH_SUMMARY.md"
 
@@ -500,12 +550,18 @@ test_clean_recursive_artifacts() {
     assert_false "clean removes completion artifacts" bash -lc "find \"$COMPLETION_LOG_DIR\" -mindepth 1 -print -quit 2>/dev/null | grep -q ."
     assert_true "clean keeps archive artifacts" bash -lc "find \"$READY_ARCHIVE_DIR\" -mindepth 1 -print -quit 2>/dev/null | grep -q ."
     assert_false "clean removes lock file" test -f "$LOCK_FILE"
+    assert_false "clean removes reasons log" test -f "$REASON_LOG_FILE"
+    assert_false "clean removes gate feedback" test -f "$GATE_FEEDBACK_FILE"
+    assert_false "clean removes state file" test -f "$STATE_FILE"
     assert_true "clean keeps durable specs" test -f "$SPECS_DIR/spec.md"
     assert_true "clean keeps durable research" test -f "$RESEARCH_DIR/RESEARCH_SUMMARY.md"
 
     PROJECT_DIR="$old_project_dir"
     CONFIG_DIR="$old_config_dir"
     LOCK_FILE="$old_lock_file"
+    REASON_LOG_FILE="$old_reason_log_file"
+    GATE_FEEDBACK_FILE="$old_gate_feedback_file"
+    STATE_FILE="$old_state_file"
     LOG_DIR="$old_log_dir"
     CONSENSUS_DIR="$old_consensus_dir"
     COMPLETION_LOG_DIR="$old_completion_log_dir"
@@ -522,10 +578,13 @@ test_clean_deep_artifacts() {
     local tmpdir
     tmpdir="$(mktemp -d)"
 
-    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir old_subrepos_dir old_prompt_build_file old_prompt_plan_file old_prompt_prepare_file old_prompt_test_file old_prompt_refactor_file old_prompt_lint_file old_prompt_document_file
+    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir old_subrepos_dir old_prompt_build_file old_prompt_plan_file old_prompt_prepare_file old_prompt_test_file old_prompt_refactor_file old_prompt_lint_file old_prompt_document_file old_reason_log_file old_gate_feedback_file old_state_file
     old_project_dir="$PROJECT_DIR"
     old_config_dir="$CONFIG_DIR"
     old_lock_file="$LOCK_FILE"
+    old_reason_log_file="$REASON_LOG_FILE"
+    old_gate_feedback_file="$GATE_FEEDBACK_FILE"
+    old_state_file="$STATE_FILE"
     old_log_dir="$LOG_DIR"
     old_consensus_dir="$CONSENSUS_DIR"
     old_completion_log_dir="$COMPLETION_LOG_DIR"
@@ -546,6 +605,9 @@ test_clean_deep_artifacts() {
     PROJECT_DIR="$tmpdir"
     CONFIG_DIR="$tmpdir/.ralphie"
     LOCK_FILE="$CONFIG_DIR/run.lock"
+    REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+    GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
+    STATE_FILE="$CONFIG_DIR/state.env"
     LOG_DIR="$tmpdir/logs"
     CONSENSUS_DIR="$tmpdir/consensus"
     COMPLETION_LOG_DIR="$tmpdir/completion_log"
@@ -569,6 +631,9 @@ test_clean_deep_artifacts() {
     echo "runtime" > "$COMPLETION_LOG_DIR/a.md"
     echo "backup" > "$READY_ARCHIVE_DIR/existing.tar.gz"
     echo "12345" > "$LOCK_FILE"
+    echo "reasons" > "$REASON_LOG_FILE"
+    echo "feedback" > "$GATE_FEEDBACK_FILE"
+    echo "state" > "$STATE_FILE"
     echo "# durable" > "$SPECS_DIR/spec.md"
     echo "# durable" > "$RESEARCH_DIR/RESEARCH_SUMMARY.md"
     echo "map" > "$MAPS_DIR/agent-source-map.yaml"
@@ -598,12 +663,18 @@ test_clean_deep_artifacts() {
     assert_false "clean-deep removes lint prompt" test -f "$PROMPT_LINT_FILE"
     assert_false "clean-deep removes document prompt" test -f "$PROMPT_DOCUMENT_FILE"
     assert_false "clean-deep removes lock file" test -f "$LOCK_FILE"
+    assert_false "clean-deep removes reasons log" test -f "$REASON_LOG_FILE"
+    assert_false "clean-deep removes gate feedback" test -f "$GATE_FEEDBACK_FILE"
+    assert_false "clean-deep removes state file" test -f "$STATE_FILE"
     assert_true "clean-deep keeps preexisting backup tarball" test -f "$READY_ARCHIVE_DIR/existing.tar.gz"
     assert_true "clean-deep keeps backup archive directory populated" bash -lc "find \"$READY_ARCHIVE_DIR\" -mindepth 1 -print -quit 2>/dev/null | grep -q ."
 
     PROJECT_DIR="$old_project_dir"
     CONFIG_DIR="$old_config_dir"
     LOCK_FILE="$old_lock_file"
+    REASON_LOG_FILE="$old_reason_log_file"
+    GATE_FEEDBACK_FILE="$old_gate_feedback_file"
+    STATE_FILE="$old_state_file"
     LOG_DIR="$old_log_dir"
     CONSENSUS_DIR="$old_consensus_dir"
     COMPLETION_LOG_DIR="$old_completion_log_dir"

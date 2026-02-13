@@ -39,6 +39,9 @@ PROJECT_DIR="$SCRIPT_DIR"
 CONFIG_DIR="$PROJECT_DIR/.ralphie"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 LOCK_FILE="$CONFIG_DIR/run.lock"
+REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
+STATE_FILE="$CONFIG_DIR/state.env"
 
 SPECIFY_DIR="$PROJECT_DIR/.specify/memory"
 CONSTITUTION_FILE="$SPECIFY_DIR/constitution.md"
@@ -136,6 +139,10 @@ LAST_CONSENSUS_REPORT=""
 LAST_CONSENSUS_PANEL_FAILURES=0
 LAST_DEEP_CLEANUP_BACKUP=""
 
+LAST_REASON_CODE=""
+LAST_REASON_MESSAGE=""
+LAST_COMPLETION_SIGNAL=""
+
 CAPABILITY_PROBED=false
 CODEX_CAP_OUTPUT_LAST_MESSAGE=true
 CODEX_CAP_YOLO_FLAG=true
@@ -232,15 +239,92 @@ err() { echo -e "${RED}$*${NC}"; }
 log_reason_code() {
     local code="$1"
     local message="${2:-}"
+    local ts line
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+
+    # Avoid leaking local identity/absolute paths into logs when possible.
+    # Best-effort: redact project dir + home dir prefixes inside messages.
     if [ -n "$message" ]; then
-        printf 'reason_code=%s message="%s"\n' "$code" "$message"
-    else
-        printf 'reason_code=%s\n' "$code"
+        message="${message//$PROJECT_DIR/.}"
+        message="${message//$HOME/~}"
     fi
+
+    LAST_REASON_CODE="$code"
+    LAST_REASON_MESSAGE="$message"
+
+    if [ -n "$message" ]; then
+        line="$(printf 'reason_code=%s message="%s"' "$code" "$message")"
+    else
+        line="$(printf 'reason_code=%s' "$code")"
+    fi
+
+    # Keep stdout behavior stable: reason codes are part of the observable contract.
+    printf '%s\n' "$line"
+
+    # Best-effort persistence for postmortem + prompt feedback loops.
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+    printf '[%s] mode=%s %s\n' "$ts" "${MODE:-unknown}" "$line" >>"$REASON_LOG_FILE" 2>/dev/null || true
 }
 
 to_lower() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+    # Lowercase and strip whitespace so config/env parsing is robust (e.g. $'\\ntrue').
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
+}
+
+write_gate_feedback() {
+    local stage="$1"
+    shift
+
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+
+    local tmp_file
+    tmp_file="${GATE_FEEDBACK_FILE}.tmp.$$"
+    {
+        echo "# Ralphie Gate Feedback"
+        echo ""
+        echo "- Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "- Mode: ${MODE:-unknown}"
+        echo "- Stage: $stage"
+        echo ""
+        echo "## Blockers"
+        if [ "$#" -gt 0 ]; then
+            local entry
+            for entry in "$@"; do
+                echo "- $entry"
+            done
+        else
+            echo "- (none captured)"
+        fi
+        echo ""
+        echo "## Notes"
+        echo "- This file is written by the orchestrator (not the agent)."
+        echo "- Treat this as the source-of-truth for why a gate failed."
+        echo "- Clear blockers before emitting \`<promise>DONE</promise>\` again."
+    } >"$tmp_file" 2>/dev/null || {
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    }
+
+    mv "$tmp_file" "$GATE_FEEDBACK_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+}
+
+readiness_rubric_for_prompt() {
+    # Keep this aligned with check_build_prerequisites() and plan_is_semantically_actionable().
+    cat <<'EOF'
+## Ralphie Readiness Rubric (Machine-Checked)
+
+Do not emit `<promise>DONE</promise>` in plan/prepare unless these are true:
+
+- `IMPLEMENTATION_PLAN.md` exists and is actionable:
+  - Includes a goal/scope/objective signal.
+  - Includes done criteria (validation/verification/definition-of-done/acceptance-criteria/readiness).
+  - Includes actionable tasks (checkboxes preferred).
+- `specs/` contains specs, and at least one spec file includes an "Acceptance Criteria" section.
+- `research/RESEARCH_SUMMARY.md` exists and includes a `<confidence>NN</confidence>` tag.
+- `research/CODEBASE_MAP.md`, `research/DEPENDENCY_RESEARCH.md`, and `research/COVERAGE_MATRIX.md` exist.
+- Markdown artifacts contain no tool transcript leakage and no local identity/path leakage.
+- `.gitignore` includes guardrails for local/sensitive/runtime artifacts (e.g. `.env*`, `logs/`, `consensus/`, `.ralphie/`).
+EOF
 }
 
 is_number() {
@@ -308,6 +392,57 @@ path_for_display() {
             echo "$path"
             ;;
     esac
+}
+
+write_state_snapshot() {
+    local stage="${1:-}"
+    local ts tmp_file
+
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    tmp_file="${STATE_FILE}.tmp.$$"
+
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+
+    {
+        echo "timestamp=$ts"
+        echo "pid=$$"
+        [ -n "$stage" ] && echo "stage=$stage"
+        echo "mode=${MODE:-}"
+        echo "engine=${ACTIVE_ENGINE:-}"
+        echo "iteration=${iteration:-0}"
+        [ -n "${prompt_file:-}" ] && echo "prompt_file=$(path_for_display "$prompt_file")"
+        [ -n "${effective_prompt:-}" ] && echo "effective_prompt=$(path_for_display "$effective_prompt")"
+        [ -n "${log_file:-}" ] && echo "iteration_log=$(path_for_display "$log_file")"
+        [ -n "${output_file:-}" ] && echo "iteration_output=$(path_for_display "$output_file")"
+        [ -n "${SESSION_LOG:-}" ] && echo "session_log=$(path_for_display "$SESSION_LOG")"
+        [ -n "${LAST_COMPLETION_SIGNAL:-}" ] && echo "last_completion_signal=$LAST_COMPLETION_SIGNAL"
+        [ -n "${LAST_REASON_CODE:-}" ] && echo "last_reason_code=$LAST_REASON_CODE"
+        if [ -n "${LAST_REASON_MESSAGE:-}" ]; then
+            echo "last_reason_message=$(printf '%s' "$LAST_REASON_MESSAGE" | tr '\n' ' ')"
+        fi
+        echo "consensus_score=${LAST_CONSENSUS_SCORE:-0}"
+        echo "consensus_pass=${LAST_CONSENSUS_PASS:-false}"
+        if [ -f "$GATE_FEEDBACK_FILE" ]; then
+            echo "gate_feedback_present=true"
+        else
+            echo "gate_feedback_present=false"
+        fi
+    } >"$tmp_file" 2>/dev/null || {
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    }
+
+    mv "$tmp_file" "$STATE_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+    return 0
+}
+
+read_state_value() {
+    local key="$1"
+    if [ -z "$key" ] || [ ! -f "$STATE_FILE" ]; then
+        echo ""
+        return 0
+    fi
+    sed -n "s/^${key}=//p" "$STATE_FILE" 2>/dev/null | tail -1 || true
 }
 
 require_arg_value() {
@@ -553,6 +688,7 @@ clean_recursive_artifacts() {
 
     find "$LOG_DIR" "$CONSENSUS_DIR" "$COMPLETION_LOG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
     rm -f "$LOCK_FILE"
+    rm -f "$REASON_LOG_FILE" "$GATE_FEEDBACK_FILE" "$STATE_FILE" 2>/dev/null || true
 
     ok "Cleanup complete."
     info "Kept durable repo artifacts (specs, research, maps, prompts, subrepos, config, backups)."
@@ -610,6 +746,7 @@ clean_deep_artifacts() {
     rm -f "$PROMPT_BUILD_FILE" "$PROMPT_PLAN_FILE" "$PROMPT_PREPARE_FILE" "$PROMPT_TEST_FILE" "$PROMPT_REFACTOR_FILE" "$PROMPT_LINT_FILE" "$PROMPT_DOCUMENT_FILE"
     rm -f "$CONFIG_DIR/PROMPT_prepare_once.md"
     rm -f "$LOCK_FILE"
+    rm -f "$REASON_LOG_FILE" "$GATE_FEEDBACK_FILE" "$STATE_FILE" 2>/dev/null || true
 
     ok "Deep cleanup complete."
     if [ -n "$LAST_DEEP_CLEANUP_BACKUP" ] && [ -f "$LAST_DEEP_CLEANUP_BACKUP" ]; then
@@ -1653,7 +1790,13 @@ collect_incomplete_specs() {
 
 check_plan_tasks() {
     HAS_PLAN_TASKS=false
-    if [ -f "$PLAN_FILE" ] && grep -qE '^[[:space:]]*- \[ \]' "$PLAN_FILE"; then
+    if [ ! -f "$PLAN_FILE" ]; then
+        return
+    fi
+
+    local task_count
+    task_count="$(plan_task_count "$PLAN_FILE")"
+    if is_number "$task_count" && [ "$task_count" -gt 0 ]; then
         HAS_PLAN_TASKS=true
     fi
 }
@@ -2619,32 +2762,47 @@ plan_is_semantically_actionable() {
     local plan_file="$1"
     [ -f "$plan_file" ] || return 1
 
-    local has_scope=false
-    local has_assumptions=false
-    local has_phase=false
+    # Keep this intentionally permissive: many repos already have a viable plan structure
+    # ("Goal", "Definition of Done", task bullets) but not the exact headings used by
+    # earlier validators. Brittleness here causes false negatives and loop thrash.
+    local has_goal=false
     local has_validation=false
-    local has_task=false
+    local task_count=0
 
-    if grep -qiE '(^|#{1,6}[[:space:]]*)(scope|objectives?)\b' "$plan_file"; then
-        has_scope=true
+    if grep -qiE '(^|#{1,6}[[:space:]]*)(goal|scope|objectives?|overview|context)\b' "$plan_file" \
+        || grep -qiE '^[[:space:]]*(goal|scope|objectives?|overview|context)[[:space:]]*:' "$plan_file"; then
+        has_goal=true
     fi
-    if grep -qiE '(^|#{1,6}[[:space:]]*)assumptions?\b' "$plan_file"; then
-        has_assumptions=true
-    fi
-    if grep -qiE '(^|#{1,6}[[:space:]]*)phase\b' "$plan_file"; then
-        has_phase=true
-    fi
-    if grep -qiE '(^|#{1,6}[[:space:]]*)(validation|verification)\b' "$plan_file"; then
+
+    # Accept multiple common "done criteria" patterns.
+    if grep -qiE '(^|#{1,6}[[:space:]]*)(validation|verification|acceptance criteria|success criteria|definition of done|readiness|qa|testing)\b' "$plan_file" \
+        || grep -qiE '^[[:space:]]*(validation|verification|acceptance criteria|success criteria|definition of done|readiness|qa|testing)[[:space:]]*:' "$plan_file" \
+        || grep -qiE '\b(build[- ]readiness|definition of done|acceptance criteria)\b' "$plan_file"; then
         has_validation=true
     fi
-    if grep -qE '^[[:space:]]*([0-9]+\.[[:space:]]|-[[:space:]]\[[ x]\][[:space:]]|-[[:space:]](Run|Add|Update|Implement|Fix|Verify|Test)\b)' "$plan_file"; then
-        has_task=true
-    fi
 
-    if is_true "$has_scope" && is_true "$has_assumptions" && is_true "$has_phase" && is_true "$has_validation" && is_true "$has_task"; then
+    task_count="$(plan_task_count "$plan_file")"
+
+    if is_true "$has_goal" && is_true "$has_validation" && [ "${task_count:-0}" -ge 1 ]; then
         return 0
     fi
     return 1
+}
+
+plan_task_count() {
+    local plan_file="$1"
+    if [ ! -f "$plan_file" ]; then
+        echo "0"
+        return 0
+    fi
+    local count
+    # grep returns exit code 1 when there are zero matches, even though -c prints 0.
+    # Avoid echoing a second 0 via "|| echo 0" which would produce "0\\n0".
+    count="$(grep -cE '^[[:space:]]*([0-9]+\.[[:space:]]|-[[:space:]]\[[ x]\][[:space:]]|-[[:space:]](Run|Add|Update|Implement|Fix|Verify|Test|Document|Research|Decide|Refactor|Remove|Deprecate)[[:space:]])' "$plan_file" 2>/dev/null || true)"
+    if ! is_number "$count"; then
+        count="0"
+    fi
+    echo "$count"
 }
 
 check_build_prerequisites() {
@@ -2672,7 +2830,7 @@ check_build_prerequisites() {
     if [ ! -f "$PLAN_FILE" ]; then
         missing+=("IMPLEMENTATION_PLAN.md")
     elif ! plan_is_semantically_actionable "$PLAN_FILE"; then
-        missing+=("IMPLEMENTATION_PLAN.md must include semantic sections (scope/objectives, assumptions, phase, validation) and executable tasks")
+        missing+=("IMPLEMENTATION_PLAN.md must include Goal + Done/Validation criteria + actionable tasks (checkboxes preferred)")
     fi
 
     research_count=$(find "$RESEARCH_DIR" -maxdepth 2 -type f -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
@@ -2712,9 +2870,11 @@ check_build_prerequisites() {
             warn "  - $entry"
         done
         log_reason_code "RB_BUILD_PREREQ_MISSING" "one or more build prerequisites failed"
+        write_gate_feedback "build-prerequisites" "${missing[@]}"
         return 1
     fi
 
+    rm -f "$GATE_FEEDBACK_FILE" 2>/dev/null || true
     return 0
 }
 
@@ -2947,6 +3107,17 @@ run_swarm_consensus() {
         echo "- Pass: $LAST_CONSENSUS_PASS"
     } >> "$report_file"
 
+    if is_true "$LAST_CONSENSUS_PASS"; then
+        rm -f "$GATE_FEEDBACK_FILE" 2>/dev/null || true
+    else
+        write_gate_feedback "consensus:${stage}" \
+            "average score: ${avg_score} (threshold: ${MIN_CONSENSUS_SCORE})" \
+            "GO votes: ${go_count}" \
+            "HOLD votes: ${hold_count}" \
+            "panel failures: ${panel_failures} (max allowed: ${max_reviewer_failures})" \
+            "report: $(path_for_display "$report_file")"
+    fi
+
     info "Consensus score: $LAST_CONSENSUS_SCORE (GO=$LAST_CONSENSUS_GO_COUNT HOLD=$LAST_CONSENSUS_HOLD_COUNT)"
     info "Consensus report: $(path_for_display "$LAST_CONSENSUS_REPORT")"
 }
@@ -3157,13 +3328,33 @@ prepare_prompt_for_iteration() {
         context_reference="$(path_for_display "$CONTEXT_FILE")"
     fi
 
-    if [ -n "$CONTEXT_FILE" ] || [ -f "$AGENT_SOURCE_MAP_FILE" ] || [ -f "$BINARY_STEERING_MAP_FILE" ] || [ -f "$HUMAN_INSTRUCTIONS_FILE" ]; then
+    if [ -n "$CONTEXT_FILE" ] || [ -f "$AGENT_SOURCE_MAP_FILE" ] || [ -f "$BINARY_STEERING_MAP_FILE" ] || [ -f "$HUMAN_INSTRUCTIONS_FILE" ] || [ -f "$GATE_FEEDBACK_FILE" ]; then
         needs_augmented_prompt=true
     fi
 
     if is_true "$needs_augmented_prompt"; then
         out="$LOG_DIR/ralphie_prompt_iter_${iteration}_$(date '+%Y%m%d_%H%M%S').md"
         cat "$base_prompt" > "$out"
+    fi
+
+    if { [ "${MODE:-}" = "prepare" ] || [ "${MODE:-}" = "plan" ]; } && is_true "$needs_augmented_prompt"; then
+        cat >>"$out" <<EOF
+
+---
+$(readiness_rubric_for_prompt)
+EOF
+    fi
+
+    if [ -f "$GATE_FEEDBACK_FILE" ] && is_true "$needs_augmented_prompt"; then
+        cat >>"$out" <<EOF
+
+---
+## Last Gate Feedback
+
+The orchestrator wrote the following gate feedback. Use it to fix blockers before emitting \`<promise>DONE</promise>\`:
+EOF
+        # Keep prompt size bounded (best-effort).
+        tail -n 120 "$GATE_FEEDBACK_FILE" >>"$out" 2>/dev/null || true
     fi
 
     if [ -n "$CONTEXT_FILE" ]; then
@@ -3451,6 +3642,12 @@ show_doctor() {
     echo "  GH auth:          $( command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && echo yes || echo no )"
     echo "  Timeout support:  $( [ -n "$timeout_cmd" ] && echo "$timeout_cmd" || echo no )"
     echo "  Current lock:     $( [ -f "$LOCK_FILE" ] && path_for_display "$LOCK_FILE" || echo none )"
+    echo "  State file:       $( [ -f "$STATE_FILE" ] && echo "yes ($(path_for_display "$STATE_FILE"))" || echo no )"
+    if [ -f "$STATE_FILE" ]; then
+        echo "  Last mode:        $(read_state_value mode)"
+        echo "  Last stage:       $(read_state_value stage)"
+        echo "  Last reason:      $(read_state_value last_reason_code)"
+    fi
     echo "  Max reviewer fail:$CONSENSUS_MAX_REVIEWER_FAILURES"
     echo ""
 }
@@ -4009,6 +4206,8 @@ main() {
     SESSION_LOG="$LOG_DIR/ralphie_${MODE}_session_$(date '+%Y%m%d_%H%M%S').log"
     exec > >(tee -a "$SESSION_LOG") 2>&1
 
+    write_state_snapshot "run_start"
+
     local branch
     branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "n/a")"
 
@@ -4113,6 +4312,7 @@ main() {
         touch "$log_file" "$output_file"
 
         effective_prompt="$(prepare_prompt_for_iteration "$prompt_file" "$iteration")"
+        write_state_snapshot "iteration_start"
 
         echo ""
         echo -e "${PURPLE}════════════════════ LOOP $iteration ════════════════════${NC}"
@@ -4132,6 +4332,8 @@ main() {
             signal="$(detect_completion_signal "$log_file" "$output_file" || true)"
             if [ -n "$signal" ]; then
                 ok "Completion signal detected: $signal"
+                LAST_COMPLETION_SIGNAL="$signal"
+                write_state_snapshot "completion_signal"
                 consecutive_failures=0
                 completed_iterations=$((completed_iterations + 1))
 
@@ -4315,6 +4517,7 @@ main() {
                     if [ -n "$contract_issue" ]; then
                         warn "Prepare output contract issue: $contract_issue"
                         log_reason_code "RB_PREPARE_OUTPUT_CONTRACT" "$contract_issue"
+                        write_gate_feedback "prepare-output-contract" "$contract_issue"
                     fi
 
                     failover_reason=""
@@ -4354,6 +4557,10 @@ main() {
                 log_reason_code "RB_AGENT_EXEC_FAILURE" "engine=$ACTIVE_ENGINE exit_code=$exit_code"
             fi
             warn "Iteration log: $(path_for_display "$log_file")"
+            write_gate_feedback "agent-run" \
+                "mode=$MODE engine=$ACTIVE_ENGINE exit_code=$exit_code timeout=${COMMAND_TIMEOUT_SECONDS}s" \
+                "log: $(path_for_display "$log_file")" \
+                "output: $(path_for_display "$output_file")"
 
             if try_self_heal_agent_failure "$log_file" "$output_file"; then
                 info "Known issue was auto-remediated. Retrying loop."
