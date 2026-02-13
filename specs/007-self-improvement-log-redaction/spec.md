@@ -8,7 +8,7 @@
 - local usernames
 - tool transcript leakage patterns
 
-The self-heal path `self_heal_codex_reasoning_effort_xhigh` currently appends `- Backup: $backup_file` to `research/SELF_IMPROVEMENT_LOG.md`. `$backup_file` is under `$HOME` and can violate the markdown privacy gate.
+The self-heal path `self_heal_codex_reasoning_effort_xhigh` previously appended an unredacted `- Backup: $backup_file` entry to `research/SELF_IMPROVEMENT_LOG.md`. `$backup_file` is under `$HOME` and can violate the markdown privacy gate.
 
 ## Requirements
 
@@ -25,9 +25,9 @@ The self-heal path `self_heal_codex_reasoning_effort_xhigh` currently appends `-
 
 ## Verification Steps
 
-1. Add a focused shell test that runs `self_heal_codex_reasoning_effort_xhigh` in a temp `$HOME`.
+1. Run the focused shell test that executes `self_heal_codex_reasoning_effort_xhigh` in a temp `$HOME`.
 2. Assert `research/SELF_IMPROVEMENT_LOG.md` does not match the privacy leakage patterns.
 3. Assert `markdown_artifacts_are_clean` returns success.
 4. Run `bash tests/ralphie_shell_tests.sh`.
 
-## Status: INCOMPLETE
+## Status: COMPLETE

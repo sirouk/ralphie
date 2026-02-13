@@ -2,56 +2,44 @@
 
 Date: 2026-02-13
 Mode: Prepare (Research + Plan + Spec)
-Iteration: 5 (current prepare cycle)
+Iteration: 6 (current prepare cycle)
 
 ## Repository Mapping Findings
 
 - Repository runtime is centered in a single orchestrator: `ralphie.sh`.
 - Supporting executable surfaces are limited to `scripts/setup-agent-subrepos.sh` and `tests/ralphie_shell_tests.sh`.
-- Durable planning artifacts now include:
+- Durable planning artifacts include:
   - `IMPLEMENTATION_PLAN.md`
   - `specs/`
   - `research/` (including map/dependency/coverage docs)
 - Human queue input file `HUMAN_INSTRUCTIONS.md` is not currently present.
-- `subrepos/` is present, but in this workspace `git -C subrepos/<name>` fails due to missing submodule gitdir targets; map refresh should be treated as "best-effort" unless repaired.
+- `subrepos/` is present, but in this workspace `subrepos/*` are not valid git work trees (`git -C subrepos/<name>` fails). Treat subrepo content as a source snapshot unless repaired via setup flows.
 
 ## First-Principles Assessment
 
-- Two top reliability risks are now clear:
-  - Lock acquisition is not atomic (`acquire_lock` is check-then-write), so simultaneous starts can race.
-  - Bash process substitution (`>(...)`) may be blocked in restricted shells, which can break session logging and Claude output capture.
-- Verified evidence (this environment): `bash tests/ralphie_shell_tests.sh` passes end-to-end (including Claude output/log separation).
-- Verified evidence (this repo): `check_build_prerequisites` passes with current durable artifacts.
-- Additional policy-compliance risk discovered: the self-heal path (`self_heal_codex_reasoning_effort_xhigh`) appends absolute paths to `research/SELF_IMPROVEMENT_LOG.md`, which can trip the markdown privacy gate.
+- Previously high-severity build-gate gaps were confirmed and closed:
+  - Lock acquisition is atomic and contention diagnostics are deterministic (spec `005` COMPLETE; atomic race + backend fallback fixtures added).
+  - Process substitution has been eliminated from core paths to improve portability (spec `006` COMPLETE; no `> >(...)` or `< <(...)` remains; FIFO session logging fixture added).
+  - Self-heal/self-improvement logging redacts home paths in markdown artifacts (spec `007` COMPLETE; focused redaction fixture added).
+- Verified evidence (this environment):
+  - `bash tests/ralphie_shell_tests.sh` passes end-to-end.
+  - `check_build_prerequisites` passes with current durable artifacts (covered by the shell test suite).
 
 ## Architecture Proposal
 
 - Keep single-file orchestration (`ralphie.sh`).
-- Next build scope: atomic lock acquisition (spec `005`) with deterministic reason codes and engine-neutral behavior.
-- Follow-up scope: remove process substitution usage (spec `006`) to harden portability in restricted shells.
-- Follow-up scope: enforce markdown artifact path redaction for self-heal/self-improvement logging (spec `007`).
 - Keep engine-specific behavior isolated to invocation boundaries (`run_agent_with_prompt`, capability probes).
+- Next scope after clearing build-gate blockers: close medium gaps in `research/COVERAGE_MATRIX.md` (setup-script integration harness, human queue + notification fixtures, prompt-generation policy fixtures).
 
 ## Self-Critique
 
-- Prior artifacts treated spec `003` as COMPLETE, but did not account for environments where Bash process substitution is disallowed.
-- Earlier prioritization of spec `006` assumed a local test failure that was not reproduced; ordering is updated to reflect verified test results.
-- YAML fallback-order parsing in `mode_fallback_order` is string-based and brittle; this remains a medium risk.
-- `flock` is not guaranteed to exist (it is absent in this environment), so spec `005` must include a portable atomic fallback backend.
-
-## Plan Improvements Applied
-
-- Updated `IMPLEMENTATION_PLAN.md` to scope the next build cycle to spec `005`.
-- Added new incomplete spec: `specs/007-self-improvement-log-redaction/spec.md` (policy guard: no absolute paths/local identity in markdown artifacts).
-- Refined the spec `005` approach notes with a concrete atomic fallback strategy (temp-file metadata + atomic publish via `link(2)`/`ln`) and `flock` truncation hazards.
-- Expanded `research/DEPENDENCY_RESEARCH.md` with primary references for atomic lock primitives and Bash redirection semantics.
-- Re-validated `bash tests/ralphie_shell_tests.sh` passes in this environment to ground planning claims in executable evidence.
-- Removed example home-directory absolute-path strings from markdown artifacts to align with the project output policy (avoid absolute workstation paths in committed docs).
+- The initial atomic-lock implementation had a correctness bug in `try_acquire_lock_atomic`: capturing `$?` after an `if ...; then ...; fi` can yield `0` even when the acquisition attempt failed in Bash 3.2. This could incorrectly allow multiple active runners. The fix now captures return codes in the `else` branch and is regression-tested.
+- Subrepo evidence remains snapshot-based in this workspace because `subrepos/*` are not valid git work trees; avoid overfitting to assumed submodule behaviors without repairing setup/update flows.
+- YAML fallback-order parsing in `mode_fallback_order` remains string-based and brittle (medium risk).
 
 ## External Research Per Major Dependency/Module
 
 Dependency-by-dependency primary references are listed in `research/DEPENDENCY_RESEARCH.md`.
-Key external docs for Codex/Claude/Bash/coreutils/man-pages were re-validated for availability on 2026-02-13; local subrepo sources remain the strongest evidence for flag/behavior alignment.
 
 ## Map-Guided Critique (Required)
 
@@ -75,7 +63,7 @@ Anti-overfit rules applied:
 - Engine-specific flags remain isolated to runtime invocation boundaries.
 - Fallback behavior remains required when either CLI is unavailable.
 
-Decision: prioritize lock correctness (spec `005`) next; keep portability hardening (spec `006`) queued after correctness is proven.
+Decision: with build-gate blockers closed, prioritize medium-gap test coverage and setup-script integration hardening next.
 
 ## Confidence By Component
 
@@ -83,15 +71,16 @@ Decision: prioritize lock correctness (spec `005`) next; keep portability harden
 - Codebase surface mapping completeness: 96
 - External dependency verification quality: 94
 - Cross-engine parity posture: 95
-- Lock correctness readiness (after planning, before implementation): 78
-- Process-substitution portability readiness (after planning, before implementation): 70
-- Self-improvement log privacy readiness (after planning, before implementation): 62
-- Overall build-readiness confidence: 87
+- Lock correctness readiness: 95
+- Process-substitution portability readiness: 90
+- Self-improvement log privacy readiness: 95
+- Overall build-readiness confidence: 93
 
 ## Readiness Judgment
 
-Preparation is complete for a bounded implementation cycle focused on atomic lock acquisition (correctness), with portability and markdown privacy hardening queued next.
+Build-gate blockers noted in `consensus/build-gate_20260213_103835_consensus.md` are closed and verified by the shell test suite; remaining gaps are medium-severity and tracked in `research/COVERAGE_MATRIX.md`.
 
-<confidence>87</confidence>
+<confidence>93</confidence>
 <needs_human>false</needs_human>
 <human_question></human_question>
+

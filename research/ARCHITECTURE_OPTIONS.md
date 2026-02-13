@@ -1,13 +1,13 @@
 # Architecture Options
 
 Date: 2026-02-13
-Decision target: portability + lock correctness and parity reliability before next build cycle.
+Decision target: lock correctness, portability, and cross-engine parity reliability.
 
-## Option A: Keep Current Check-Then-Write Lock File
+## Option A: Keep Legacy Check-Then-Write Lock File
 
 Description:
 
-- Keep current `acquire_lock` flow unchanged.
+- Keep legacy `acquire_lock` flow unchanged.
 - Continue relying on contention wait + diagnostics only.
 
 Pros:
@@ -24,9 +24,8 @@ Cons:
 
 Description:
 
-- Use `flock` backend when available for atomic ownership.
-- Use atomic fallback backend when `flock` is unavailable.
-- Preferred fallback primitive: temp-file metadata + atomic publish via `link(2)`/`ln` (hard-link) to the canonical lock path (avoids partially-written lock metadata becoming visible).
+- Preferred backend: write metadata to a temp file, then atomically publish ownership via `link(2)`/`ln` (hard-link) to the canonical lock path (avoids partially-written metadata becoming visible).
+- Atomic fallback backend: Bash `noclobber` (`set -C`) to atomically create the canonical lock file when hard links are unavailable or fail unexpectedly.
 - Preserve current reason codes and diagnostics contracts.
 
 Pros:
@@ -72,7 +71,7 @@ Scores:
 
 ## Decision
 
-Choose Option B for the next build cycle (spec `005`).
+Implemented Option B (spec `005` COMPLETE).
 
 Notes:
 
@@ -83,9 +82,9 @@ Notes:
 
 Problem:
 
-- `ralphie.sh` relies on Bash process substitution (`>(...)`) for session logging and (currently) Claude output capture.
+- `ralphie.sh` previously relied on Bash process substitution (`>(...)` / `< <(...)`) for session logging and some capture/loop helpers.
 - Some restricted shells/sandboxes block process substitution, which can break execution in those environments.
-- This behavior was not reproduced in this environment (the shell test suite passes), but it remains a portability risk.
+- This remains a portability risk unless process substitution is eliminated from core paths.
 
 ### Option D: Keep Process Substitution
 
@@ -135,4 +134,4 @@ Cons:
 
 ### Decision (Portability)
 
-- Choose Option E after spec `005` is COMPLETE (spec `006`).
+- Implemented Option E (spec `006` COMPLETE).

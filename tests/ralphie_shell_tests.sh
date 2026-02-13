@@ -508,6 +508,146 @@ EOF
     rm -rf "$tmpdir"
 }
 
+test_lock_backend_fallback_when_ln_fails() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local old_config_dir old_lock_file old_log_dir old_lock_backend old_lock_backend_logged old_lock_wait old_timeout
+    old_config_dir="$CONFIG_DIR"
+    old_lock_file="$LOCK_FILE"
+    old_log_dir="$LOG_DIR"
+    old_lock_backend="${LOCK_BACKEND:-}"
+    old_lock_backend_logged="${LOCK_BACKEND_LOGGED:-false}"
+    old_lock_wait="${LOCK_WAIT_SECONDS:-0}"
+    old_timeout="${COMMAND_TIMEOUT_SECONDS:-0}"
+
+    CONFIG_DIR="$tmpdir/.ralphie"
+    LOCK_FILE="$CONFIG_DIR/run.lock"
+    LOG_DIR="$tmpdir/logs"
+    mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+
+    LOCK_WAIT_SECONDS=0
+    COMMAND_TIMEOUT_SECONDS=0
+    LOCK_BACKEND="link"
+    LOCK_BACKEND_LOGGED=false
+
+    local output rc
+    set +e
+    output="$( ( ln() { return 1; }; acquire_lock ) 2>&1 )"
+    rc=$?
+    set -e
+    assert_eq "0" "$rc" "lock acquisition falls back when ln fails"
+    assert_true "fallback logs noclobber backend" rg -q "Lock backend: noclobber" <<<"$output"
+
+    release_lock 2>/dev/null || true
+
+    CONFIG_DIR="$old_config_dir"
+    LOCK_FILE="$old_lock_file"
+    LOG_DIR="$old_log_dir"
+    LOCK_BACKEND="$old_lock_backend"
+    LOCK_BACKEND_LOGGED="$old_lock_backend_logged"
+    LOCK_WAIT_SECONDS="$old_lock_wait"
+    COMMAND_TIMEOUT_SECONDS="$old_timeout"
+
+    rm -rf "$tmpdir"
+}
+
+test_lock_atomic_race_allows_single_owner() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local worker start_file
+    worker="$tmpdir/worker.sh"
+    start_file="$tmpdir/start"
+
+    cat > "$worker" <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+id="$1"
+tmpdir="$2"
+root_dir="$3"
+
+export RALPHIE_LIB=1
+# shellcheck disable=SC1090
+source "$root_dir/ralphie.sh"
+
+CONFIG_DIR="$tmpdir/.ralphie"
+LOCK_FILE="$CONFIG_DIR/run.lock"
+LOG_DIR="$tmpdir/logs"
+LOCK_WAIT_SECONDS=0
+COMMAND_TIMEOUT_SECONDS=0
+MODE="test"
+
+mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+
+echo "ready" > "$tmpdir/ready_$id"
+while [ ! -f "$tmpdir/start" ]; do sleep 0.01; done
+
+set +e
+( acquire_lock ) >/dev/null 2>&1
+rc=$?
+set -e
+
+echo "$rc" > "$tmpdir/rc_$id"
+if [ "$rc" -eq 0 ]; then
+    sleep 1
+    release_lock 2>/dev/null || true
+fi
+exit "$rc"
+EOF
+    chmod +x "$worker"
+
+    local pids=()
+    local i
+    for i in 1 2 3 4 5; do
+        bash "$worker" "$i" "$tmpdir" "$ROOT_DIR" >/dev/null 2>&1 &
+        pids+=("$!")
+    done
+
+    local deadline now ready_count f
+    deadline=$(( $(date +%s) + 10 ))
+    while true; do
+        ready_count=0
+        for f in "$tmpdir"/ready_*; do
+            [ -f "$f" ] || continue
+            ready_count=$((ready_count + 1))
+        done
+        if [ "$ready_count" -ge 5 ]; then
+            break
+        fi
+        now="$(date +%s)"
+        if [ "$now" -ge "$deadline" ]; then
+            fail "race fixture workers reached ready barrier"
+            break
+        fi
+        sleep 0.05
+    done
+
+    : > "$start_file"
+
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    local success=0 rc
+    for i in 1 2 3 4 5; do
+        if [ ! -f "$tmpdir/rc_$i" ]; then
+            fail "race fixture produced rc_$i"
+            continue
+        fi
+        rc="$(cat "$tmpdir/rc_$i")"
+        if [ "$rc" = "0" ]; then
+            success=$((success + 1))
+        fi
+    done
+    assert_eq "1" "$success" "atomic lock race allows exactly one winner"
+
+    rm -rf "$tmpdir"
+}
+
 test_clean_recursive_artifacts() {
     local tmpdir
     tmpdir="$(mktemp -d)"
@@ -1023,6 +1163,76 @@ EOF
     rm -rf "$tmpdir"
 }
 
+test_session_logging_fifo_writes_to_log_file() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local log_file
+    log_file="$tmpdir/session.log"
+
+    local rc
+    set +e
+    (
+        LOG_DIR="$tmpdir/logs"
+        MODE="test"
+        mkdir -p "$LOG_DIR"
+        start_session_logging "$log_file"
+        echo "session-log-fixture"
+        cleanup_session_logging
+    ) >/dev/null 2>&1
+    rc=$?
+    set -e
+
+    assert_eq "0" "$rc" "session logging setup and teardown succeeds"
+    assert_true "session log file captures orchestrator output" rg -q "session-log-fixture" "$log_file"
+
+    rm -rf "$tmpdir"
+}
+
+test_self_heal_log_redacts_home_paths() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local old_home old_project_dir old_research_dir old_specs_dir old_plan_file old_self_log
+    old_home="$HOME"
+    old_project_dir="$PROJECT_DIR"
+    old_research_dir="$RESEARCH_DIR"
+    old_specs_dir="$SPECS_DIR"
+    old_plan_file="$PLAN_FILE"
+    old_self_log="$SELF_IMPROVEMENT_LOG_FILE"
+
+    HOME="$tmpdir/home"
+    PROJECT_DIR="$tmpdir/project"
+    RESEARCH_DIR="$PROJECT_DIR/research"
+    SPECS_DIR="$PROJECT_DIR/specs"
+    PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+    SELF_IMPROVEMENT_LOG_FILE="$RESEARCH_DIR/SELF_IMPROVEMENT_LOG.md"
+    mkdir -p "$HOME/.codex" "$RESEARCH_DIR" "$SPECS_DIR" "$PROJECT_DIR"
+    cat > "$HOME/.codex/config.toml" <<'EOF'
+model_reasoning_effort = "xhigh"
+EOF
+
+    local rc
+    set +e
+    self_heal_codex_reasoning_effort_xhigh >/dev/null 2>&1
+    rc=$?
+    set -e
+    assert_eq "0" "$rc" "self-heal runs and writes self-improvement log"
+
+    assert_false "self-improvement log excludes expanded HOME path" rg -qF "$HOME" "$SELF_IMPROVEMENT_LOG_FILE"
+    assert_true "self-improvement log contains redacted backup path" rg -q "Backup: ~/" "$SELF_IMPROVEMENT_LOG_FILE"
+    assert_true "markdown artifacts remain clean after self-heal" markdown_artifacts_are_clean
+
+    HOME="$old_home"
+    PROJECT_DIR="$old_project_dir"
+    RESEARCH_DIR="$old_research_dir"
+    SPECS_DIR="$old_specs_dir"
+    PLAN_FILE="$old_plan_file"
+    SELF_IMPROVEMENT_LOG_FILE="$old_self_log"
+
+    rm -rf "$tmpdir"
+}
+
 main() {
     test_confidence_parsing
     test_prepare_tag_detection
@@ -1037,9 +1247,13 @@ main() {
     test_idle_plan_refresh_from_build
     test_lock_failure_reason_codes_and_diagnostics
     test_lock_diagnostics_fallback_and_stale_cleanup
+    test_lock_backend_fallback_when_ln_fails
+    test_lock_atomic_race_allows_single_owner
     test_clean_recursive_artifacts
     test_clean_deep_artifacts
     test_prerequisite_quality_gate
+    test_session_logging_fifo_writes_to_log_file
+    test_self_heal_log_redacts_home_paths
     test_claude_output_log_separation
     test_model_flags_forwarding
     test_consensus_panel_failure_threshold

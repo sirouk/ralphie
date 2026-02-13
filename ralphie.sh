@@ -189,7 +189,7 @@ Usage:
   ./ralphie.sh --status          # Show current configuration
 
 Options:
-  --engine codex|claude|auto         Override configured engine
+  --engine codex|claude|auto|ask     Override configured engine
   --codex-model MODEL                Default codex model passed to agent invocations
   --claude-model MODEL               Default claude model passed to agent invocations
   --mode build|plan|prepare|test|refactor|lint|document
@@ -638,6 +638,15 @@ write_lock_metadata() {
     } > "$lock_path"
 }
 
+current_lock_pid() {
+    # In bash, $$ remains the parent shell PID across subshells, but BASHPID is per-process.
+    # We use BASHPID when available so subshells don't accidentally treat locks as re-entrant.
+    case "${BASHPID:-}" in
+        ''|*[!0-9]*) echo "$$" ;;
+        *) echo "$BASHPID" ;;
+    esac
+}
+
 try_acquire_lock_via_link() {
     if ! command -v ln >/dev/null 2>&1; then
         return 2
@@ -649,7 +658,7 @@ try_acquire_lock_via_link() {
         return 2
     fi
 
-    if ! write_lock_metadata "$$" "$tmp_lock" 2>/dev/null; then
+    if ! write_lock_metadata "$(current_lock_pid)" "$tmp_lock" 2>/dev/null; then
         rm -f "$tmp_lock" 2>/dev/null || true
         return 2
     fi
@@ -667,7 +676,7 @@ try_acquire_lock_via_link() {
 }
 
 try_acquire_lock_via_noclobber() {
-    if (set -C; write_lock_metadata "$$") 2>/dev/null; then
+    if (set -C; write_lock_metadata "$(current_lock_pid)") 2>/dev/null; then
         return 0
     fi
 
@@ -687,17 +696,18 @@ try_acquire_lock_atomic() {
             LOCK_BACKEND="link"
             log_lock_backend_once
             return 0
-        fi
-        rc=$?
-        if [ "$rc" -eq 1 ]; then
-            LOCK_BACKEND="link"
-            log_lock_backend_once
-            return 1
-        fi
+        else
+            rc=$?
+            if [ "$rc" -eq 1 ]; then
+                LOCK_BACKEND="link"
+                log_lock_backend_once
+                return 1
+            fi
 
-        # Backend failure: fall back to noclobber and continue.
-        LOCK_BACKEND="noclobber"
-        backend="noclobber"
+            # Backend failure: fall back to noclobber and continue.
+            LOCK_BACKEND="noclobber"
+            backend="noclobber"
+        fi
     fi
 
     if [ "$backend" = "noclobber" ]; then
@@ -705,8 +715,12 @@ try_acquire_lock_atomic() {
             LOCK_BACKEND="noclobber"
             log_lock_backend_once
             return 0
+        else
+            rc=$?
+            LOCK_BACKEND="noclobber"
+            log_lock_backend_once
+            return "$rc"
         fi
-        return $?
     fi
 
     return 2
@@ -716,7 +730,7 @@ release_lock() {
     if [ -f "$LOCK_FILE" ]; then
         local holder_pid
         holder_pid=$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)
-        if [ -n "$holder_pid" ] && [ "$holder_pid" = "$$" ]; then
+        if [ -n "$holder_pid" ] && [ "$holder_pid" = "$(current_lock_pid)" ]; then
             rm -f "$LOCK_FILE"
         fi
     fi
@@ -739,8 +753,8 @@ acquire_lock() {
     if [ -f "$LOCK_FILE" ]; then
         existing_pid="$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)"
         # Allow re-entrant acquisition when this process execs into a refreshed script.
-        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$$" ]; then
-            write_lock_metadata "$$" 2>/dev/null || true
+        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$(current_lock_pid)" ]; then
+            write_lock_metadata "$(current_lock_pid)" 2>/dev/null || true
             return 0
         fi
     fi
@@ -761,8 +775,8 @@ acquire_lock() {
         fi
 
         existing_pid="$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)"
-        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$$" ]; then
-            write_lock_metadata "$$" 2>/dev/null || true
+        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$(current_lock_pid)" ]; then
+            write_lock_metadata "$(current_lock_pid)" 2>/dev/null || true
             return 0
         fi
 
@@ -1973,11 +1987,13 @@ run_setup_wizard() {
         echo "  1) auto (recommended)"
         echo "  2) codex"
         echo "  3) claude"
+        echo "  4) ask (prompt on each run)"
         local engine_choice
         engine_choice="$(prompt_line "Pick engine number" "1")"
         case "$engine_choice" in
             2) ENGINE_PREF="codex" ;;
             3) ENGINE_PREF="claude" ;;
+            4) ENGINE_PREF="ask" ;;
             *) ENGINE_PREF="auto" ;;
         esac
 
@@ -2350,6 +2366,47 @@ resolve_engine() {
     local claude_cmd="${CLAUDE_CMD:-claude}"
 
     case "$selected" in
+        ask)
+            local codex_ok=false
+            local claude_ok=false
+            if command -v "$codex_cmd" >/dev/null 2>&1; then
+                codex_ok=true
+            fi
+            if command -v "$claude_cmd" >/dev/null 2>&1; then
+                claude_ok=true
+            fi
+
+            if is_true "$codex_ok" && ! is_true "$claude_ok"; then
+                ACTIVE_ENGINE="codex"
+                ACTIVE_CMD="$codex_cmd"
+                return 0
+            fi
+            if is_true "$claude_ok" && ! is_true "$codex_ok"; then
+                ACTIVE_ENGINE="claude"
+                ACTIVE_CMD="$claude_cmd"
+                return 0
+            fi
+            if is_true "$codex_ok" && is_true "$claude_ok"; then
+                if is_interactive; then
+                    echo ""
+                    echo "Both Codex and Claude are available."
+                    echo "  1) codex"
+                    echo "  2) claude"
+                    local choice
+                    choice="$(prompt_line "Pick engine number for this run" "1")"
+                    case "$choice" in
+                        2) ACTIVE_ENGINE="claude"; ACTIVE_CMD="$claude_cmd" ;;
+                        *) ACTIVE_ENGINE="codex"; ACTIVE_CMD="$codex_cmd" ;;
+                    esac
+                    return 0
+                fi
+
+                # Non-interactive fallback mirrors auto selection.
+                ACTIVE_ENGINE="codex"
+                ACTIVE_CMD="$codex_cmd"
+                return 0
+            fi
+            ;;
         auto)
             if command -v "$codex_cmd" >/dev/null 2>&1; then
                 ACTIVE_ENGINE="codex"
@@ -3088,12 +3145,14 @@ check_build_prerequisites() {
     if [ "${spec_count:-0}" -eq 0 ]; then
         missing+=("spec files under specs/")
     else
+        local spec_candidates
+        spec_candidates="$(find "$SPECS_DIR" -maxdepth 3 -type f \( -name "spec.md" -o -name "*.md" \) 2>/dev/null || true)"
         while IFS= read -r spec_file; do
-            if grep -qi 'acceptance criteria' "$spec_file" 2>/dev/null; then
+            if [ -n "$spec_file" ] && grep -qi 'acceptance criteria' "$spec_file" 2>/dev/null; then
                 has_acceptance=true
                 break
             fi
-        done < <(find "$SPECS_DIR" -maxdepth 3 -type f \( -name "spec.md" -o -name "*.md" \) 2>/dev/null)
+        done <<< "$spec_candidates"
         if ! is_true "$has_acceptance"; then
             missing+=("specs must include Acceptance Criteria sections")
         fi
@@ -3126,9 +3185,11 @@ check_build_prerequisites() {
     fi
 
     local gitignore_missing=()
+    local gitignore_missing_lines missing_entry
+    gitignore_missing_lines="$(gitignore_missing_required_entries || true)"
     while IFS= read -r missing_entry; do
         [ -n "$missing_entry" ] && gitignore_missing+=("$missing_entry")
-    done < <(gitignore_missing_required_entries)
+    done <<< "$gitignore_missing_lines"
     if [ "${#gitignore_missing[@]}" -gt 0 ]; then
         local missing_joined
         missing_joined="$(printf '%s,' "${gitignore_missing[@]}" | sed 's/,$//')"
@@ -3698,9 +3759,11 @@ run_bootstrap_scripts_if_applicable() {
     local script
 
     if [ -d "$PROJECT_DIR/scripts" ]; then
+        local scripts_list
+        scripts_list="$(find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name 'bootstrap*.sh' 2>/dev/null | sort || true)"
         while IFS= read -r script; do
             [ -n "$script" ] && bootstrap_scripts+=("$script")
-        done < <(find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name 'bootstrap*.sh' 2>/dev/null | sort)
+        done <<< "$scripts_list"
     fi
 
     if [ "${#bootstrap_scripts[@]}" -eq 0 ]; then
@@ -4425,7 +4488,7 @@ parse_args() {
     fi
     if [ -n "$ENGINE_OVERRIDE" ]; then
         case "$ENGINE_OVERRIDE" in
-            auto|codex|claude) ;;
+            auto|codex|claude|ask) ;;
             *)
                 err "Invalid --engine value: $ENGINE_OVERRIDE"
                 exit 1

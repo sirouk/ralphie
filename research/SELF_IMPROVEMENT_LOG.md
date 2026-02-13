@@ -238,6 +238,22 @@
   - kept lock correctness changes engine-agnostic
 - Result:
   - Corrected inaccurate local claim that the shell test suite fails due to process substitution.
+
+## 2026-02-13 11:45:00 - Map-guided closure: build-gate blockers (specs 005-007)
+- Hypothesis: Build-gate readiness will improve by closing remaining high-severity items with executable evidence: atomic lock correctness, process-substitution portability, and markdown path redaction.
+- Evidence sampled:
+  - Source map: `maps/agent-source-map.yaml`
+  - Binary steering map: `maps/binary-steering-map.yaml`
+  - Codex: `subrepos/codex/docs/exec.md`, `subrepos/codex/codex-rs/exec/src/cli.rs`
+  - Claude: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`
+- Anti-overfit checks applied:
+  - kept lock/logging changes engine-neutral (no provider-specific assumptions)
+  - preserved invocation boundaries and runtime capability probes
+- Result:
+  - Fixed `try_acquire_lock_atomic` return-code handling (Bash `if` status pitfall) and added atomic race + backend fallback fixtures.
+  - Removed remaining `< <(...)` process substitution usage; added FIFO session logging fixture.
+  - Added self-heal redaction fixture; markdown privacy gate remains strict.
+  - `bash tests/ralphie_shell_tests.sh` passes; specs `005`-`007` marked COMPLETE; research artifacts refreshed.
   - Re-scoped `IMPLEMENTATION_PLAN.md` to spec `005` (atomic lock acquisition).
   - Added spec `007` to prevent self-heal from introducing markdown privacy leakage.
 

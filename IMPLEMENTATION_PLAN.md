@@ -1,103 +1,48 @@
 # Implementation Plan
 
 Date: 2026-02-13
-Scope: Implement spec `005` (`specs/005-atomic-lock-acquisition/spec.md`).
+Scope: Close remaining medium-severity coverage gaps after completing specs `005`-`007`.
 
-## Objectives
+## Goal
 
-- Make lock acquisition atomic so simultaneous starts cannot yield multiple active runners.
-- Preserve existing deterministic reason codes and lock diagnostics output.
-- Keep behavior portable (no required external lock binary) and engine-neutral.
+Raise confidence in autonomous operation by adding test coverage and (where necessary) small refactors for the remaining uncovered runtime surfaces identified in `research/COVERAGE_MATRIX.md`.
 
-## Assumptions
+## Done Criteria (Validation / Definition Of Done)
 
-- `flock` may not exist in the runtime environment; a portable atomic fallback is required.
-- Publishing a fully-written lock file via an atomic primitive (prefer `link(2)`/`ln` hard-link; fallback: Bash `noclobber`) avoids check-then-write races and avoids exposing partially-written lock metadata.
-- Changes must be validated with `bash tests/ralphie_shell_tests.sh`, plus new concurrency fixtures.
+- `bash tests/ralphie_shell_tests.sh` passes.
+- `research/COVERAGE_MATRIX.md` shows concrete progress on at least one medium gap (`S6`, `S7`, or `S8`) with a linked spec and test coverage notes.
+- New/updated specs include clear Acceptance Criteria sections.
 
-## Design Notes (Lock Backends)
+## Phase 1: Human Queue Ingestion Coverage (S6)
 
-- `flock` backend (when available): open the lock file without truncation (use `>>`), acquire `flock` on the file descriptor, then truncate/write metadata only after the lock is held (to preserve diagnostics under contention).
-- Fallback backend (portable): write pid/timestamp metadata to a temp file, then atomically publish ownership via `ln` (hard-link) to the canonical lock path; only one contender can win the publish step.
-- Stale-lock removal must be conservative: never remove an existing lock unless the holder pid is readable and proven dead.
+- [ ] Add a dedicated spec for human queue ingestion and escalation behavior (`HUMAN_INSTRUCTIONS.md`, `Status: NEW`).
+- [ ] Add focused shell tests for:
+  - parsing of `Status: NEW` requests
+  - non-interactive behavior (no prompts; deterministic result)
+  - idempotence (NEW -> processed/acknowledged flow, if supported)
 
-## Phase 1: Implement Atomic Lock Backend Selection
+## Phase 2: Notification Behavior Coverage (S7)
 
-Targets:
+- [ ] Add a dedicated spec for `notify_human` channel behavior and failure modes.
+- [ ] Add focused shell tests for:
+  - `terminal` channel output path
+  - `telegram` and `discord` channel selection with missing env vars (deterministic failure without leaking secrets)
+  - `none` channel is a no-op
 
-- `ralphie.sh`: `acquire_lock`, `release_lock`, and stale-lock recovery paths
-- `research/DEPENDENCY_RESEARCH.md`: expand lock primitive references (portable fallback)
+## Phase 3: Setup/Subrepo Refresh Harness (S8)
 
-Tasks:
+- [ ] Add a dedicated spec for `scripts/setup-agent-subrepos.sh` covering partially-initialized subrepo states.
+- [ ] Add a test harness strategy:
+  - prefer mocked `git` in `PATH` to simulate failure modes deterministically, or
+  - introduce a `--dry-run`/`--no-network` mode that exercises logic without fetching.
+- [ ] Add one focused test proving the script handles the partial-init case without leaving the repo in a broken state.
 
-- [ ] Introduce a small lock-backend abstraction.
-- Preferred backend: `flock` when available (optional).
-- Fallback backend: portable atomic acquisition (no external binary).
-- [ ] Ensure backend selection is deterministic and observable in logs (once per run).
-- [ ] Keep the lock metadata contract (pid first line, timestamp second line) stable.
+## Phase 4: Documentation And Gate Alignment
 
-Validation:
+- [ ] Update `research/CODEBASE_MAP.md` and `research/RISKS_AND_MITIGATIONS.md` for any behavioral changes.
+- [ ] Ensure new artifacts comply with the markdown privacy/transcript gate (`markdown_artifacts_are_clean`).
 
-- [ ] With `flock` absent, fallback backend acquires and releases correctly.
-- [ ] If `flock` is present, it is selected and behaves correctly (or the script cleanly falls back).
+## Notes
 
-## Phase 2: Harden Contention, Stale-Lock, And Diagnostics Under Atomic Acquisition
+- Build-gate blockers from `consensus/build-gate_20260213_103835_consensus.md` were closed by completing specs `005`-`007` and validating via the shell test suite.
 
-Targets:
-
-- `ralphie.sh`: contention wait loop, stale-lock removal, and diagnostics
-
-Tasks:
-
-- [ ] Replace check-then-write acquisition with a single atomic acquisition attempt loop.
-- [ ] Make stale-lock removal conservative and race-safe.
-- Only remove when holder pid is readable and proven dead, or when explicitly documented criteria are met.
-- Never remove a lock solely because metadata is temporarily unavailable.
-- [ ] Preserve existing reason codes and messages.
-- Ensure `RB_LOCK_ALREADY_HELD` for immediate contention (`--wait-for-lock 0`).
-- Ensure `RB_LOCK_WAIT_TIMEOUT` for timed contention.
-
-Validation:
-
-- [ ] Existing lock tests continue to pass unchanged.
-- [ ] Reason-code outputs remain line-stable for the contention paths.
-
-## Phase 3: Add Concurrency Fixtures (Prove Single-Owner)
-
-Targets:
-
-- `tests/ralphie_shell_tests.sh`: new race fixture and backend-fallback fixture
-
-Tasks:
-
-- [ ] Add a race test that starts at least two concurrent processes attempting `acquire_lock` and asserts exactly one succeeds.
-- [ ] Add a backend-fallback test that forces preferred backend unavailability and asserts fallback acquisition still works.
-
-Validation:
-
-- [ ] New tests fail on the current non-atomic implementation and pass after the change.
-
-## Phase 4: Regression And Readiness Validation
-
-Tasks:
-
-- [ ] Run `bash tests/ralphie_shell_tests.sh`.
-- [ ] Run a build-prerequisite check (markdown cleanliness + semantic plan gate) without needing `--force-build`.
-- [ ] Mark spec `005` COMPLETE only after all acceptance criteria are met with executable evidence.
-
-## Follow-Ups (Queued)
-
-- Spec `007` (`specs/007-self-improvement-log-redaction/spec.md`): ensure self-heal cannot introduce markdown privacy leakage.
-- Spec `006` (`specs/006-process-substitution-portability/spec.md`): remove Bash process substitution usage for restricted-shell portability.
-
-## Traceability
-
-- Risk 1 -> Phase 1 + 2 + 3 + 4
-- Risk 7 -> follow-up (spec `007`)
-- Risk 6 -> follow-up (spec `006`)
-
-## Exit Criteria
-
-- [ ] Concurrent starts cannot produce multiple active lock owners.
-- [ ] All shell tests pass end-to-end in this environment.
-- [ ] Spec `005` is marked COMPLETE with validation evidence.

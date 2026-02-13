@@ -126,7 +126,7 @@ Best-practice implications:
 
 Why it matters:
 
-- Current lock correctness risk points to atomic lock primitive adoption.
+- Lock correctness depends on atomic lock acquisition; portable primitives are required.
 
 Primary references:
 
@@ -142,12 +142,13 @@ Best-practice implications:
 - If using `flock`, do not truncate the lock file before the lock is acquired (open with `>>` before locking; truncate/write metadata only after the lock is held) to preserve diagnostics under contention.
 - When `flock` is unavailable, prefer an atomic primitive that does not publish partial metadata: write metadata to a temp file, then atomically publish ownership via `link(2)`/`ln` (hard-link) to the canonical lock path; only the winner will succeed.
 - Alternatively, use Bash `noclobber` (`set -C`) to atomically create the lock file, but ensure contenders treat missing/partial metadata as "held" (do not delete) to avoid breaking atomicity.
+- Current implementation choice: hard-link publish (`ln`) as preferred backend, with `noclobber` fallback; no external `flock` dependency is required.
 
 ## 9) Bash Process Substitution And FIFO Logging
 
 Why it matters:
 
-- `ralphie.sh` currently uses Bash process substitution (`>(...)`) for session logging and Claude output capture.
+- `ralphie.sh` previously used Bash process substitution (`>(...)` / `< <(...)`) for session logging and some loop helpers.
 - Some sandboxed shells disallow process substitution, causing hard failures.
 
 Primary references:
@@ -160,8 +161,9 @@ Best-practice implications:
 - Prefer explicit FIFO (`mkfifo`) + `tee` patterns when process substitution is not guaranteed.
 - Keep stdin unchanged for interactive prompts; only redirect stdout/stderr.
 - Add focused tests that exercise the chosen logging mechanism in restricted shells.
+- Current implementation choice: FIFO-based session logging plus pipeline-based Claude stdout/stderr separation; no process substitution remains.
 
 ## Uncertainty Notes
 
 - Claude Code CLI options evolve quickly; periodic runtime `--help` probes remain necessary.
-- `flock` availability may vary by environment; fallback backend is required for portability.
+- Hard-link support and `mkfifo` availability may vary by environment; fallbacks and explicit disablement paths remain necessary.

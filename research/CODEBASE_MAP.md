@@ -60,7 +60,8 @@ Tracked project files (excluding subrepo internals) are centered in:
 6. Agent invocation and output contract parsing (`ralphie.sh`)
 - Unified invocation wrapper with per-engine flag boundaries.
 - XML-tag extraction for prepare/build orchestration contracts.
-- Current portability constraint: Claude output capture and session logging use Bash process substitution (`>(...)`), which can fail in sandboxed shells (tracked as spec `006`).
+- Claude stdout/stderr capture is pipeline-based (stdout to output artifact; stderr to log artifact).
+- Session logging uses FIFO + `tee` (no process substitution; spec `006` COMPLETE).
 
 7. Build gate and consensus orchestration (`ralphie.sh`)
 - Semantic prereq checks.
@@ -68,7 +69,7 @@ Tracked project files (excluding subrepo internals) are centered in:
 
 8. Main loop and phase transitions (`ralphie.sh`)
 - Iterative execution, failover, phase gating, retries/backoff, completion logging.
-- Session logging currently uses `exec > >(tee -a "$SESSION_LOG") 2>&1` (process substitution), which is non-portable in some restricted shells (spec `006`).
+- Session logging uses FIFO + `tee` to duplicate orchestrator output to both terminal and log file (no process substitution; spec `006` COMPLETE).
 
 9. Subrepo/map management (`scripts/setup-agent-subrepos.sh`)
 - Git orchestration for source-map evidence inputs.
@@ -103,7 +104,5 @@ Network-dependent paths:
 ## Coverage Status Snapshot
 
 - Known-surface mapping completeness: high.
-- Largest correctness gap: atomic lock acquisition under simultaneous starts.
-- Largest policy-compliance gap: self-heal can write absolute paths into markdown artifacts (spec `007`).
-- Largest portability gap (environment-dependent): Bash process substitution usage in logging/capture paths.
-- Additional medium gaps: setup-script integration coverage and human interaction path fixtures.
+- Previously high-severity gaps (atomic lock, markdown privacy leakage, and process substitution portability) are now closed (specs `005`-`007` COMPLETE).
+- Remaining medium gaps: setup-script integration coverage, notification/human-queue fixtures, and prompt-generation policy fixtures.

@@ -29,4 +29,4 @@
 3. Run fallback fixture test where preferred lock backend is unavailable.
 4. Verify contention failure logs for required reason-code and metadata fields.
 
-## Status: INCOMPLETE
+## Status: COMPLETE

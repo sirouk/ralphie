@@ -6,9 +6,10 @@ Date: 2026-02-13
 
 1. Non-atomic lock acquisition race can allow concurrent runs.
 - Severity: High
-- Evidence: `acquire_lock` uses lock-file existence checks followed by file write, without atomic acquisition primitive.
-- Mitigation: implement atomic lock backend strategy (preferred: `flock`, with atomic fallback backend).
-- Validation: add concurrent-start race tests proving single-owner behavior.
+- Evidence (prior): `acquire_lock` used check-then-write lock behavior, which can race under simultaneous starts.
+- Mitigation: implement atomic lock acquisition (preferred backend: hard-link publish via `ln`, with `noclobber` fallback) and preserve deterministic reason codes/diagnostics.
+- Validation: concurrent-start race fixture proves single-owner behavior; backend-fallback fixture proves atomic fallback still acquires.
+- Status: Mitigated (spec `005` COMPLETE; shell test suite includes atomic race + backend fallback).
 
 2. CLI capability drift can break invocation flags.
 - Severity: Medium
@@ -36,16 +37,18 @@ Date: 2026-02-13
 
 6. Bash process substitution is blocked in some sandboxed shells, breaking core execution paths.
 - Severity: High
-- Evidence: `ralphie.sh` uses `>(...)` for session logging and Claude output capture; this can fail in environments without `/dev/fd` support or where process substitution is blocked.
+- Evidence (prior): `ralphie.sh` relied on Bash process substitution for session logging and stream capture; this can fail in environments where process substitution is blocked.
 - Mitigation: replace `>(...)` with FIFO/pipeline-based logging and add focused regression tests (spec `006`).
-- Validation: `bash tests/ralphie_shell_tests.sh` passes end-to-end and `ralphie.sh` contains no process substitution.
+- Validation: `bash tests/ralphie_shell_tests.sh` passes end-to-end; `ralphie.sh` contains no `> >(...)` or `< <(...)` process substitution.
+- Status: Mitigated (spec `006` COMPLETE; session logging fixture added).
 
 7. Self-heal/self-improvement logging can leak absolute paths into markdown artifacts.
 - Severity: High
-- Evidence: `ralphie.sh:self_heal_codex_reasoning_effort_xhigh` appends `- Backup: $backup_file` to `research/SELF_IMPROVEMENT_LOG.md`; `$backup_file` is under `$HOME`, which violates the markdown privacy guard.
+- Evidence (prior): `ralphie.sh:self_heal_codex_reasoning_effort_xhigh` appended an unredacted `- Backup: $backup_file` entry to `research/SELF_IMPROVEMENT_LOG.md`; `$backup_file` is under `$HOME`, which violates the markdown privacy guard.
 - Mitigation: redact paths before writing to markdown artifacts and add a focused regression test that simulates self-heal and asserts `markdown_artifacts_are_clean` remains true (spec `007`).
 - Validation: new test passes; `research/SELF_IMPROVEMENT_LOG.md` contains no expanded home-directory absolute paths or local usernames.
+- Status: Mitigated (spec `007` COMPLETE; focused self-heal redaction fixture added).
 
 ## Residual Risk
 
-After implementing spec `005` and tightening markdown privacy compliance (spec `007`), the largest remaining risks shift to portability hardening (spec `006`), setup-script integration, and optional human-interaction paths.
+After closing specs `005`-`007`, the largest remaining risks are medium-severity: setup-script integration coverage, human-queue/notification fixtures, YAML fallback-order parsing brittleness, and ongoing CLI capability drift.
