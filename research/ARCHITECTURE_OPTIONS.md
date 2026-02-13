@@ -1,62 +1,138 @@
 # Architecture Options
 
 Date: 2026-02-13
-Decision target: final prepare-cycle scope before next build execution.
+Decision target: portability + lock correctness and parity reliability before next build cycle.
 
-## Option A: In-place lock hardening in `ralphie.sh` (Recommended)
-
-Description:
-- Keep single-script orchestration.
-- Add deterministic reason codes to all lock-failure exits.
-- Add richer lock diagnostics (pid, age, command best-effort).
-- Add lock-aware smoke guidance and targeted shell tests.
-
-Pros:
-- Fastest path to close the remaining high-impact readiness gap.
-- No new runtime dependencies.
-- Preserves current operational model.
-
-Cons:
-- Lock logic complexity remains concentrated in one script.
-
-## Option B: Extract lock module (`lib/lock.sh`)
+## Option A: Keep Current Check-Then-Write Lock File
 
 Description:
-- Move lock acquisition/release and diagnostics into a sourced library.
+
+- Keep current `acquire_lock` flow unchanged.
+- Continue relying on contention wait + diagnostics only.
 
 Pros:
-- Cleaner boundaries and easier direct unit-like testing.
-- Better maintainability for future lock features.
+
+- Zero implementation effort.
+- No new primitives.
 
 Cons:
-- Medium migration risk in this cycle.
-- More file-level coordination overhead now.
 
-## Option C: Replace file lock with external state helper
+- Non-atomic acquisition can permit dual runners under race.
+- Reliability risk remains unresolved.
+
+## Option B: Hybrid Atomic Locking (Recommended)
 
 Description:
-- Use a sidecar utility (typed language) for lock lifecycle and stale-state management.
+
+- Use `flock` backend when available for atomic ownership.
+- Use atomic fallback backend when `flock` is unavailable.
+- Preferred fallback primitive: temp-file metadata + atomic publish via `link(2)`/`ln` (hard-link) to the canonical lock path (avoids partially-written lock metadata becoming visible).
+- Preserve current reason codes and diagnostics contracts.
 
 Pros:
-- Stronger process/state modeling.
-- Easier future extension (metrics, richer introspection).
+
+- Closes highest-risk race window.
+- Preserves cross-engine neutrality.
+- Keeps deterministic automation behavior.
 
 Cons:
-- Adds dependency and packaging overhead.
-- Too heavy for current objective.
 
-## Weighted comparison (0-5)
+- Moderate implementation/test complexity.
+- Requires careful fallback parity between backends.
+
+## Option C: Keep File Lock but Add Post-Acquire Verification
+
+Description:
+
+- Continue file lock writes, then add immediate read-back consistency checks.
+
+Pros:
+
+- Smaller code change than backend abstraction.
+
+Cons:
+
+- Still weaker than true atomic lock primitives.
+- Harder to reason about correctness under heavy contention.
+
+## Weighted Comparison (0-5)
 
 Weights from `maps/agent-source-map.yaml`:
-- cross_engine_parity: 0.35
-- reliability_and_recovery: 0.25
-- observability: 0.20
-- prompt_quality: 0.20
+
+- `cross_engine_parity`: 0.35
+- `reliability_and_recovery`: 0.25
+- `observability`: 0.20
+- `prompt_quality`: 0.20
 
 Scores:
-- Option A: 4.7
-- Option B: 3.9
-- Option C: 2.8
+
+- Option A: 2.7
+- Option B: 4.7
+- Option C: 3.4
 
 ## Decision
-Choose Option A for the next build cycle. Defer Option B unless lock incidents persist after spec `004` is completed and validated.
+
+Choose Option B for the next build cycle (spec `005`).
+
+Notes:
+
+- Engine-specific behavior stays at invocation boundaries only.
+- Lock backend choice must remain independent of Codex/Claude mode.
+
+## Logging And Session Capture Portability
+
+Problem:
+
+- `ralphie.sh` relies on Bash process substitution (`>(...)`) for session logging and (currently) Claude output capture.
+- Some restricted shells/sandboxes block process substitution, which can break execution in those environments.
+- This behavior was not reproduced in this environment (the shell test suite passes), but it remains a portability risk.
+
+### Option D: Keep Process Substitution
+
+Description:
+
+- Retain `exec > >(tee -a "$SESSION_LOG") 2>&1` and the existing Claude capture approach.
+
+Pros:
+
+- Simple and idiomatic Bash in unconstrained environments.
+
+Cons:
+
+- Fails outright in environments where process substitution is disallowed.
+- Blocks test-driven progress and portability.
+
+### Option E: FIFO-Based Tee (Recommended)
+
+Description:
+
+- Replace process substitution with an explicit `mkfifo` + background `tee` reader for session logging.
+- Replace Claude output capture with pipeline-based `tee` (no process substitution).
+
+Pros:
+
+- Works in restricted shells where process substitution is blocked.
+- Keeps behavior engine-neutral.
+
+Cons:
+
+- Slightly more code; requires careful cleanup/traps for FIFO lifecycle.
+
+### Option F: Pipeline Wrapper For The Whole Loop
+
+Description:
+
+- Run the main loop in a subshell and pipe `2>&1 | tee -a "$SESSION_LOG"`.
+
+Pros:
+
+- Minimal helper code.
+
+Cons:
+
+- Subshell semantics can surprise (variable updates, traps, exit status propagation).
+- Riskier refactor for an orchestrator script.
+
+### Decision (Portability)
+
+- Choose Option E after spec `005` is COMPLETE (spec `006`).

@@ -1,7 +1,7 @@
 ## 2026-02-12 22:15:15 - Self-heal: Codex config compatibility
 - Trigger: Codex failed to parse model_reasoning_effort='xhigh'.
 - Action: Rewrote model_reasoning_effort to 'high'.
-- Backup: $HOME/.codex/config.toml.bak.20260212_221515
+- Backup: config.toml backup created alongside the original file (path redacted).
 - Outcome: Ready to retry agent loop.
 ## 2026-02-12 22:22:14 - Ready position established
 - Source map: maps/agent-source-map.yaml
@@ -200,3 +200,58 @@
   - retained fallback behavior when either CLI is unavailable
 - Result: Accepted for next cycle as spec `004` (`specs/004-lock-contention-observability/spec.md`) with phased tasks in `IMPLEMENTATION_PLAN.md`.
 - Validation status: Pending build implementation and shell-test/doctor verification.
+
+## 2026-02-13 04:06:46 - Map-guided critique: lock correctness parity before next build
+- Hypothesis: Prepare/build reliability is still materially exposed by non-atomic lock acquisition; fixing lock correctness should be prioritized before additional feature scope.
+- Evidence sampled:
+  - Codex sources: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/sdk/typescript/src/exec.ts`, `subrepos/codex/docs/exec.md`.
+  - Claude sources: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/CHANGELOG.md`.
+  - External references: `flock(1)` manual, GNU Bash docs, GNU timeout docs.
+- Anti-overfit checks applied:
+  - kept lock design engine-agnostic (no Codex/Claude-specific lock behavior)
+  - preserved engine-specific flags only at invocation boundaries
+  - retained fallback behavior when either CLI is unavailable
+- Result: Accepted. Added `specs/005-atomic-lock-acquisition/spec.md`, updated `IMPLEMENTATION_PLAN.md`, and refreshed research coverage/dependency artifacts.
+- Validation pending: implement spec `005`, pass shell tests including new concurrent lock race fixture.
+
+## 2026-02-13 04:20:00 - Map-guided critique: process substitution portability
+- Hypothesis: Ralphie reliability improves if we eliminate Bash process substitution (`>(...)`) and instead use FIFO/pipeline logging so it runs in sandboxed shells where process substitution is blocked.
+- Evidence sampled:
+  - Codex: `subrepos/codex/docs/exec.md`
+  - Claude: `subrepos/claude-code/README.md`
+- Anti-overfit checks applied:
+  - kept engine-specific behavior at invocation boundaries
+  - avoided provider-specific parsing assumptions
+  - preserved behavior when either CLI is unavailable
+- Result: Accepted for next build scope as spec `006` and captured in `IMPLEMENTATION_PLAN.md`.
+- Validation pending: implement spec `006`, then run `bash tests/ralphie_shell_tests.sh`.
+
+## 2026-02-13 04:51:16 - Prepare verification: executable evidence and plan correction
+- Hypothesis: Preparation artifacts should reflect executable evidence; prioritize correctness work that is environment-independent.
+- Evidence sampled:
+  - Local: `bash tests/ralphie_shell_tests.sh` passes end-to-end in this environment (including Claude output/log separation).
+  - Codex sources: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/sdk/typescript/src/exec.ts`.
+  - Claude sources: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/CHANGELOG.md`.
+  - External references: OpenAI Codex docs, Claude Code docs, GNU Bash manual, GNU coreutils manual, man7 pages for `flock(1)` and `mkdir(2)`.
+- Anti-overfit checks applied:
+  - kept engine-specific flags and parsing isolated to invocation boundaries
+  - kept lock correctness changes engine-agnostic
+- Result:
+  - Corrected inaccurate local claim that the shell test suite fails due to process substitution.
+  - Re-scoped `IMPLEMENTATION_PLAN.md` to spec `005` (atomic lock acquisition).
+  - Added spec `007` to prevent self-heal from introducing markdown privacy leakage.
+
+## 2026-02-13 08:54:04 - Prepare hygiene: artifact policy alignment + readiness verification
+- Hypothesis: Build-readiness confidence improves if prepare artifacts are validated against the same privacy/transcript gates enforced by `check_build_prerequisites`.
+- Evidence sampled:
+  - Local runtime: `bash tests/ralphie_shell_tests.sh` (all tests pass).
+  - Gate behavior: `check_build_prerequisites` passes on current durable artifacts.
+  - Codex sources: `subrepos/codex/codex-rs/exec/src/cli.rs`.
+  - Claude sources: `subrepos/claude-code/README.md`.
+  - External docs: OpenAI Codex non-interactive + config-reference docs; Claude Code CLI reference.
+- Anti-overfit checks applied:
+  - kept provider-specific details confined to invocation boundaries and capability probes
+  - kept prepare changes focused on neutral artifact hygiene and verification
+- Result:
+  - Removed example home-directory absolute-path strings from committed markdown artifacts.
+  - Verified build gate prerequisites succeed with the current prepare outputs.

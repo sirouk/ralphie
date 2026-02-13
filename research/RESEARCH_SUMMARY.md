@@ -2,93 +2,96 @@
 
 Date: 2026-02-13
 Mode: Prepare (Research + Plan + Spec)
-Primary target: high-confidence build-readiness for `ralphie.sh`
+Iteration: 5 (current prepare cycle)
 
-## Iteration 5
+## Repository Mapping Findings
 
-### 1) Proposed architecture and execution plan
-- Keep `ralphie.sh` as the orchestrator (no structural refactor this cycle).
-- Focus next build scope on lock-contention reliability and diagnostics.
-- Add explicit, machine-readable lock reason codes on all lock-fail exits.
-- Add lock-aware test coverage and preserve cross-engine neutrality.
+- Repository runtime is centered in a single orchestrator: `ralphie.sh`.
+- Supporting executable surfaces are limited to `scripts/setup-agent-subrepos.sh` and `tests/ralphie_shell_tests.sh`.
+- Durable planning artifacts now include:
+  - `IMPLEMENTATION_PLAN.md`
+  - `specs/`
+  - `research/` (including map/dependency/coverage docs)
+- Human queue input file `HUMAN_INSTRUCTIONS.md` is not currently present.
+- `subrepos/` is present, but in this workspace `git -C subrepos/<name>` fails due to missing submodule gitdir targets; map refresh should be treated as "best-effort" unless repaired.
 
-### 2) Self-critique
-- Existing readiness artifacts marked prior scope complete, but lock-contention diagnosis is still partially opaque.
-- Immediate lock-fail path currently exits without deterministic reason code.
-- Active external lock holder can block smoke checks and reduce confidence if not handled by a lock-aware verification protocol.
+## First-Principles Assessment
 
-### 3) Plan improvements
-- Added new spec `004` with measurable acceptance criteria for lock failure classification and diagnostics.
-- Replaced completed-plan content with a pending implementation plan scoped to spec `004`.
-- Tightened risk register around lock contention and triage-quality.
+- Two top reliability risks are now clear:
+  - Lock acquisition is not atomic (`acquire_lock` is check-then-write), so simultaneous starts can race.
+  - Bash process substitution (`>(...)`) may be blocked in restricted shells, which can break session logging and Claude output capture.
+- Verified evidence (this environment): `bash tests/ralphie_shell_tests.sh` passes end-to-end (including Claude output/log separation).
+- Verified evidence (this repo): `check_build_prerequisites` passes with current durable artifacts.
+- Additional policy-compliance risk discovered: the self-heal path (`self_heal_codex_reasoning_effort_xhigh`) appends absolute paths to `research/SELF_IMPROVEMENT_LOG.md`, which can trip the markdown privacy gate.
 
-### 4) Component research (reputable sources)
+## Architecture Proposal
 
-Local primary sources:
-- `.specify/memory/constitution.md`
-- `maps/agent-source-map.yaml`
-- `maps/binary-steering-map.yaml`
-- `ralphie.sh` (lock + gate logic)
-- `tests/ralphie_shell_tests.sh`
-- `subrepos/codex/docs/exec.md`
-- `subrepos/codex/docs/config.md`
-- `subrepos/claude-code/README.md`
-- `subrepos/claude-code/examples/settings/README.md`
-- `subrepos/claude-code/CHANGELOG.md`
+- Keep single-file orchestration (`ralphie.sh`).
+- Next build scope: atomic lock acquisition (spec `005`) with deterministic reason codes and engine-neutral behavior.
+- Follow-up scope: remove process substitution usage (spec `006`) to harden portability in restricted shells.
+- Follow-up scope: enforce markdown artifact path redaction for self-heal/self-improvement logging (spec `007`).
+- Keep engine-specific behavior isolated to invocation boundaries (`run_agent_with_prompt`, capability probes).
 
-Runtime probes (2026-02-13):
-- `codex --version`: `codex-cli 0.101.0`
-- `codex exec --help`: confirms `--output-last-message` and `--dangerously-bypass-approvals-and-sandbox`
-- `claude --version`: `2.1.7 (Claude Code)`
-- `claude --help`: confirms `-p/--print`, `--dangerously-skip-permissions`, and `--settings`
+## Self-Critique
 
-External references:
-- GNU Bash job control: https://www.gnu.org/software/bash/manual/html_node/Job-Control-Builtins.html
-- `flock(1)` reference: https://man7.org/linux/man-pages/man1/flock.1.html
-- GNU coreutils `timeout`: https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html
-- OpenAI Codex non-interactive docs: https://developers.openai.com/codex/noninteractive
-- OpenAI Codex config reference: https://developers.openai.com/codex/config-reference
-- Claude Code settings docs: https://code.claude.com/docs/en/settings
+- Prior artifacts treated spec `003` as COMPLETE, but did not account for environments where Bash process substitution is disallowed.
+- Earlier prioritization of spec `006` assumed a local test failure that was not reproduced; ordering is updated to reflect verified test results.
+- YAML fallback-order parsing in `mode_fallback_order` is string-based and brittle; this remains a medium risk.
+- `flock` is not guaranteed to exist (it is absent in this environment), so spec `005` must include a portable atomic fallback backend.
 
-### 5) Fallback handling when verification is blocked
-- Web and local research were available this iteration.
-- End-to-end lock-isolated prepare smoke remains de-prioritized until lock diagnostics are hardened.
-- Active lock evidence captured directly from repository runtime state:
-  - lock file: `.ralphie/run.lock`
-  - pid: `87111`
-  - holder command: `bash ./ralphie.sh prepare --max 1 --engine codex --timeout 180 --wait-for-lock 30 --build-approval on_ready --prompt .ralphie/PROMPT_prepare_once.md`
+## Plan Improvements Applied
 
-### 6) Map-guided critique (required)
+- Updated `IMPLEMENTATION_PLAN.md` to scope the next build cycle to spec `005`.
+- Added new incomplete spec: `specs/007-self-improvement-log-redaction/spec.md` (policy guard: no absolute paths/local identity in markdown artifacts).
+- Refined the spec `005` approach notes with a concrete atomic fallback strategy (temp-file metadata + atomic publish via `link(2)`/`ln`) and `flock` truncation hazards.
+- Expanded `research/DEPENDENCY_RESEARCH.md` with primary references for atomic lock primitives and Bash redirection semantics.
+- Re-validated `bash tests/ralphie_shell_tests.sh` passes in this environment to ground planning claims in executable evidence.
+- Removed example home-directory absolute-path strings from markdown artifacts to align with the project output policy (avoid absolute workstation paths in committed docs).
+
+## External Research Per Major Dependency/Module
+
+Dependency-by-dependency primary references are listed in `research/DEPENDENCY_RESEARCH.md`.
+Key external docs for Codex/Claude/Bash/coreutils/man-pages were re-validated for availability on 2026-02-13; local subrepo sources remain the strongest evidence for flag/behavior alignment.
+
+## Map-Guided Critique (Required)
 
 Source map active: `maps/agent-source-map.yaml`
+Binary steering map active: `maps/binary-steering-map.yaml`
 
-Focused critique target: `ralphie.sh` parity and reliability.
+Evidence sampled from both source families:
 
-Evidence sampled from both families:
-- Codex: `subrepos/codex/docs/exec.md`, `subrepos/codex/docs/config.md`, runtime `codex exec --help`
-- Claude: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, runtime `claude --help`
+- Codex:
+  - `subrepos/codex/codex-rs/exec/src/cli.rs`
+  - `subrepos/codex/sdk/typescript/src/exec.ts`
+  - `subrepos/codex/docs/exec.md`
+- Claude:
+  - `subrepos/claude-code/README.md`
+  - `subrepos/claude-code/examples/settings/README.md`
+  - `subrepos/claude-code/CHANGELOG.md`
 
-Anti-overfit rules applied before tool-specific recommendations:
-- No provider-specific output assumptions.
-- Engine-specific flags remain isolated to invocation boundaries.
-- Behavior remains stable when either CLI is unavailable.
-- Capability probes stay runtime-based (no hard version pinning).
+Anti-overfit rules applied:
 
-Result:
-- Accepted Option A (in-place lock hardening) and created spec `004` + implementation plan tasks.
+- No provider-specific parsing assumptions were added.
+- Engine-specific flags remain isolated to runtime invocation boundaries.
+- Fallback behavior remains required when either CLI is unavailable.
 
-### 7) Confidence by component
-- Constitution and mode compliance: 99
-- Cross-engine invocation parity: 95
-- Output contract and build gate integrity: 93
-- Lock-contention observability: 80
-- End-to-end build-readiness for next implementation cycle: 91
+Decision: prioritize lock correctness (spec `005`) next; keep portability hardening (spec `006`) queued after correctness is proven.
 
-## Readiness judgment
-Preparation is complete for the next build cycle. Scope is bounded, testable, and aligned with map anti-overfit constraints.
+## Confidence By Component
 
-<confidence>91</confidence>
+- Constitution and policy compliance: 99
+- Codebase surface mapping completeness: 96
+- External dependency verification quality: 94
+- Cross-engine parity posture: 95
+- Lock correctness readiness (after planning, before implementation): 78
+- Process-substitution portability readiness (after planning, before implementation): 70
+- Self-improvement log privacy readiness (after planning, before implementation): 62
+- Overall build-readiness confidence: 87
+
+## Readiness Judgment
+
+Preparation is complete for a bounded implementation cycle focused on atomic lock acquisition (correctness), with portability and markdown privacy hardening queued next.
+
+<confidence>87</confidence>
 <needs_human>false</needs_human>
 <human_question></human_question>
-<phase>PLAN_READY</phase>
-<promise>DONE</promise>
