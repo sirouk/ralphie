@@ -183,6 +183,15 @@ test_effective_lock_wait_seconds() {
     NORMAL_WAIT="$old_normal_wait"
 }
 
+test_prompt_yes_no_eof_defaults() {
+    local result
+    result="$(prompt_yes_no "EOF defaults to yes" "y" </dev/null)"
+    assert_eq "true" "$result" "prompt_yes_no returns true on EOF with yes default"
+
+    result="$(prompt_yes_no "EOF defaults to no" "n" </dev/null)"
+    assert_eq "false" "$result" "prompt_yes_no returns false on EOF with no default"
+}
+
 test_interrupt_handler_non_interactive_path() {
     local old_non_interactive old_interrupt_menu old_lock_file old_config_dir
     old_non_interactive="$NON_INTERACTIVE"
@@ -938,6 +947,7 @@ main() {
     test_completion_signal_detection
     test_fallback_engine_selection
     test_effective_lock_wait_seconds
+    test_prompt_yes_no_eof_defaults
     test_interrupt_handler_non_interactive_path
     test_prompt_file_mapping
     test_stream_install_bootstrap

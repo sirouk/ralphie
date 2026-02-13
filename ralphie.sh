@@ -754,8 +754,16 @@ prompt_yes_no() {
     local default="$2"
     local answer normalized
 
+    case "$(to_lower "$default")" in
+        y|yes|true|1|on) default="y" ;;
+        *) default="n" ;;
+    esac
+
     while true; do
-        read -r -p "$prompt [y/n] ($default): " answer
+        if ! read -r -p "$prompt [y/n] ($default): " answer; then
+            printf '\n' >&2
+            answer="$default"
+        fi
         answer="${answer:-$default}"
         normalized="$(to_lower "$answer")"
         case "$normalized" in
@@ -1773,8 +1781,11 @@ EOF
         added_count=$((added_count + 1))
 
         while true; do
-            read -r -p "Add another request? [y/n]: " add_more
-            case "$(to_lower "${add_more:-}")" in
+            if ! read -r -p "Add another request? [y/n] (n): " add_more; then
+                printf '\n' >&2
+                add_more="n"
+            fi
+            case "$(to_lower "${add_more:-n}")" in
                 y|yes) break ;;
                 n|no)
                     ok "Captured $added_count human request(s): $HUMAN_INSTRUCTIONS_REL"
@@ -2516,8 +2527,11 @@ secure_build_approval_upfront() {
 
     local answer
     while true; do
-        read -r -p "Secure build approval now? Auto-enter build if prepare passes [y/n]: " answer
-        case "$(to_lower "${answer:-}")" in
+        if ! read -r -p "Secure build approval now? Auto-enter build if prepare passes [y/n] (n): " answer; then
+            printf '\n' >&2
+            answer="n"
+        fi
+        case "$(to_lower "${answer:-n}")" in
             y|yes)
                 AUTO_CONTINUE_BUILD=true
                 ok "Upfront approval captured. Build will auto-start after prepare consensus."
@@ -2552,8 +2566,11 @@ request_build_permission() {
 
     local answer
     while true; do
-        read -r -p "Preparation is complete. Begin build mode now? [y/n]: " answer
-        case "$(to_lower "${answer:-}")" in
+        if ! read -r -p "Preparation is complete. Begin build mode now? [y/n] (n): " answer; then
+            printf '\n' >&2
+            answer="n"
+        fi
+        case "$(to_lower "${answer:-n}")" in
             y|yes) return 0 ;;
             n|no)
                 log_reason_code "RB_PREPARE_BUILD_APPROVAL_DECLINED" "human declined build transition"
@@ -2969,8 +2986,11 @@ enforce_build_gate() {
 
     local answer
     while true; do
-        read -r -p "Consensus is low. Proceed anyway? [y/n]: " answer
-        case "$(to_lower "${answer:-}")" in
+        if ! read -r -p "Consensus is low. Proceed anyway? [y/n] (n): " answer; then
+            printf '\n' >&2
+            answer="n"
+        fi
+        case "$(to_lower "${answer:-n}")" in
             y|yes) return 0 ;;
             n|no) return 1 ;;
             *) echo "Please answer y or n." ;;
