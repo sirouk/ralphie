@@ -25,15 +25,17 @@ Date: 2026-02-13
 
 4. Human queue + notification paths have limited test coverage.
 - Severity: Medium
-- Evidence: no dedicated fixtures for `capture_human_priorities` and external notify channel behavior.
-- Mitigation: add bounded fixtures for queue parsing and notification dispatch failures.
-- Validation: shell tests for `Status: NEW` parsing and notify channel fallback behavior.
+- Evidence (prior): limited fixtures for `capture_human_priorities` and external notify channel behavior.
+- Mitigation: add bounded fixtures for queue parsing and notification dispatch failures (specs `008` and `009`).
+- Validation: shell tests cover `Status: NEW` parsing, prompt injection, non-interactive capture reason code, and notify channel failure modes without leaking secrets.
+- Status: Mitigated (specs `008` and `009` COMPLETE; shell tests cover the contract).
 
 5. Subrepo setup and map refresh script is integration-heavy and lightly tested.
 - Severity: Medium
-- Evidence: `scripts/setup-agent-subrepos.sh` performs git/network operations and map generation without current automated tests in this repo. In this workspace, `subrepos/*` appear present but `git -C subrepos/<name>` fails due to missing submodule gitdir targets, which is a realistic "partially-initialized submodule" failure mode the script should handle.
-- Mitigation: add dry-run/smoke checks with mocked git commands or scoped integration harness.
-- Validation: deterministic script tests in isolated temp repos.
+- Evidence (prior): `scripts/setup-agent-subrepos.sh` performed git/network operations and map generation without automated regression coverage in this repo.
+- Mitigation: add a deterministic harness using mocked `git` in `PATH` and implement partial-init repair behavior (spec `010`).
+- Validation: shell tests run the setup script in an isolated temp repo, repair partial-init `.git` file states, and assert map output stays repo-relative.
+- Status: Mitigated (spec `010` COMPLETE; deterministic harness added).
 
 6. Bash process substitution is blocked in some sandboxed shells, breaking core execution paths.
 - Severity: High
@@ -51,4 +53,4 @@ Date: 2026-02-13
 
 ## Residual Risk
 
-After closing specs `005`-`007`, the largest remaining risks are medium-severity: setup-script integration coverage, human-queue/notification fixtures, YAML fallback-order parsing brittleness, and ongoing CLI capability drift.
+After closing specs `005`-`010`, the largest remaining risks are medium-severity: YAML fallback-order parsing brittleness, ongoing CLI capability drift, and limited focused coverage for prompt artifact generation policy (`S10`).

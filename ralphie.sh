@@ -2914,12 +2914,9 @@ json_escape() {
 notify_human() {
     local title="$1"
     local body="${2:-}"
+    local raw_channel="${HUMAN_NOTIFY_CHANNEL:-terminal}"
     local channel
-    channel="$(to_lower "$HUMAN_NOTIFY_CHANNEL")"
-    local message="[$PROJECT_NAME][$MODE] $title"
-    if [ -n "$body" ]; then
-        message="${message}\n${body}"
-    fi
+    channel="$(to_lower "$raw_channel")"
 
     case "$channel" in
         none)
@@ -2932,42 +2929,54 @@ notify_human() {
             ;;
         telegram)
             if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-                warn "Telegram notify selected, but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are missing."
+                warn "Telegram notify selected, but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are missing"
                 return 1
             fi
             if ! command -v curl >/dev/null 2>&1; then
-                warn "curl is required for Telegram notifications."
+                warn "curl is required for Telegram notifications"
                 return 1
+            fi
+            local project_name="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+            local mode_name="${MODE:-unknown}"
+            local message="[$project_name][$mode_name] $title"
+            if [ -n "$body" ]; then
+                message="${message}\n${body}"
             fi
             if ! curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
                 --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
                 --data-urlencode "text=${message}" >/dev/null 2>&1; then
-                warn "Failed to send Telegram notification."
+                warn "Failed to send Telegram notification"
                 return 1
             fi
             return 0
             ;;
         discord)
             if [ -z "$DISCORD_WEBHOOK_URL" ]; then
-                warn "Discord notify selected, but DISCORD_WEBHOOK_URL is missing."
+                warn "Discord notify selected, but DISCORD_WEBHOOK_URL is missing"
                 return 1
             fi
             if ! command -v curl >/dev/null 2>&1; then
-                warn "curl is required for Discord notifications."
+                warn "curl is required for Discord notifications"
                 return 1
+            fi
+            local project_name="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+            local mode_name="${MODE:-unknown}"
+            local message="[$project_name][$mode_name] $title"
+            if [ -n "$body" ]; then
+                message="${message}\n${body}"
             fi
             local payload
             payload="$(json_escape "$message")"
             if ! curl -fsS -X POST "$DISCORD_WEBHOOK_URL" \
                 -H 'Content-Type: application/json' \
                 -d "{\"content\":\"${payload}\"}" >/dev/null 2>&1; then
-                warn "Failed to send Discord notification."
+                warn "Failed to send Discord notification"
                 return 1
             fi
             return 0
             ;;
         *)
-            warn "Unknown HUMAN_NOTIFY_CHANNEL: $HUMAN_NOTIFY_CHANNEL"
+            warn "Unknown HUMAN_NOTIFY_CHANNEL: $raw_channel"
             return 1
             ;;
     esac

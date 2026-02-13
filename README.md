@@ -222,6 +222,10 @@ Current behavior:
 
 Use this when you want maximum autonomy (`--yolo`), but you still want phase advancement to be strictly consensus-gated.
 
+Notes:
+- `--yolo` controls the *agent* permission model (Ralphie passes “dangerous bypass” flags to Codex/Claude when supported). It does **not** make Ralphie non-interactive by itself.
+- `--non-interactive` controls *Ralphie’s* UI: no prompts, no `Ctrl+C` interrupt menu, and no interactive `--engine ask` selection. It does **not** enable YOLO by itself.
+
 Strict (no prompts; won’t advance phases unless consensus passes):
 
 ```bash

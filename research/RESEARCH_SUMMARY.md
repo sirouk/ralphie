@@ -2,7 +2,7 @@
 
 Date: 2026-02-13
 Mode: Prepare (Research + Plan + Spec)
-Iteration: 6 (current prepare cycle)
+Iteration: 7 (current prepare cycle)
 
 ## Repository Mapping Findings
 
@@ -12,8 +12,12 @@ Iteration: 6 (current prepare cycle)
   - `IMPLEMENTATION_PLAN.md`
   - `specs/`
   - `research/` (including map/dependency/coverage docs)
+- Medium-gap specs are now explicitly captured and implemented with regression coverage:
+  - `specs/008-human-queue-ingestion/spec.md`
+  - `specs/009-notification-channels/spec.md`
+  - `specs/010-setup-agent-subrepos-refresh/spec.md`
 - Human queue input file `HUMAN_INSTRUCTIONS.md` is not currently present.
-- `subrepos/` is present, but in this workspace `subrepos/*` are not valid git work trees (`git -C subrepos/<name>` fails). Treat subrepo content as a source snapshot unless repaired via setup flows.
+- `subrepos/*` may be partially initialized (broken `.git` file pointers); `scripts/setup-agent-subrepos.sh` now treats this as a repairable state.
 
 ## First-Principles Assessment
 
@@ -29,12 +33,12 @@ Iteration: 6 (current prepare cycle)
 
 - Keep single-file orchestration (`ralphie.sh`).
 - Keep engine-specific behavior isolated to invocation boundaries (`run_agent_with_prompt`, capability probes).
-- Next scope after clearing build-gate blockers: close medium gaps in `research/COVERAGE_MATRIX.md` (setup-script integration harness, human queue + notification fixtures, prompt-generation policy fixtures).
+- Next scope after closing medium gaps in `research/COVERAGE_MATRIX.md`: improve prompt-generation policy fixtures (`S10`) and harden YAML parsing brittleness.
 
 ## Self-Critique
 
 - The initial atomic-lock implementation had a correctness bug in `try_acquire_lock_atomic`: capturing `$?` after an `if ...; then ...; fi` can yield `0` even when the acquisition attempt failed in Bash 3.2. This could incorrectly allow multiple active runners. The fix now captures return codes in the `else` branch and is regression-tested.
-- Subrepo evidence remains snapshot-based in this workspace because `subrepos/*` are not valid git work trees; avoid overfitting to assumed submodule behaviors without repairing setup/update flows.
+- Subrepo states can be partially initialized; tests and setup repair logic now exist, but avoid overfitting to one provider's repo layout or branch conventions.
 - YAML fallback-order parsing in `mode_fallback_order` remains string-based and brittle (medium risk).
 
 ## External Research Per Major Dependency/Module
@@ -68,19 +72,18 @@ Decision: with build-gate blockers closed, prioritize medium-gap test coverage a
 ## Confidence By Component
 
 - Constitution and policy compliance: 99
-- Codebase surface mapping completeness: 96
-- External dependency verification quality: 94
+- Codebase surface mapping completeness: 97
+- External dependency verification quality: 95
 - Cross-engine parity posture: 95
 - Lock correctness readiness: 95
 - Process-substitution portability readiness: 90
 - Self-improvement log privacy readiness: 95
-- Overall build-readiness confidence: 93
+- Overall build-readiness confidence: 94
 
 ## Readiness Judgment
 
 Build-gate blockers noted in `consensus/build-gate_20260213_103835_consensus.md` are closed and verified by the shell test suite; remaining gaps are medium-severity and tracked in `research/COVERAGE_MATRIX.md`.
 
-<confidence>93</confidence>
+<confidence>94</confidence>
 <needs_human>false</needs_human>
 <human_question></human_question>
-

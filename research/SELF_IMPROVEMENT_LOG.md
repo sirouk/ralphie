@@ -198,6 +198,16 @@
   - no provider-specific parsing assumptions
   - engine-specific behavior restricted to invocation flags only
   - retained fallback behavior when either CLI is unavailable
+
+## 2026-02-13 12:25:42 - Map-guided critique: medium-gap closure planning
+- Hypothesis: Build readiness improves if remaining medium-gap runtime surfaces have explicit specs and deterministic offline tests, without introducing provider-specific behavior outside invocation boundaries.
+- Evidence sampled (Codex): `subrepos/codex/docs/exec.md`, `subrepos/codex/docs/config.md`.
+- Evidence sampled (Claude): `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`.
+- Anti-overfit check: avoid relying on any single CLI output format.
+- Anti-overfit check: keep engine-specific behavior constrained to invocation boundaries and runtime capability probes.
+- Anti-overfit check: preserve stable fallback behavior when either CLI is missing.
+- Result: drafted specs `008`-`010` (human queue ingestion, notifications, setup-agent-subrepos refresh/repair) and updated `research/COVERAGE_MATRIX.md`.
+- Validation next: implement tests for specs `008` and `009` (mock `curl`, no-network) and add a deterministic harness for spec `010` (mocked `git` or `--dry-run`).
 - Result: Accepted for next cycle as spec `004` (`specs/004-lock-contention-observability/spec.md`) with phased tasks in `IMPLEMENTATION_PLAN.md`.
 - Validation status: Pending build implementation and shell-test/doctor verification.
 
