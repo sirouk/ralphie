@@ -1,0 +1,202 @@
+## 2026-02-12 22:15:15 - Self-heal: Codex config compatibility
+- Trigger: Codex failed to parse model_reasoning_effort='xhigh'.
+- Action: Rewrote model_reasoning_effort to 'high'.
+- Backup: $HOME/.codex/config.toml.bak.20260212_221515
+- Outcome: Ready to retry agent loop.
+## 2026-02-12 22:22:14 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:23:50 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:26:05 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:26:47 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:27:43 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:28:54 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:30:32 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:36:22 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:41:59 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-12 22:42:50 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+## 2026-02-13 00:00:00 - Map-guided critique: parity and reliability planning
+- Hypothesis: Build readiness improves if engine capability probes and semantic artifact gates are added before execution.
+- Evidence sampled:
+  - Codex: `subrepos/codex/docs/exec.md`, runtime `codex exec --help`.
+  - Claude: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, runtime `claude --help`.
+- Anti-overfit checks applied:
+  - avoided single-provider output assumptions
+  - required paired parity/fallback tasks
+  - preserved behavior when either CLI is missing
+- Result: Accepted for implementation planning; queued tasks in `IMPLEMENTATION_PLAN.md` and `specs/002-gate-and-parity-hardening/spec.md`.
+- Validation pending: execute shell tests for both `--engine codex` and `--engine claude` paths after implementation.
+
+
+## 2026-02-13 00:00:00 - Map-guided hardening: capability probes + consensus threshold
+- Hypothesis: Enforcing runtime CLI capability probes, reviewer-failure consensus invalidation, and machine-readable reason codes will reduce false GO decisions and improve deterministic recovery.
+- Evidence sampled:
+  - Codex sources: `subrepos/codex/docs/exec.md`, runtime `codex exec --help`.
+  - Claude sources: `subrepos/claude-code/README.md`, runtime `claude --help`.
+- Changes accepted:
+  - Added capability probes for required/optional Codex and Claude flags.
+  - Added reviewer-failure threshold (`CONSENSUS_MAX_REVIEWER_FAILURES`) that invalidates consensus when exceeded.
+  - Added deterministic `reason_code=...` log lines for gate and loop failures.
+  - Added shell tests in `tests/ralphie_shell_tests.sh` for parsing, failover, and gate behavior.
+- Result:
+  - `bash tests/ralphie_shell_tests.sh` passes.
+  - Specs `000`, `001`, and `002` marked COMPLETE after implementation + test verification.
+- Anti-overfit checks:
+  - Capability checks are runtime-based, not version-hardcoded.
+  - Dangerous flags are optional and safely omitted when unsupported.
+  - Cross-engine fallback remains in place (`codex <-> claude`).
+## 2026-02-12 23:06:06 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+
+## 2026-02-12 23:08:22 - Map-guided critique: concurrency + gate semantics + output contract
+- Hypothesis: Build readiness confidence will improve if consensus parallelism is truly bounded, plan gating is semantic (not checkbox-count based), and Claude output capture is less brittle.
+- Evidence sampled:
+  - Codex: `subrepos/codex/codex-rs/exec/src/cli.rs` and runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/examples/settings/settings-strict.json`, and runtime `claude --help` (`2.1.7`).
+- Anti-overfit checks applied:
+  - kept engine-specific behavior at invocation boundary only
+  - required parity validation for codex and claude smoke paths
+  - avoided version-pinned assumptions; relied on runtime probes
+- Result: Accepted as next implementation scope and captured in `IMPLEMENTATION_PLAN.md` and `specs/003-consensus-concurrency-and-output-contract/spec.md`.
+- Validation status: Pending implementation + test execution in next build cycle.
+
+## 2026-02-13 00:00:00 - Map-guided critique: plan gate semantics and output-contract parity
+- Hypothesis: Prepare/build reliability will increase if plan gating becomes semantic and output parsing no longer depends on mixed log/output streams.
+- Evidence sampled:
+  - Codex: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/codex-rs/README.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/examples/settings/settings-strict.json`, runtime `claude --help` (`2.1.7`), and `subrepos/claude-code/CHANGELOG.md` (`-p` mode fixes).
+- Anti-overfit checks applied:
+  - retained neutral orchestration and engine-agnostic gate semantics
+  - confined engine-specific behavior to invocation boundaries
+  - required parity test additions for any parser/output-contract change
+- Result: Accepted for next build cycle; tasks updated in `IMPLEMENTATION_PLAN.md` and specs refreshed for testable scope.
+- Additional note: `maps/agent-source-map.yaml` references `subrepos/claude-code/docs/`, but that path is absent in pinned revision `2322133`; fallback evidence sources were used and uncertainty was documented in research artifacts.
+## 2026-02-13 23:20:00 - Map-guided critique: semantic gate + output-contract parity
+- Hypothesis: Build-readiness confidence will improve if prerequisite gating is semantic and output parsing is decoupled from provider-specific stream behavior.
+- Evidence sampled:
+  - Codex: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/codex-rs/README.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/examples/settings/settings-strict.json`, `subrepos/claude-code/CHANGELOG.md`, runtime `claude --help` (`2.1.7`).
+- Anti-overfit rules applied:
+  - preserved neutral orchestration and fallback behavior when either CLI is absent
+  - confined engine-specific behavior to invocation boundary
+  - avoided assumptions tied to one provider's output style
+- Result: Accepted for build-phase implementation. Updated artifacts: `research/RESEARCH_SUMMARY.md`, `research/ARCHITECTURE_OPTIONS.md`, `research/RISKS_AND_MITIGATIONS.md`, `IMPLEMENTATION_PLAN.md`, `specs/003-consensus-concurrency-and-output-contract/spec.md`.
+- Validation pending: implement code changes and pass shell tests plus dual-engine prepare smoke checks.
+
+## 2026-02-13 23:35:00 - Map-guided critique: build-gate semantics + output parsing reliability
+- Hypothesis: Build readiness confidence will increase if plan prerequisites become semantic and tag parsing supports deterministic fallback files.
+- Evidence sampled:
+  - Codex: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/codex-rs/README.md`, `subrepos/codex/sdk/typescript/src/exec.ts`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/examples/settings/settings-strict.json`, `subrepos/claude-code/CHANGELOG.md`, runtime `claude --help` (`2.1.7`).
+- Anti-overfit checks applied:
+  - preserved neutral orchestration and engine fallback behavior
+  - kept provider-specific behavior isolated to invocation flags
+  - avoided version-pinned assumptions; relied on runtime capability probes
+- Result: Accepted for next build cycle. Updated artifacts: `research/RESEARCH_SUMMARY.md`, `research/ARCHITECTURE_OPTIONS.md`, `research/RISKS_AND_MITIGATIONS.md`, `IMPLEMENTATION_PLAN.md`, `specs/003-consensus-concurrency-and-output-contract/spec.md`.
+- Validation pending: complete spec 003 tasks and pass dual-engine smoke checks.
+
+## 2026-02-13 23:55:00 - Map-guided critique: gate semantics + output-contract reliability
+- Hypothesis: Build-readiness confidence improves when plan gating is semantic and tag extraction supports ordered fallback files.
+- Evidence sampled:
+  - Codex: `subrepos/codex/docs/exec.md`, `subrepos/codex/docs/config.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/CHANGELOG.md`, runtime `claude --help` (`2.1.7`).
+- Anti-overfit checks applied:
+  - preserved neutral orchestration and fallback behavior when either CLI is unavailable
+  - isolated provider-specific behavior to invocation flags and capability probes
+  - required parity validation tasks for both codex and claude paths
+- Result: Accepted and incorporated into `IMPLEMENTATION_PLAN.md`, `research/RISKS_AND_MITIGATIONS.md`, and `specs/003-consensus-concurrency-and-output-contract/spec.md`.
+- Validation status: Pending build-phase implementation and dual-engine prepare smoke checks.
+
+## 2026-02-13 23:59:00 - Map-guided critique: parity and reliability before build
+- Hypothesis: Build success probability increases if gate semantics, output parsing fallback, and Claude output artifact handling are hardened before implementation.
+- Evidence sampled:
+  - Codex: `subrepos/codex/docs/exec.md`, `subrepos/codex/docs/config.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, runtime `claude --help` (`2.1.7`).
+- Anti-overfit rules applied:
+  - preserved neutral orchestration and fallback behavior with either CLI missing
+  - kept engine-specific details at invocation boundaries only
+  - avoided version-pinned assumptions; relied on runtime capability probes
+- Result: Accepted. Updated `research/RESEARCH_SUMMARY.md`, `research/ARCHITECTURE_OPTIONS.md`, `research/RISKS_AND_MITIGATIONS.md`, `IMPLEMENTATION_PLAN.md`, and `specs/003-consensus-concurrency-and-output-contract/spec.md`.
+- Validation next: implement spec `003`, run shell tests, then dual-engine one-iteration prepare smokes.
+## 2026-02-12 23:35:48 - Ready position established
+- Source map: maps/agent-source-map.yaml
+- Binary steering map: maps/binary-steering-map.yaml
+- Runtime artifacts: archived + reset
+- Prompts: refreshed
+- Specs: self-improvement seed ensured
+
+
+## 2026-02-13 00:25:00 - Map-guided critique: lock contention parity and reliability
+- Hypothesis: Build-readiness confidence increases if lock-contention failures are machine-classified and diagnostically rich while preserving neutral cross-engine behavior.
+- Evidence sampled:
+  - Codex: `subrepos/codex/docs/exec.md`, `subrepos/codex/docs/config.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
+  - Claude: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, runtime `claude --help` (`2.1.7`).
+- Anti-overfit checks applied:
+  - no provider-specific parsing assumptions
+  - engine-specific behavior restricted to invocation flags only
+  - retained fallback behavior when either CLI is unavailable
+- Result: Accepted for next cycle as spec `004` (`specs/004-lock-contention-observability/spec.md`) with phased tasks in `IMPLEMENTATION_PLAN.md`.
+- Validation status: Pending build implementation and shell-test/doctor verification.

@@ -1,0 +1,43 @@
+# macos
+.DS_Store
+
+# editor state
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# local env/config
+.env
+.env.*
+
+# ralphie runtime artifacts
+logs/
+consensus/
+completion_log/
+.ralphie/
+
+# human runtime inputs
+HUMAN_INSTRUCTIONS.md
+research/HUMAN_FEEDBACK.md
+
+# coverage and local reports
+coverage/
+coverage-*/
+.nyc_output/
+htmlcov/
+.coverage
+.coverage.*
+*.lcov
+*.profraw
+*.profdata
+
+# local tool state
+*.tmp
+
+# local history backups from reset operations
+.git_backup_*/
+.gitmodules_backup_*
+
+# local source mirrors managed by setup script
+subrepos/

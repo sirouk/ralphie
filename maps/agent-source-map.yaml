@@ -1,0 +1,62 @@
+version: 1
+generated_at_utc: "2026-02-13T04:35:47Z"
+intent: "Guide LLM-led improvements to ralphie.sh using Codex and Claude Code sources without overfitting."
+monorepo:
+  root: "."
+  subrepo_mode: "submodule"
+  steering_map_file: "maps/binary-steering-map.yaml"
+  subrepos:
+    - id: "codex"
+      provider: "openai"
+      remote: "https://github.com/openai/codex.git"
+      local_path: "subrepos/codex"
+      branch: "main"
+      revision: "abeafbdca17f6102099ac5b792761b6883c52d35"
+      key_paths:
+        - "AGENTS.md"
+        - "README.md"
+        - "codex-cli/"
+        - "codex-rs/"
+        - "docs/"
+    - id: "claude-code"
+      provider: "anthropic"
+      remote: "https://github.com/anthropics/claude-code.git"
+      local_path: "subrepos/claude-code"
+      branch: "main"
+      revision: "232213304d3e1e936262b8596c6764f46798fd83"
+      key_paths:
+        - "README.md"
+        - "CLAUDE.md"
+        - "scripts/"
+        - "sdk/"
+        - "docs/"
+self_improvement_target:
+  file: "ralphie.sh"
+  objective: "Improve orchestration quality, reliability, and portability across Codex and Claude workflows."
+heuristic_tools:
+  scoring_dimensions:
+    - id: "cross_engine_parity"
+      weight: 0.35
+      rule: "Prefer abstractions that benefit both engines; isolate engine-specific behavior behind explicit checks."
+    - id: "reliability_and_recovery"
+      weight: 0.25
+      rule: "Improve retries, timeout handling, lock safety, and deterministic fallbacks."
+    - id: "observability"
+      weight: 0.20
+      rule: "Improve logs, diagnostics, and decision traceability."
+    - id: "prompt_quality"
+      weight: 0.20
+      rule: "Strengthen prompts with clear completion signals, bounded loops, and explicit acceptance criteria."
+  anti_overfit_rules:
+    - "Do not optimize for one provider output format alone."
+    - "Require evidence from both subrepos before adopting tool-specific patterns."
+    - "Keep behavior stable when either CLI is unavailable."
+    - "Prefer capability checks and neutral interfaces over vendor-specific assumptions."
+  iteration_policy:
+    self_improvement_budget_fraction: 0.25
+    boost_budget_fraction: 0.50
+    boost_when:
+      - "Prepare confidence stalls for at least 3 loops."
+      - "Consensus score is below threshold."
+      - "Three consecutive failed or incomplete iterations occur."
+    required_artifact: "research/SELF_IMPROVEMENT_LOG.md"
