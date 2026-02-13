@@ -117,6 +117,9 @@ INTERRUPT_MENU_ENABLED="${INTERRUPT_MENU_ENABLED:-true}"
 SWARM_ENABLED=true
 SWARM_SIZE="${SWARM_SIZE:-3}"
 SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
+# If a reviewer doesn't follow the required <score>/<verdict> tag format, retry them.
+# This avoids silently treating malformed output as score=0.
+SWARM_RETRY_INVALID_OUTPUT="${SWARM_RETRY_INVALID_OUTPUT:-1}"
 MIN_CONSENSUS_SCORE="${MIN_CONSENSUS_SCORE:-80}"
 CONSENSUS_MAX_REVIEWER_FAILURES="${CONSENSUS_MAX_REVIEWER_FAILURES:-0}"
 CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
@@ -213,6 +216,7 @@ Options:
   --no-interrupt-menu               On Ctrl+C, exit immediately (disable resume/human-instruction submenu)
   --swarm-size N                     Number of panel reviewers for consensus
   --swarm-max-parallel N             Max concurrent panel reviewers
+  --swarm-retry-invalid N            Retry malformed reviewer output N times (default: 1; 0 disables)
   --min-consensus N                  Minimum consensus score (0-100)
   --max-reviewer-failures N          Maximum failed reviewer runs allowed in consensus
   --no-swarm                         Disable panel/swarm consensus reviews
@@ -1412,6 +1416,7 @@ save_config() {
         printf "SWARM_ENABLED=%q\n" "$SWARM_ENABLED"
         printf "SWARM_SIZE=%q\n" "$SWARM_SIZE"
         printf "SWARM_MAX_PARALLEL=%q\n" "$SWARM_MAX_PARALLEL"
+        printf "SWARM_RETRY_INVALID_OUTPUT=%q\n" "$SWARM_RETRY_INVALID_OUTPUT"
         printf "MIN_CONSENSUS_SCORE=%q\n" "$MIN_CONSENSUS_SCORE"
         printf "CONSENSUS_MAX_REVIEWER_FAILURES=%q\n" "$CONSENSUS_MAX_REVIEWER_FAILURES"
         printf "CONFIDENCE_TARGET=%q\n" "$CONFIDENCE_TARGET"
@@ -1454,6 +1459,7 @@ load_config() {
     SWARM_ENABLED="${SWARM_ENABLED:-true}"
     SWARM_SIZE="${SWARM_SIZE:-3}"
     SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
+    SWARM_RETRY_INVALID_OUTPUT="${SWARM_RETRY_INVALID_OUTPUT:-1}"
     MIN_CONSENSUS_SCORE="${MIN_CONSENSUS_SCORE:-80}"
     CONSENSUS_MAX_REVIEWER_FAILURES="${CONSENSUS_MAX_REVIEWER_FAILURES:-0}"
     CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
@@ -2788,6 +2794,33 @@ extract_reviewer_verdict() {
     esac
 }
 
+reviewer_output_has_required_tags() {
+    # Consensus reviewers are required to emit structured tags so scoring is stable.
+    # Without this check, malformed output is treated as score=0 and can distort consensus.
+    local output_file="$1"
+    local score verdict promise
+
+    score="$(extract_tag_value "score" "$output_file")"
+    verdict="$(to_lower "$(extract_tag_value "verdict" "$output_file")")"
+    promise="$(to_lower "$(extract_tag_value "promise" "$output_file")")"
+
+    if ! is_number "$score"; then
+        return 1
+    fi
+    if [ "$score" -lt 0 ] || [ "$score" -gt 100 ]; then
+        return 1
+    fi
+
+    if [ "$promise" != "done" ]; then
+        return 1
+    fi
+
+    case "$verdict" in
+        go|hold|pass|ready|block|stop|no) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 run_agent_with_prompt() {
     local prompt_file="$1"
     local log_file="$2"
@@ -3334,6 +3367,7 @@ run_swarm_consensus() {
     local yolo_effective="$2"
     local swarm_size="${SWARM_SIZE:-1}"
     local swarm_parallel="${SWARM_MAX_PARALLEL:-1}"
+    local retry_invalid="${SWARM_RETRY_INVALID_OUTPUT:-0}"
     local ts
     ts="$(date '+%Y%m%d_%H%M%S')"
 
@@ -3357,6 +3391,12 @@ run_swarm_consensus() {
     fi
     if [ "$swarm_parallel" -gt "$swarm_size" ]; then
         swarm_parallel="$swarm_size"
+    fi
+    if ! is_number "$retry_invalid"; then
+        retry_invalid=0
+    fi
+    if [ "$retry_invalid" -lt 0 ]; then
+        retry_invalid=0
     fi
 
     mkdir -p "$CONSENSUS_DIR"
@@ -3396,14 +3436,54 @@ run_swarm_consensus() {
         i=$((i + 1))
     done
 
-    local panel_failures=0
     local max_reviewer_failures="${CONSENSUS_MAX_REVIEWER_FAILURES:-0}"
     if ! is_number "$max_reviewer_failures"; then
         max_reviewer_failures=0
     fi
-    local pid
-    for pid in "${pids[@]}"; do
-        if ! wait "$pid"; then
+    local -a reviewer_exit_ok=()
+    local idx pid
+    for idx in "${!pids[@]}"; do
+        pid="${pids[$idx]}"
+        if wait "$pid"; then
+            reviewer_exit_ok[$idx]=1
+        else
+            reviewer_exit_ok[$idx]=0
+        fi
+    done
+
+    # Retry reviewers that did not follow the required tagged output format.
+    # Without this, malformed output becomes score=0 and distorts consensus.
+    if [ "$retry_invalid" -gt 0 ]; then
+        local attempt reviewer_no
+        for idx in "${!outputs[@]}"; do
+            reviewer_no=$((idx + 1))
+            if reviewer_output_has_required_tags "${outputs[$idx]}"; then
+                continue
+            fi
+            warn "Reviewer $reviewer_no output missing required tags; retrying up to $retry_invalid time(s)."
+            attempt=1
+            while [ "$attempt" -le "$retry_invalid" ]; do
+                : > "${logs[$idx]}"
+                : > "${outputs[$idx]}"
+                if run_agent_with_prompt "${prompts[$idx]}" "${logs[$idx]}" "${outputs[$idx]}" "$yolo_effective"; then
+                    reviewer_exit_ok[$idx]=1
+                else
+                    reviewer_exit_ok[$idx]=0
+                fi
+                if [ "${reviewer_exit_ok[$idx]:-0}" -eq 1 ] && reviewer_output_has_required_tags "${outputs[$idx]}"; then
+                    break
+                fi
+                attempt=$((attempt + 1))
+            done
+            if ! reviewer_output_has_required_tags "${outputs[$idx]}"; then
+                warn "Reviewer $reviewer_no still produced invalid output after retries; counting as panel failure."
+            fi
+        done
+    fi
+
+    local panel_failures=0
+    for idx in "${!outputs[@]}"; do
+        if [ "${reviewer_exit_ok[$idx]:-0}" -ne 1 ] || ! reviewer_output_has_required_tags "${outputs[$idx]}"; then
             panel_failures=$((panel_failures + 1))
         fi
     done
@@ -3420,7 +3500,7 @@ run_swarm_consensus() {
         echo "- Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "- Reviewers: $swarm_size"
         echo "- Parallel: $swarm_parallel"
-        echo "- Panel command failures: $panel_failures"
+        echo "- Panel failures (command or malformed output): $panel_failures"
         echo ""
         echo "## Reviewer Results"
         echo ""
@@ -3469,7 +3549,7 @@ run_swarm_consensus() {
 
     if [ "$panel_failures" -gt "$max_reviewer_failures" ]; then
         LAST_CONSENSUS_PASS=false
-        warn "Consensus invalidated due to reviewer command failures: $panel_failures > $max_reviewer_failures"
+        warn "Consensus invalidated due to reviewer failures (command or malformed output): $panel_failures > $max_reviewer_failures"
         log_reason_code "RB_CONSENSUS_PANEL_FAILURE_THRESHOLD" "panel_failures=$panel_failures max_allowed=$max_reviewer_failures"
     elif [ "$avg_score" -ge "$MIN_CONSENSUS_SCORE" ] && [ "$go_count" -gt "$hold_count" ]; then
         LAST_CONSENSUS_PASS=true
@@ -4085,6 +4165,7 @@ show_status() {
     echo "  Swarm enabled:     $SWARM_ENABLED"
     echo "  Swarm size:        $SWARM_SIZE"
     echo "  Swarm max parallel:$SWARM_MAX_PARALLEL"
+    echo "  Swarm retry invalid:$SWARM_RETRY_INVALID_OUTPUT"
     echo "  Min consensus:     $MIN_CONSENSUS_SCORE"
     echo "  Max reviewer fail: $CONSENSUS_MAX_REVIEWER_FAILURES"
     echo "  Confidence target: $CONFIDENCE_TARGET"
@@ -4166,6 +4247,7 @@ show_doctor() {
         echo "  Last stage:       $(read_state_value stage)"
         echo "  Last reason:      $(read_state_value last_reason_code)"
     fi
+    echo "  Swarm retry invalid:$SWARM_RETRY_INVALID_OUTPUT"
     echo "  Max reviewer fail:$CONSENSUS_MAX_REVIEWER_FAILURES"
     echo ""
 }
@@ -4395,6 +4477,11 @@ parse_args() {
                 SWARM_MAX_PARALLEL="${2:-1}"
                 shift 2
                 ;;
+            --swarm-retry-invalid)
+                require_arg_value "--swarm-retry-invalid" "${2:-}"
+                SWARM_RETRY_INVALID_OUTPUT="${2:-1}"
+                shift 2
+                ;;
             --min-consensus)
                 require_arg_value "--min-consensus" "${2:-}"
                 MIN_CONSENSUS_SCORE="${2:-80}"
@@ -4495,6 +4582,10 @@ parse_args() {
         err "--swarm-max-parallel expects a non-negative integer"
         exit 1
     fi
+    if ! is_number "$SWARM_RETRY_INVALID_OUTPUT"; then
+        err "--swarm-retry-invalid expects a non-negative integer"
+        exit 1
+    fi
     if ! is_number "$MIN_CONSENSUS_SCORE"; then
         err "--min-consensus expects a non-negative integer"
         exit 1
@@ -4523,6 +4614,9 @@ parse_args() {
     fi
     if [ "$SWARM_MAX_PARALLEL" -lt 1 ]; then
         SWARM_MAX_PARALLEL=1
+    fi
+    if [ "$SWARM_RETRY_INVALID_OUTPUT" -lt 0 ]; then
+        SWARM_RETRY_INVALID_OUTPUT=0
     fi
     if [ "$MIN_CONSENSUS_SCORE" -gt 100 ]; then
         MIN_CONSENSUS_SCORE=100
