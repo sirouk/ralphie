@@ -20,9 +20,10 @@ Primary references:
 
 Best-practice implications:
 
-- Keep `--output-last-message` capability checks before use.
+- Keep `--output-last-message` capability checks before use (CLI docs also describe the `-o/--output-last-message` behavior).
 - Treat dangerous bypass flags as optional capabilities, not assumptions.
 - Keep model override flags isolated to invocation boundary.
+- `model_reasoning_effort` is a config surface that can drift by CLI build and model support (docs describe `xhigh` as model-dependent); keep self-heal paths bounded and explicitly logged (with redaction).
 
 ## 2) Claude Code CLI
 
@@ -44,6 +45,7 @@ Best-practice implications:
 - Probe for print mode support and dangerous flag variants at runtime.
 - Keep permission/sandbox policy explicit and externally configurable.
 - Avoid coupling orchestration logic to one output stream format.
+  - Official CLI docs describe both `--dangerously-skip-permissions` and `--allow-dangerously-skip-permissions`; treat support as a runtime capability, not a hard assumption.
 
 ## 3) Bash Runtime Semantics
 
@@ -167,3 +169,33 @@ Best-practice implications:
 
 - Claude Code CLI options evolve quickly; periodic runtime `--help` probes remain necessary.
 - Hard-link support and `mkfifo` availability may vary by environment; fallbacks and explicit disablement paths remain necessary.
+
+## 10) Telegram Bot API (Optional Notifications)
+
+Why it matters:
+
+- `ralphie.sh:notify_human` can send Telegram notifications via the Bot API.
+
+Primary reference:
+
+- Telegram Bot API (sendMessage): https://core.telegram.org/bots/api#sendmessage
+
+Best-practice implications:
+
+- Treat Telegram as optional; fail deterministically when required env vars are missing or `curl` is unavailable.
+- Do not leak bot tokens/chat IDs in logs; treat any URL containing the token as sensitive.
+
+## 11) Discord Webhooks (Optional Notifications)
+
+Why it matters:
+
+- `ralphie.sh:notify_human` can send Discord notifications via an incoming webhook.
+
+Primary reference:
+
+- Discord developer docs (Execute Webhook): https://discord.com/developers/docs/resources/webhook#execute-webhook
+
+Best-practice implications:
+
+- Treat Discord as optional; fail deterministically when required env vars are missing or `curl` is unavailable.
+- Do not leak webhook URLs in logs; treat the URL as a secret.

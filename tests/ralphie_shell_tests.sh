@@ -276,6 +276,528 @@ EOF
     rm -rf "$tmpdir"
 }
 
+test_count_pending_human_requests_missing_file() {
+    local tmpdir old_human_instructions_file old_human_instructions_rel
+    tmpdir="$(mktemp -d)"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$tmpdir/HUMAN_INSTRUCTIONS.md"
+
+    assert_eq "0" "$(count_pending_human_requests)" "pending human requests returns 0 when file missing"
+
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    rm -rf "$tmpdir"
+}
+
+test_count_pending_human_requests_case_insensitive() {
+    local tmpdir old_human_instructions_file old_human_instructions_rel
+    tmpdir="$(mktemp -d)"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$tmpdir/HUMAN_INSTRUCTIONS.md"
+    cat >"$HUMAN_INSTRUCTIONS_FILE" <<'EOF'
+# Human Instructions Queue
+
+## 2026-02-13 00:00:00
+- Request: A
+- Status: NEW
+
+## 2026-02-13 00:00:01
+- Request: B
+- status: new
+
+## 2026-02-13 00:00:02
+- Request: C
+- STATUS :   NEW
+
+## 2026-02-13 00:00:03
+- Request: D
+- Status: DONE
+EOF
+
+    assert_eq "3" "$(count_pending_human_requests)" "pending human requests count is case-insensitive and whitespace tolerant"
+
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    rm -rf "$tmpdir"
+}
+
+test_check_human_requests_sets_flag() {
+    local tmpdir old_human_instructions_file old_human_instructions_rel old_has_human_requests
+    tmpdir="$(mktemp -d)"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+    old_has_human_requests="$HAS_HUMAN_REQUESTS"
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$tmpdir/HUMAN_INSTRUCTIONS.md"
+    cat >"$HUMAN_INSTRUCTIONS_FILE" <<'EOF'
+- Status: NEW
+EOF
+
+    check_human_requests
+    assert_eq "true" "$HAS_HUMAN_REQUESTS" "human request detection sets HAS_HUMAN_REQUESTS when pending requests exist"
+
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    HAS_HUMAN_REQUESTS="$old_has_human_requests"
+    rm -rf "$tmpdir"
+}
+
+test_prepare_prompt_for_iteration_injects_human_queue_when_present() {
+    local tmpdir old_log_dir old_human_instructions_file old_human_instructions_rel old_agent_source_map_file old_binary_steering_map_file old_gate_feedback_file old_context_file old_mode
+    tmpdir="$(mktemp -d)"
+    old_log_dir="$LOG_DIR"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+    old_agent_source_map_file="$AGENT_SOURCE_MAP_FILE"
+    old_binary_steering_map_file="$BINARY_STEERING_MAP_FILE"
+    old_gate_feedback_file="$GATE_FEEDBACK_FILE"
+    old_context_file="${CONTEXT_FILE:-}"
+    old_mode="$MODE"
+
+    LOG_DIR="$tmpdir/logs"
+    mkdir -p "$LOG_DIR"
+
+    local base_prompt human_file out_path
+    base_prompt="$tmpdir/base_prompt.md"
+    human_file="$tmpdir/HUMAN_INSTRUCTIONS.md"
+
+    cat >"$base_prompt" <<'EOF'
+# Base prompt
+EOF
+    cat >"$human_file" <<'EOF'
+# Human Instructions Queue
+## 2026-02-13 00:00:00
+- Request: Test prompt injection
+- Priority: high
+- Status: NEW
+
+SENTINEL_HUMAN_QUEUE_LINE
+EOF
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$human_file"
+    CONTEXT_FILE=""
+    AGENT_SOURCE_MAP_FILE="$tmpdir/no-agent-source-map.yaml"
+    BINARY_STEERING_MAP_FILE="$tmpdir/no-binary-steering-map.yaml"
+    GATE_FEEDBACK_FILE="$tmpdir/no-gate-feedback.md"
+    MODE="build"
+
+    out_path="$(prepare_prompt_for_iteration "$base_prompt" "human-queue")"
+
+    assert_true "prompt injection writes augmented prompt" test -f "$out_path"
+    assert_true "prompt injection includes human queue header" rg -q "## Human Priority Queue" "$out_path"
+    assert_true "prompt injection includes human queue contents" rg -q "SENTINEL_HUMAN_QUEUE_LINE" "$out_path"
+
+    LOG_DIR="$old_log_dir"
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    AGENT_SOURCE_MAP_FILE="$old_agent_source_map_file"
+    BINARY_STEERING_MAP_FILE="$old_binary_steering_map_file"
+    GATE_FEEDBACK_FILE="$old_gate_feedback_file"
+    CONTEXT_FILE="$old_context_file"
+    MODE="$old_mode"
+    rm -rf "$tmpdir"
+}
+
+test_prepare_prompt_for_iteration_skips_human_queue_when_missing() {
+    local tmpdir old_human_instructions_file old_human_instructions_rel old_agent_source_map_file old_binary_steering_map_file old_gate_feedback_file old_context_file old_mode
+    tmpdir="$(mktemp -d)"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+    old_agent_source_map_file="$AGENT_SOURCE_MAP_FILE"
+    old_binary_steering_map_file="$BINARY_STEERING_MAP_FILE"
+    old_gate_feedback_file="$GATE_FEEDBACK_FILE"
+    old_context_file="${CONTEXT_FILE:-}"
+    old_mode="$MODE"
+
+    local base_prompt out_path
+    base_prompt="$tmpdir/base_prompt.md"
+    cat >"$base_prompt" <<'EOF'
+# Base prompt
+EOF
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$tmpdir/missing-human-instructions.md"
+    CONTEXT_FILE=""
+    AGENT_SOURCE_MAP_FILE="$tmpdir/no-agent-source-map.yaml"
+    BINARY_STEERING_MAP_FILE="$tmpdir/no-binary-steering-map.yaml"
+    GATE_FEEDBACK_FILE="$tmpdir/no-gate-feedback.md"
+    MODE="build"
+
+    out_path="$(prepare_prompt_for_iteration "$base_prompt" "no-human")"
+
+    assert_eq "$base_prompt" "$out_path" "prompt injection returns base prompt when no augmentation is needed"
+    assert_false "prompt injection does not include human queue header when missing" rg -q "## Human Priority Queue" "$out_path"
+
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    AGENT_SOURCE_MAP_FILE="$old_agent_source_map_file"
+    BINARY_STEERING_MAP_FILE="$old_binary_steering_map_file"
+    GATE_FEEDBACK_FILE="$old_gate_feedback_file"
+    CONTEXT_FILE="$old_context_file"
+    MODE="$old_mode"
+    rm -rf "$tmpdir"
+}
+
+test_capture_human_priorities_fails_non_interactive_with_reason_code() {
+    local tmpdir old_non_interactive old_config_dir old_reason_log_file old_human_instructions_file old_human_instructions_rel
+    tmpdir="$(mktemp -d)"
+    old_non_interactive="$NON_INTERACTIVE"
+    old_config_dir="$CONFIG_DIR"
+    old_reason_log_file="$REASON_LOG_FILE"
+    old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
+    old_human_instructions_rel="$HUMAN_INSTRUCTIONS_REL"
+
+    CONFIG_DIR="$tmpdir/.ralphie"
+    REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+    mkdir -p "$CONFIG_DIR"
+
+    HUMAN_INSTRUCTIONS_REL="HUMAN_INSTRUCTIONS.md"
+    HUMAN_INSTRUCTIONS_FILE="$tmpdir/HUMAN_INSTRUCTIONS.md"
+    NON_INTERACTIVE=true
+
+    local output rc
+    set +e
+    output="$(capture_human_priorities 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "1" "$rc" "human capture exits non-zero in non-interactive mode"
+    assert_true "human capture emits deterministic reason code" rg -q "reason_code=RB_HUMAN_MODE_NON_INTERACTIVE" <<<"$output"
+    assert_false "human capture does not create a queue file in non-interactive mode" test -f "$HUMAN_INSTRUCTIONS_FILE"
+    assert_true "reason log records non-interactive failure code" rg -q "reason_code=RB_HUMAN_MODE_NON_INTERACTIVE" "$REASON_LOG_FILE"
+
+    NON_INTERACTIVE="$old_non_interactive"
+    CONFIG_DIR="$old_config_dir"
+    REASON_LOG_FILE="$old_reason_log_file"
+    HUMAN_INSTRUCTIONS_FILE="$old_human_instructions_file"
+    HUMAN_INSTRUCTIONS_REL="$old_human_instructions_rel"
+    rm -rf "$tmpdir"
+}
+
+test_notify_human_none_is_noop() {
+    local old_channel old_token old_chat old_webhook
+    old_channel="$HUMAN_NOTIFY_CHANNEL"
+    old_token="$TELEGRAM_BOT_TOKEN"
+    old_chat="$TELEGRAM_CHAT_ID"
+    old_webhook="$DISCORD_WEBHOOK_URL"
+
+    HUMAN_NOTIFY_CHANNEL="NoNe"
+    TELEGRAM_BOT_TOKEN="TEST_TELEGRAM_TOKEN_SHOULD_NOT_APPEAR"
+    TELEGRAM_CHAT_ID="123"
+    DISCORD_WEBHOOK_URL="https://example.invalid/TEST_DISCORD_WEBHOOK_SHOULD_NOT_APPEAR"
+
+    local output rc
+    set +e
+    output="$(notify_human "noop-title" "noop-body" 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "0" "$rc" "notify_human none returns success"
+    assert_eq "" "$output" "notify_human none emits no output"
+
+    HUMAN_NOTIFY_CHANNEL="$old_channel"
+    TELEGRAM_BOT_TOKEN="$old_token"
+    TELEGRAM_CHAT_ID="$old_chat"
+    DISCORD_WEBHOOK_URL="$old_webhook"
+}
+
+test_notify_human_terminal_emits_messages() {
+    local old_channel
+    old_channel="$HUMAN_NOTIFY_CHANNEL"
+
+    HUMAN_NOTIFY_CHANNEL="TeRmInAl"
+
+    local output rc
+    set +e
+    output="$(notify_human "TITLE_SENTINEL" "BODY_SENTINEL" 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "0" "$rc" "notify_human terminal returns success"
+    assert_true "notify_human terminal emits title" rg -qF "TITLE_SENTINEL" <<<"$output"
+    assert_true "notify_human terminal emits body" rg -qF "BODY_SENTINEL" <<<"$output"
+
+    HUMAN_NOTIFY_CHANNEL="$old_channel"
+}
+
+test_notify_human_telegram_missing_env_fails() {
+    local old_channel old_token old_chat
+    old_channel="$HUMAN_NOTIFY_CHANNEL"
+    old_token="$TELEGRAM_BOT_TOKEN"
+    old_chat="$TELEGRAM_CHAT_ID"
+
+    HUMAN_NOTIFY_CHANNEL="TeLeGrAm"
+
+    TELEGRAM_BOT_TOKEN=""
+    TELEGRAM_CHAT_ID="123"
+    local output rc
+    set +e
+    output="$(notify_human "t" "b" 2>&1)"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human telegram fails when TELEGRAM_BOT_TOKEN is missing"
+    assert_true "notify_human telegram warns missing env vars" rg -q "Telegram notify selected, but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are missing" <<<"$output"
+
+    TELEGRAM_BOT_TOKEN="TEST_TELEGRAM_TOKEN_SHOULD_NOT_APPEAR"
+    TELEGRAM_CHAT_ID=""
+    set +e
+    output="$(notify_human "t" "b" 2>&1)"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human telegram fails when TELEGRAM_CHAT_ID is missing"
+    assert_true "notify_human telegram warns missing env vars (chat id missing)" rg -q "Telegram notify selected, but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are missing" <<<"$output"
+    assert_false "notify_human telegram missing env does not leak token" rg -qF "TEST_TELEGRAM_TOKEN_SHOULD_NOT_APPEAR" <<<"$output"
+
+    HUMAN_NOTIFY_CHANNEL="$old_channel"
+    TELEGRAM_BOT_TOKEN="$old_token"
+    TELEGRAM_CHAT_ID="$old_chat"
+}
+
+test_notify_human_discord_missing_env_fails() {
+    local old_channel old_webhook
+    old_channel="$HUMAN_NOTIFY_CHANNEL"
+    old_webhook="$DISCORD_WEBHOOK_URL"
+
+    HUMAN_NOTIFY_CHANNEL="DiScOrD"
+    DISCORD_WEBHOOK_URL=""
+
+    local output rc
+    set +e
+    output="$(notify_human "t" "b" 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "1" "$rc" "notify_human discord fails when DISCORD_WEBHOOK_URL is missing"
+    assert_true "notify_human discord warns missing webhook env var" rg -q "Discord notify selected, but DISCORD_WEBHOOK_URL is missing" <<<"$output"
+
+    HUMAN_NOTIFY_CHANNEL="$old_channel"
+    DISCORD_WEBHOOK_URL="$old_webhook"
+}
+
+test_notify_human_fails_when_curl_missing_from_path() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local token webhook tr_bin
+    token="TEST_TELEGRAM_TOKEN_SHOULD_NOT_APPEAR"
+    webhook="https://example.invalid/TEST_DISCORD_WEBHOOK_SHOULD_NOT_APPEAR"
+    tr_bin="$(command -v tr 2>/dev/null || true)"
+
+    if [ -z "$tr_bin" ]; then
+        fail "notify_human curl-missing tests require tr"
+        rm -rf "$tmpdir"
+        return
+    fi
+
+    local output rc
+    set +e
+    output="$(
+        (
+            to_lower() { printf '%s' "${1:-}" | "$tr_bin" '[:upper:]' '[:lower:]'; }
+            PATH="$tmpdir/empty"
+            HUMAN_NOTIFY_CHANNEL="telegram"
+            TELEGRAM_BOT_TOKEN="$token"
+            TELEGRAM_CHAT_ID="123"
+            DISCORD_WEBHOOK_URL="$webhook"
+            notify_human "t" "b"
+        ) 2>&1
+    )"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human telegram fails when curl is missing from PATH"
+    assert_true "notify_human telegram warns curl required" rg -q "curl is required for Telegram notifications" <<<"$output"
+    assert_false "notify_human telegram curl-missing does not leak token" rg -qF "$token" <<<"$output"
+
+    set +e
+    output="$(
+        (
+            to_lower() { printf '%s' "${1:-}" | "$tr_bin" '[:upper:]' '[:lower:]'; }
+            PATH="$tmpdir/empty"
+            HUMAN_NOTIFY_CHANNEL="discord"
+            TELEGRAM_BOT_TOKEN="$token"
+            TELEGRAM_CHAT_ID="123"
+            DISCORD_WEBHOOK_URL="$webhook"
+            notify_human "t" "b"
+        ) 2>&1
+    )"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human discord fails when curl is missing from PATH"
+    assert_true "notify_human discord warns curl required" rg -q "curl is required for Discord notifications" <<<"$output"
+    assert_false "notify_human discord curl-missing does not leak webhook" rg -qF "$webhook" <<<"$output"
+
+    rm -rf "$tmpdir"
+}
+
+test_notify_human_mocked_curl_failure_does_not_leak_secrets() {
+    local tmpdir tmpbin curl_log old_path
+    tmpdir="$(mktemp -d)"
+    tmpbin="$tmpdir/bin"
+    curl_log="$tmpdir/curl_calls.log"
+    old_path="$PATH"
+    mkdir -p "$tmpbin"
+
+    cat > "$tmpbin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$curl_log"
+exit 22
+EOF
+    chmod +x "$tmpbin/curl"
+
+    local token webhook output rc
+    token="TEST_TELEGRAM_TOKEN_SHOULD_NOT_APPEAR"
+    webhook="https://example.invalid/TEST_DISCORD_WEBHOOK_SHOULD_NOT_APPEAR"
+
+    set +e
+    output="$(PATH="$tmpbin:$old_path" HUMAN_NOTIFY_CHANNEL=telegram TELEGRAM_BOT_TOKEN="$token" TELEGRAM_CHAT_ID="123" DISCORD_WEBHOOK_URL="$webhook" notify_human "t" "b" 2>&1)"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human telegram returns non-zero when curl fails"
+    assert_true "notify_human telegram emits failure warning when curl fails" rg -q "Failed to send Telegram notification" <<<"$output"
+    assert_false "notify_human telegram curl failure does not leak token" rg -qF "$token" <<<"$output"
+    assert_true "mocked curl invoked for telegram" test -s "$curl_log"
+
+    : > "$curl_log"
+    set +e
+    output="$(PATH="$tmpbin:$old_path" HUMAN_NOTIFY_CHANNEL=discord TELEGRAM_BOT_TOKEN="$token" TELEGRAM_CHAT_ID="123" DISCORD_WEBHOOK_URL="$webhook" notify_human "t" "b" 2>&1)"
+    rc=$?
+    set -e
+    assert_eq "1" "$rc" "notify_human discord returns non-zero when curl fails"
+    assert_true "notify_human discord emits failure warning when curl fails" rg -q "Failed to send Discord notification" <<<"$output"
+    assert_false "notify_human discord curl failure does not leak webhook" rg -qF "$webhook" <<<"$output"
+    assert_true "mocked curl invoked for discord" test -s "$curl_log"
+
+    rm -rf "$tmpdir"
+}
+
+test_setup_agent_subrepos_repairs_partial_init_submodule_mode() {
+    local tmpdir tmprepo tmpbin git_log old_path output rc
+    tmpdir="$(mktemp -d)"
+    tmprepo="$tmpdir/repo"
+    tmpbin="$tmpdir/bin"
+    git_log="$tmpdir/git.log"
+    mkdir -p "$tmprepo/scripts" "$tmprepo/subrepos/codex" "$tmprepo/subrepos/claude-code" "$tmprepo/maps" "$tmprepo/.git" "$tmpbin"
+
+    cp "$ROOT_DIR/scripts/setup-agent-subrepos.sh" "$tmprepo/scripts/setup-agent-subrepos.sh"
+    chmod +x "$tmprepo/scripts/setup-agent-subrepos.sh"
+
+    cat > "$tmprepo/.gitmodules" <<'EOF'
+[submodule "subrepos/codex"]
+  path = subrepos/codex
+  url = https://github.com/openai/codex.git
+[submodule "subrepos/claude-code"]
+  path = subrepos/claude-code
+  url = https://github.com/anthropics/claude-code.git
+EOF
+
+    cat > "$tmprepo/subrepos/codex/.git" <<'EOF'
+gitdir: ../../.git/modules/subrepos/codex
+EOF
+    cat > "$tmprepo/subrepos/claude-code/.git" <<'EOF'
+gitdir: ../../.git/modules/subrepos/claude-code
+EOF
+
+    cat > "$tmpbin/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+echo "\$*" >> "$git_log"
+
+repo=""
+if [ "\${1:-}" = "-C" ]; then
+  repo="\${2:-}"
+  shift 2
+fi
+
+cmd="\${1:-}"
+shift || true
+
+case "\$cmd" in
+  submodule)
+    subcmd="\${1:-}"
+    shift || true
+    if [ "\$subcmd" = "update" ]; then
+      rel="\${!#}"
+      mkdir -p "\$repo/\$rel"
+      mkdir -p "\$repo/.git/modules/\$rel"
+      printf '%s\n' "gitdir: ../../.git/modules/\$rel" > "\$repo/\$rel/.git"
+      echo "ref: refs/heads/main" > "\$repo/.git/modules/\$rel/HEAD"
+      exit 0
+    fi
+    exit 0
+    ;;
+  rev-parse)
+    if [ "\${1:-}" = "HEAD" ]; then
+      if [ -d "\$repo/.git" ]; then
+        echo 1111111111111111111111111111111111111111
+        exit 0
+	      fi
+	      if [ -f "\$repo/.git" ]; then
+	        gitdir="\$(sed -n 's/^gitdir: //p' "\$repo/.git" | head -1)"
+	        if [ -n "\$gitdir" ] && [ -d "\$repo/\$gitdir" ]; then
+	          echo 1111111111111111111111111111111111111111
+	          exit 0
+	        fi
+      fi
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+    chmod +x "$tmpbin/git"
+
+    old_path="$PATH"
+    set +e
+    output="$(cd "$tmprepo" && PATH="$tmpbin:$old_path" bash scripts/setup-agent-subrepos.sh --mode submodule 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "0" "$rc" "setup-agent-subrepos repairs partial init in submodule mode"
+    assert_true "setup-agent-subrepos emits ok message" rg -q "^\\[ok\\] Source map:" <<<"$output"
+    assert_true "codex gitdir directory exists after repair" test -d "$tmprepo/.git/modules/subrepos/codex"
+    assert_true "claude gitdir directory exists after repair" test -d "$tmprepo/.git/modules/subrepos/claude-code"
+
+    assert_true "agent source map emitted" test -f "$tmprepo/maps/agent-source-map.yaml"
+    assert_true "agent source map uses repo-relative codex path" rg -q 'local_path: "subrepos/codex"' "$tmprepo/maps/agent-source-map.yaml"
+    assert_true "agent source map uses repo-relative claude path" rg -q 'local_path: "subrepos/claude-code"' "$tmprepo/maps/agent-source-map.yaml"
+    assert_false "agent source map does not contain temp absolute path" rg -qF "$tmprepo" "$tmprepo/maps/agent-source-map.yaml"
+
+    assert_true "binary steering map emitted" test -f "$tmprepo/maps/binary-steering-map.yaml"
+    assert_false "binary steering map does not contain temp absolute path" rg -qF "$tmprepo" "$tmprepo/maps/binary-steering-map.yaml"
+
+    rm -rf "$tmpdir"
+}
+
+test_setup_agent_subrepos_invalid_mode_fails() {
+    local tmpdir tmprepo output rc
+    tmpdir="$(mktemp -d)"
+    tmprepo="$tmpdir/repo"
+    mkdir -p "$tmprepo/scripts"
+    cp "$ROOT_DIR/scripts/setup-agent-subrepos.sh" "$tmprepo/scripts/setup-agent-subrepos.sh"
+    chmod +x "$tmprepo/scripts/setup-agent-subrepos.sh"
+
+    set +e
+    output="$(cd "$tmprepo" && bash scripts/setup-agent-subrepos.sh --mode nope 2>&1)"
+    rc=$?
+    set -e
+
+    assert_eq "1" "$rc" "setup-agent-subrepos invalid mode exits non-zero"
+    assert_true "setup-agent-subrepos invalid mode emits error" rg -q "\\[error\\] --mode must be 'submodule' or 'clone'" <<<"$output"
+
+    rm -rf "$tmpdir"
+}
+
 test_stream_install_bootstrap() {
     local tmpdir
     tmpdir="$(mktemp -d)"
@@ -1244,6 +1766,20 @@ main() {
     test_interrupt_handler_non_interactive_path
     test_prompt_file_mapping
     test_stream_install_bootstrap
+    test_count_pending_human_requests_missing_file
+    test_count_pending_human_requests_case_insensitive
+    test_check_human_requests_sets_flag
+    test_prepare_prompt_for_iteration_injects_human_queue_when_present
+    test_prepare_prompt_for_iteration_skips_human_queue_when_missing
+    test_capture_human_priorities_fails_non_interactive_with_reason_code
+    test_notify_human_none_is_noop
+    test_notify_human_terminal_emits_messages
+    test_notify_human_telegram_missing_env_fails
+    test_notify_human_discord_missing_env_fails
+    test_notify_human_fails_when_curl_missing_from_path
+    test_notify_human_mocked_curl_failure_does_not_leak_secrets
+    test_setup_agent_subrepos_repairs_partial_init_submodule_mode
+    test_setup_agent_subrepos_invalid_mode_fails
     test_idle_plan_refresh_from_build
     test_lock_failure_reason_codes_and_diagnostics
     test_lock_diagnostics_fallback_and_stale_cleanup

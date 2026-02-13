@@ -49,10 +49,31 @@ to_abs_path() {
 
 to_repo_relative_path() {
     local abs_path="$1"
+    if [ "$abs_path" = "$ROOT_DIR" ]; then
+        echo "."
+        return
+    fi
     if [[ "$abs_path" == "$ROOT_DIR/"* ]]; then
         echo "${abs_path#$ROOT_DIR/}"
     else
         echo "$abs_path"
+    fi
+}
+
+is_within_repo_root() {
+    local abs_path="$1"
+    if [ "$abs_path" = "$ROOT_DIR" ]; then
+        return 0
+    fi
+    [[ "$abs_path" == "$ROOT_DIR/"* ]]
+}
+
+require_within_repo_root() {
+    local flag="$1"
+    local abs_path="$2"
+    if ! is_within_repo_root "$abs_path"; then
+        echo "[error] $flag must be within the repository root" >&2
+        exit 1
     fi
 }
 
@@ -135,11 +156,51 @@ is_git_repo_path() {
     [ -d "$path/.git" ] || [ -f "$path/.git" ]
 }
 
+dotgit_gitdir() {
+    local dotgit_file="$1"
+    sed -n 's/^gitdir: //p' "$dotgit_file" 2>/dev/null | head -1
+}
+
+is_broken_dotgit_file() {
+    local repo_path="$1"
+    local dotgit_file="$repo_path/.git"
+    [ -f "$dotgit_file" ] || return 1
+
+    local gitdir
+    gitdir="$(dotgit_gitdir "$dotgit_file")"
+    if [ -z "$gitdir" ]; then
+        return 0
+    fi
+
+    local resolved
+    if [[ "$gitdir" = /* ]]; then
+        resolved="$gitdir"
+    else
+        resolved="$repo_path/$gitdir"
+    fi
+
+    if [ -d "$resolved" ]; then
+        return 1
+    fi
+    return 0
+}
+
+is_git_worktree_healthy() {
+    local path="$1"
+    if ! is_git_repo_path "$path"; then
+        return 1
+    fi
+    if is_broken_dotgit_file "$path"; then
+        return 1
+    fi
+    git -C "$path" rev-parse HEAD >/dev/null 2>&1
+}
+
 ensure_clean_target_path() {
     local path="$1"
     if [ -e "$path" ] && ! is_git_repo_path "$path"; then
         if [ -n "$(ls -A "$path" 2>/dev/null || true)" ]; then
-            echo "[error] Path exists and is not a git repository: $path" >&2
+            echo "[error] Path exists and is not a git repository: $(to_repo_relative_path "$path")" >&2
             exit 1
         fi
     fi
@@ -169,21 +230,35 @@ install_with_submodule() {
     ensure_clean_target_path "$abs_path"
 
     if is_git_repo_path "$abs_path"; then
-        echo "[info] Updating existing repository at $rel_path"
-        update_repo_checkout "$abs_path" "$branch"
-        return
+        if is_git_worktree_healthy "$abs_path"; then
+            echo "[info] Updating existing repository at $rel_path"
+            update_repo_checkout "$abs_path" "$branch"
+            if is_git_worktree_healthy "$abs_path"; then
+                return
+            fi
+        fi
+        echo "[info] Repairing invalid git work tree at $rel_path"
+        rm -rf "$abs_path"
     fi
 
     if [ -f "$ROOT_DIR/.gitmodules" ] && grep -q "path = $rel_path" "$ROOT_DIR/.gitmodules"; then
         echo "[info] Initializing registered submodule $rel_path"
-        git -C "$ROOT_DIR" submodule update --init --remote -- "$rel_path"
+        git -C "$ROOT_DIR" submodule update --init --remote --force -- "$rel_path"
         update_repo_checkout "$abs_path" "$branch"
+        if ! is_git_worktree_healthy "$abs_path"; then
+            echo "[error] Failed to repair registered submodule: $rel_path" >&2
+            exit 1
+        fi
         return
     fi
 
     echo "[info] Adding submodule $rel_path"
     git -C "$ROOT_DIR" submodule add --force -b "$branch" "$remote" "$rel_path"
-    git -C "$ROOT_DIR" submodule update --init --remote -- "$rel_path"
+    git -C "$ROOT_DIR" submodule update --init --remote --force -- "$rel_path"
+    if ! is_git_worktree_healthy "$abs_path"; then
+        echo "[error] Failed to install submodule: $rel_path" >&2
+        exit 1
+    fi
 }
 
 install_with_clone() {
@@ -193,14 +268,28 @@ install_with_clone() {
 
     ensure_clean_target_path "$abs_path"
 
+    local rel_path
+    rel_path="$(to_repo_relative_path "$abs_path")"
+
     if is_git_repo_path "$abs_path"; then
-        echo "[info] Updating existing clone at $abs_path"
-        update_repo_checkout "$abs_path" "$branch"
-        return
+        if is_git_worktree_healthy "$abs_path"; then
+            echo "[info] Updating existing clone at $rel_path"
+            update_repo_checkout "$abs_path" "$branch"
+            if is_git_worktree_healthy "$abs_path"; then
+                return
+            fi
+        fi
+        echo "[info] Repairing invalid git work tree at $rel_path"
+        rm -rf "$abs_path"
     fi
 
-    echo "[info] Cloning $remote into $abs_path"
+    echo "[info] Cloning $remote into $rel_path"
     git clone --branch "$branch" "$remote" "$abs_path"
+    if ! is_git_worktree_healthy "$abs_path"; then
+        echo "[error] Clone succeeded but repository is unhealthy: $rel_path" >&2
+        rm -rf "$abs_path"
+        exit 1
+    fi
 }
 
 repo_revision() {
@@ -356,16 +445,19 @@ main() {
     local subrepo_dir_abs map_file_abs
     subrepo_dir_abs="$(to_abs_path "$SUBREPO_DIR_INPUT")"
     map_file_abs="$(to_abs_path "$MAP_FILE_INPUT")"
+    require_within_repo_root "--subrepo-dir" "$subrepo_dir_abs"
+    require_within_repo_root "--map-file" "$map_file_abs"
     local map_dir_abs steering_map_abs steering_map_rel
     map_dir_abs="$(cd "$(dirname "$map_file_abs")" && pwd)"
     steering_map_abs="$map_dir_abs/$STEERING_MAP_BASENAME"
     steering_map_rel="$(to_repo_relative_path "$steering_map_abs")"
+    require_within_repo_root "--map-file" "$map_dir_abs"
 
     local codex_rel claude_rel codex_abs claude_abs
-    codex_rel="$SUBREPO_DIR_INPUT/codex"
-    claude_rel="$SUBREPO_DIR_INPUT/claude-code"
     codex_abs="$subrepo_dir_abs/codex"
     claude_abs="$subrepo_dir_abs/claude-code"
+    codex_rel="$(to_repo_relative_path "$codex_abs")"
+    claude_rel="$(to_repo_relative_path "$claude_abs")"
 
     mkdir -p "$subrepo_dir_abs"
     ensure_root_repo_for_submodules
@@ -385,9 +477,11 @@ main() {
     write_source_map "$map_file_abs" "$MODE" "$codex_rel" "$claude_rel" "$codex_rev" "$claude_rev"
     write_binary_steering_map "$steering_map_abs" "$codex_rel" "$claude_rel"
 
+    local map_file_rel
+    map_file_rel="$(to_repo_relative_path "$map_file_abs")"
     echo "[ok] Codex source:   $codex_rel ($codex_rev)"
     echo "[ok] Claude source:  $claude_rel ($claude_rev)"
-    echo "[ok] Source map:     $MAP_FILE_INPUT"
+    echo "[ok] Source map:     $map_file_rel"
     echo "[ok] Steering map:   $steering_map_rel"
 }
 

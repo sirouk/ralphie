@@ -22,7 +22,8 @@ Tracked project files (excluding subrepo internals) are centered in:
 2. `scripts/setup-agent-subrepos.sh`
 - Installs/updates `subrepos/codex` and `subrepos/claude-code` via submodule or clone mode.
 - Emits/upgrades `maps/agent-source-map.yaml` and binary steering references.
-- Known integration hazard: partially-initialized submodules (a `.git` file that points at a missing `.git/modules/...` target) will make `git -C subrepos/<name>` fail; refresh should treat this as repairable and fall back to re-clone when needed.
+- Repairs partially-initialized subrepos (a `.git` file that points at a missing `.git/modules/...` target) by re-initializing the registered submodule (submodule mode) or re-cloning (clone mode).
+- Enforces repo-relative map output by requiring `--subrepo-dir` and `--map-file` to live under the repository root.
 
 3. `tests/ralphie_shell_tests.sh`
 - Sources `ralphie.sh` as a library (`RALPHIE_LIB=1`) and validates parsing, lock behavior, gates, concurrency ceilings, cleanup behavior, and invocation contracts.
