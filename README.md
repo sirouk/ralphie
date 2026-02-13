@@ -218,6 +218,28 @@ Current behavior:
 - failed transition consensus rewinds to the previous phase
 - prepare/build/test/refactor/lint/document prompts all enforce verification-focused behavior
 
+## YOLO + Consensus-Gated Autopilot
+
+Use this when you want maximum autonomy (`--yolo`), but you still want phase advancement to be strictly consensus-gated.
+
+Strict (no prompts; won’t advance phases unless consensus passes):
+
+```bash
+./ralphie.sh --yolo --auto-continue-build --min-consensus 90 --non-interactive
+```
+
+Interactive (same run, but you can use `Ctrl+C` interrupt menu and answer prompts):
+
+```bash
+./ralphie.sh --yolo --auto-continue-build --min-consensus 90
+```
+
+Useful knobs:
+- `--min-consensus N` (higher = stricter)
+- `--swarm-size N` / `--swarm-max-parallel N`
+- `--timeout SECONDS` (per agent invocation)
+- `--max N` (0 = unlimited)
+
 ## Run A Single Phase
 
 You can run phases directly:
