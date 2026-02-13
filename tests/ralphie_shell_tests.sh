@@ -204,6 +204,21 @@ test_prompt_yes_no_eof_defaults() {
     assert_eq "false" "$result" "prompt_yes_no returns false on EOF with no default"
 }
 
+test_prompt_line_eof_defaults() {
+    local result
+    result="$(prompt_line "EOF defaults line" "default" </dev/null)"
+    assert_eq "default" "$result" "prompt_line returns default on EOF"
+}
+
+test_prompt_optional_line_eof_defaults() {
+    local result
+    result="$(prompt_optional_line "EOF defaults optional line" "default" </dev/null)"
+    assert_eq "default" "$result" "prompt_optional_line returns default on EOF"
+
+    result="$(prompt_optional_line "EOF defaults optional line empty" "" </dev/null)"
+    assert_eq "" "$result" "prompt_optional_line returns empty default on EOF"
+}
+
 test_interrupt_handler_non_interactive_path() {
     local old_non_interactive old_interrupt_menu old_lock_file old_config_dir
     old_non_interactive="$NON_INTERACTIVE"
@@ -1763,6 +1778,8 @@ main() {
     test_fallback_engine_selection
     test_effective_lock_wait_seconds
     test_prompt_yes_no_eof_defaults
+    test_prompt_line_eof_defaults
+    test_prompt_optional_line_eof_defaults
     test_interrupt_handler_non_interactive_path
     test_prompt_file_mapping
     test_stream_install_bootstrap

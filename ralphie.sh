@@ -1144,12 +1144,54 @@ prompt_line() {
     local prompt="$1"
     local default="$2"
     local input
-    read -r -p "$prompt [$default]: " input
+
+    # When installed via `curl ... | bash`, stdin is consumed by the stream bootstrap.
+    # Read from the controlling terminal when available so interactive setup works.
+    if ! read_user_line "$prompt [$default]: " input; then
+        input=""
+    fi
     if [ -z "$input" ]; then
         echo "$default"
     else
         echo "$input"
     fi
+}
+
+read_user_line() {
+    local prompt="$1"
+    local _outvar="$2"
+    local input=""
+
+    # In library mode (tests), always honor stdin redirections and never block on /dev/tty.
+    if [ "${RALPHIE_LIB:-0}" = "1" ]; then
+        if ! read -r -p "$prompt" input; then
+            input=""
+        fi
+        printf -v "$_outvar" '%s' "$input"
+        return 0
+    fi
+
+    if [ -t 0 ]; then
+        if ! read -r -p "$prompt" input; then
+            input=""
+        fi
+        printf -v "$_outvar" '%s' "$input"
+        return 0
+    fi
+
+    if [ -r /dev/tty ]; then
+        if ! read -r -p "$prompt" input </dev/tty; then
+            input=""
+        fi
+        printf -v "$_outvar" '%s' "$input"
+        return 0
+    fi
+
+    if ! read -r -p "$prompt" input; then
+        input=""
+    fi
+    printf -v "$_outvar" '%s' "$input"
+    return 0
 }
 
 prompt_yes_no() {
@@ -1163,12 +1205,12 @@ prompt_yes_no() {
     esac
 
     while true; do
-        if ! read -r -p "$prompt [y/n] ($default): " answer; then
-            printf '\n' >&2
-            answer="$default"
-        fi
+        answer=""
+        read_user_line "$prompt [y/n] ($default): " answer
         answer="${answer:-$default}"
         normalized="$(to_lower "$answer")"
+        # Accept common punctuation/whitespace variants like "y." or "n,".
+        normalized="$(printf '%s' "$normalized" | tr -d '[:space:].,;:!')"
         case "$normalized" in
             y|yes) echo "true"; return 0 ;;
             n|no) echo "false"; return 0 ;;
@@ -1182,7 +1224,9 @@ prompt_optional_line() {
     local default="$2"
     local input shown_default
     shown_default="${default:-none}"
-    read -r -p "$prompt [$shown_default]: " input
+    if ! read_user_line "$prompt [$shown_default]: " input; then
+        input=""
+    fi
     if [ -z "$input" ]; then
         echo "$default"
     else
@@ -2179,12 +2223,14 @@ EOF
     local added_count=0
     while true; do
         local request reason priority add_more
-        read -r -p "Request (leave empty to finish): " request
+        request=""
+        read_user_line "Request (leave empty to finish): " request
         if [ -z "$request" ]; then
             break
         fi
 
-        read -r -p "Why it matters (optional): " reason
+        reason=""
+        read_user_line "Why it matters (optional): " reason
         priority="$(prompt_line "Priority (high/medium/low)" "high")"
         priority="$(to_lower "$priority")"
         case "$priority" in
@@ -2206,10 +2252,8 @@ EOF
         added_count=$((added_count + 1))
 
         while true; do
-            if ! read -r -p "Add another request? [y/n] (n): " add_more; then
-                printf '\n' >&2
-                add_more="n"
-            fi
+            add_more=""
+            read_user_line "Add another request? [y/n] (n): " add_more
             case "$(to_lower "${add_more:-n}")" in
                 y|yes) break ;;
                 n|no)
@@ -3005,10 +3049,8 @@ secure_build_approval_upfront() {
 
     local answer
     while true; do
-        if ! read -r -p "Secure build approval now? Auto-enter build if prepare passes [y/n] (n): " answer; then
-            printf '\n' >&2
-            answer="n"
-        fi
+        answer=""
+        read_user_line "Secure build approval now? Auto-enter build if prepare passes [y/n] (n): " answer
         case "$(to_lower "${answer:-n}")" in
             y|yes)
                 AUTO_CONTINUE_BUILD=true
@@ -3044,10 +3086,8 @@ request_build_permission() {
 
     local answer
     while true; do
-        if ! read -r -p "Preparation is complete. Begin build mode now? [y/n] (n): " answer; then
-            printf '\n' >&2
-            answer="n"
-        fi
+        answer=""
+        read_user_line "Preparation is complete. Begin build mode now? [y/n] (n): " answer
         case "$(to_lower "${answer:-n}")" in
             y|yes) return 0 ;;
             n|no)
@@ -3499,10 +3539,8 @@ enforce_build_gate() {
 
     local answer
     while true; do
-        if ! read -r -p "Consensus is low. Proceed anyway? [y/n] (n): " answer; then
-            printf '\n' >&2
-            answer="n"
-        fi
+        answer=""
+        read_user_line "Consensus is low. Proceed anyway? [y/n] (n): " answer
         case "$(to_lower "${answer:-n}")" in
             y|yes) return 0 ;;
             n|no) return 1 ;;
@@ -3550,7 +3588,8 @@ maybe_collect_human_feedback() {
     warn "Planner requests focused human input."
     echo "$prompt"
     local note
-    read -r -p "> " note
+    note=""
+    read_user_line "> " note
     if [ -n "$note" ]; then
         {
             echo "## $(date '+%Y-%m-%d %H:%M:%S')"
@@ -4151,7 +4190,9 @@ handle_interrupt() {
     while true; do
         echo "Interrupt menu: [r]esume, [h]uman instructions, [s]tatus, [q]uit"
         local choice
-        read -r -p "Choice [r]: " choice || choice="r"
+        choice=""
+        read_user_line "Choice [r]: " choice
+        choice="${choice:-r}"
         case "$(to_lower "${choice:-r}")" in
             ''|r|resume)
                 ok "Resuming loop."
