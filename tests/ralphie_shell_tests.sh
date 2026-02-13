@@ -397,8 +397,11 @@ test_lock_failure_reason_codes_and_diagnostics() {
     CONFIG_DIR="$tmpdir/.ralphie"
     LOCK_FILE="$CONFIG_DIR/run.lock"
     mkdir -p "$CONFIG_DIR"
+    local holder_pid
+    sleep 60 &
+    holder_pid=$!
     {
-        echo "$$"
+        echo "$holder_pid"
         date '+%Y-%m-%d %H:%M:%S'
     } > "$LOCK_FILE"
 
@@ -423,6 +426,9 @@ test_lock_failure_reason_codes_and_diagnostics() {
     assert_eq "1" "$rc" "timed lock fail exits non-zero"
     assert_true "timed lock fail emits timeout reason code" rg -q "reason_code=RB_LOCK_WAIT_TIMEOUT" <<<"$output"
     assert_true "timed lock fail includes waited seconds" rg -q "waited=1s" <<<"$output"
+
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
 
     CONFIG_DIR="$old_config_dir"
     LOCK_FILE="$old_lock_file"
@@ -455,8 +461,11 @@ EOF
     chmod +x "$tmpdir/ps"
     PATH="$tmpdir:$PATH"
 
+    local holder_pid
+    sleep 60 &
+    holder_pid=$!
     {
-        echo "$$"
+        echo "$holder_pid"
         echo "not-a-timestamp"
     } > "$LOCK_FILE"
     LOCK_WAIT_SECONDS=0
@@ -470,6 +479,9 @@ EOF
     assert_true "metadata fallback keeps deterministic reason code" rg -q "reason_code=RB_LOCK_ALREADY_HELD" <<<"$output"
     assert_true "metadata fallback reports unavailable holder command" rg -q "Lock holder command: unavailable" <<<"$output"
     assert_true "metadata fallback reports lock age parse failure" rg -q "Lock age: unavailable \\(timestamp parse failed:" <<<"$output"
+
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
 
     # Dead holder pid should be treated as stale lock and replaced.
     {

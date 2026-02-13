@@ -21,7 +21,7 @@ if [ "${RALPHIE_LIB:-0}" != "1" ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
         chmod +x "$rb_tmp_script" 2>/dev/null || true
         mv "$rb_tmp_script" "$rb_target_script"
         echo "Installed ralphie.sh to $rb_target_script"
-        exec "$rb_target_script" "$@"
+        exec env RALPHIE_SKIP_AUTO_UPDATE=1 "$rb_target_script" "$@"
     else
         echo "Failed to persist streamed ralphie.sh to $rb_target_script" >&2
         rm -f "$rb_tmp_script"
@@ -42,6 +42,7 @@ LOCK_FILE="$CONFIG_DIR/run.lock"
 REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
 GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
 STATE_FILE="$CONFIG_DIR/state.env"
+DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh"
 
 SPECIFY_DIR="$PROJECT_DIR/.specify/memory"
 CONSTITUTION_FILE="$SPECIFY_DIR/constitution.md"
@@ -100,6 +101,10 @@ FORCE_BUILD=false
 BUILD_APPROVAL_POLICY="${BUILD_APPROVAL_POLICY:-upfront}"
 CODEX_MODEL="${CODEX_MODEL:-}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-true}"
+AUTO_UPDATE_URL="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
+AUTO_UPDATE_OVERRIDE=""
+AUTO_UPDATE_URL_OVERRIDE=""
 SKIP_BOOTSTRAP_NODE_TOOLCHAIN="${SKIP_BOOTSTRAP_NODE_TOOLCHAIN:-false}"
 SKIP_BOOTSTRAP_CHUTES_CLAUDE="${SKIP_BOOTSTRAP_CHUTES_CLAUDE:-false}"
 SKIP_BOOTSTRAP_CHUTES_CODEX="${SKIP_BOOTSTRAP_CHUTES_CODEX:-false}"
@@ -125,6 +130,8 @@ MAX_CONSECUTIVE_FAILURES=3
 ACTIVE_ENGINE=""
 ACTIVE_CMD=""
 SESSION_LOG=""
+SESSION_LOG_FIFO=""
+SESSION_LOG_TEE_PID=""
 RUN_START_EPOCH="$(date +%s)"
 
 INCOMPLETE_SPECS=()
@@ -133,6 +140,9 @@ HAS_GITHUB_ISSUES=false
 HAS_HUMAN_REQUESTS=false
 LAST_CONSENSUS_SCORE=0
 LAST_CONSENSUS_PASS=false
+
+LOCK_BACKEND=""
+LOCK_BACKEND_LOGGED=false
 LAST_CONSENSUS_GO_COUNT=0
 LAST_CONSENSUS_HOLD_COUNT=0
 LAST_CONSENSUS_REPORT=""
@@ -209,6 +219,9 @@ Options:
   --doctor                           Print readiness diagnostics and exit
   --yolo                             Force YOLO mode on
   --no-yolo                          Force YOLO mode off
+  --auto-update                      Enable auto-update of ralphie.sh for this run
+  --no-auto-update                   Disable auto-update of ralphie.sh for this run
+  --update-url URL                   Override auto-update URL for this run
   --no-backoff                       Disable idle exponential backoff
   --non-interactive                  Use defaults when setup is required
   --help, -h                         Show help
@@ -225,6 +238,9 @@ Environment:
   HUMAN_NOTIFY_CHANNEL     none|terminal|telegram|discord (default: terminal)
   AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD   true|false (default: true)
   INTERRUPT_MENU_ENABLED   true|false (default: true)
+  AUTO_UPDATE_ENABLED      true|false (default: true)
+  AUTO_UPDATE_URL          Auto-update URL (default: upstream ralphie.sh raw github URL)
+  RALPHIE_SKIP_AUTO_UPDATE true|false (default: false) internal guard to prevent update loops
   TELEGRAM_BOT_TOKEN       Telegram bot token for notify channel=telegram
   TELEGRAM_CHAT_ID         Telegram chat id for notify channel=telegram
   DISCORD_WEBHOOK_URL      Discord webhook URL for notify channel=discord
@@ -579,6 +595,123 @@ effective_lock_wait_seconds() {
     echo "$wait_seconds"
 }
 
+log_lock_backend_once() {
+    if is_true "${LOCK_BACKEND_LOGGED:-false}"; then
+        return 0
+    fi
+    LOCK_BACKEND_LOGGED=true
+    if [ -n "${LOCK_BACKEND:-}" ]; then
+        info "Lock backend: $LOCK_BACKEND"
+    fi
+    return 0
+}
+
+is_pid_alive() {
+    local pid="$1"
+
+    if [ -z "$pid" ] || ! is_number "$pid"; then
+        return 1
+    fi
+
+    if kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+
+    # `kill -0` can fail with EPERM even when the process exists. Best-effort ps fallback.
+    if command -v ps >/dev/null 2>&1; then
+        if ps -p "$pid" -o pid= 2>/dev/null | grep -q '[0-9]'; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+write_lock_metadata() {
+    local pid="$1"
+    local lock_path="${2:-$LOCK_FILE}"
+    local ts
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    {
+        echo "$pid"
+        echo "$ts"
+    } > "$lock_path"
+}
+
+try_acquire_lock_via_link() {
+    if ! command -v ln >/dev/null 2>&1; then
+        return 2
+    fi
+
+    local tmp_lock
+    tmp_lock="$(mktemp "${LOCK_FILE}.tmp.XXXXXX" 2>/dev/null || echo "")"
+    if [ -z "$tmp_lock" ]; then
+        return 2
+    fi
+
+    if ! write_lock_metadata "$$" "$tmp_lock" 2>/dev/null; then
+        rm -f "$tmp_lock" 2>/dev/null || true
+        return 2
+    fi
+
+    if ln "$tmp_lock" "$LOCK_FILE" 2>/dev/null; then
+        rm -f "$tmp_lock" 2>/dev/null || true
+        return 0
+    fi
+
+    rm -f "$tmp_lock" 2>/dev/null || true
+    if [ -e "$LOCK_FILE" ]; then
+        return 1
+    fi
+    return 2
+}
+
+try_acquire_lock_via_noclobber() {
+    if (set -C; write_lock_metadata "$$") 2>/dev/null; then
+        return 0
+    fi
+
+    if [ -e "$LOCK_FILE" ]; then
+        return 1
+    fi
+
+    return 2
+}
+
+try_acquire_lock_atomic() {
+    local backend="${LOCK_BACKEND:-link}"
+    local rc
+
+    if [ "$backend" = "link" ]; then
+        if try_acquire_lock_via_link; then
+            LOCK_BACKEND="link"
+            log_lock_backend_once
+            return 0
+        fi
+        rc=$?
+        if [ "$rc" -eq 1 ]; then
+            LOCK_BACKEND="link"
+            log_lock_backend_once
+            return 1
+        fi
+
+        # Backend failure: fall back to noclobber and continue.
+        LOCK_BACKEND="noclobber"
+        backend="noclobber"
+    fi
+
+    if [ "$backend" = "noclobber" ]; then
+        if try_acquire_lock_via_noclobber; then
+            LOCK_BACKEND="noclobber"
+            log_lock_backend_once
+            return 0
+        fi
+        return $?
+    fi
+
+    return 2
+}
+
 release_lock() {
     if [ -f "$LOCK_FILE" ]; then
         local holder_pid
@@ -602,50 +735,169 @@ acquire_lock() {
         info "Adjusted lock wait to ${wait_seconds}s to cover configured timeout (${COMMAND_TIMEOUT_SECONDS}s)."
     fi
 
+    local existing_pid=""
     if [ -f "$LOCK_FILE" ]; then
-        local existing_pid wait_begin now elapsed
-        existing_pid=$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)
-        if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
-            if [ "$wait_seconds" -gt 0 ]; then
-                warn "Another ralphie process is running (pid $existing_pid). Waiting up to ${wait_seconds}s for lock release..."
-                wait_begin="$(date +%s)"
-                while true; do
-                    if [ ! -f "$LOCK_FILE" ]; then
-                        break
-                    fi
-                    existing_pid=$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)
-                    if [ -z "$existing_pid" ] || ! kill -0 "$existing_pid" 2>/dev/null; then
-                        break
-                    fi
-                    now="$(date +%s)"
-                    elapsed=$((now - wait_begin))
-                    if [ "$elapsed" -ge "$wait_seconds" ]; then
-                        emit_lock_diagnostics "$existing_pid"
-                        err "Another ralphie process is running (pid $existing_pid)."
-                        err "Timed out waiting ${wait_seconds}s for lock release: $display_lock_file"
-                        log_reason_code "RB_LOCK_WAIT_TIMEOUT" "pid=$existing_pid waited=${wait_seconds}s lock=$display_lock_file"
-                        exit 1
-                    fi
-                    sleep 1
-                done
-            else
-                emit_lock_diagnostics "$existing_pid"
-                err "Another ralphie process is running (pid $existing_pid)."
-                err "Stop that process or remove stale lock: $display_lock_file"
-                log_reason_code "RB_LOCK_ALREADY_HELD" "pid=$existing_pid wait=0 lock=$display_lock_file"
-                exit 1
-            fi
-        fi
-        if [ -f "$LOCK_FILE" ]; then
-            warn "Removing stale lock file: $display_lock_file"
-            rm -f "$LOCK_FILE"
+        existing_pid="$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)"
+        # Allow re-entrant acquisition when this process execs into a refreshed script.
+        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$$" ]; then
+            write_lock_metadata "$$" 2>/dev/null || true
+            return 0
         fi
     fi
 
-    {
-        echo "$$"
-        date '+%Y-%m-%d %H:%M:%S'
-    } > "$LOCK_FILE"
+    local wait_begin=""
+    local warned_wait=false
+
+    while true; do
+        if try_acquire_lock_atomic; then
+            return 0
+        fi
+
+        local rc=$?
+        if [ "$rc" -eq 2 ]; then
+            err "Failed to acquire lock due to an internal error: $display_lock_file"
+            log_reason_code "RB_LOCK_ACQUIRE_ERROR" "lock=$display_lock_file"
+            exit 1
+        fi
+
+        existing_pid="$(sed -n '1p' "$LOCK_FILE" 2>/dev/null || true)"
+        if [ -n "$existing_pid" ] && [ "$existing_pid" = "$$" ]; then
+            write_lock_metadata "$$" 2>/dev/null || true
+            return 0
+        fi
+
+        if [ -n "$existing_pid" ] && is_pid_alive "$existing_pid"; then
+            if [ "$wait_seconds" -gt 0 ]; then
+                if ! is_true "$warned_wait"; then
+                    warn "Another ralphie process is running (pid $existing_pid). Waiting up to ${wait_seconds}s for lock release..."
+                    warned_wait=true
+                fi
+                if [ -z "$wait_begin" ]; then
+                    wait_begin="$(date +%s)"
+                fi
+                local now elapsed
+                now="$(date +%s)"
+                elapsed=$((now - wait_begin))
+                if [ "$elapsed" -ge "$wait_seconds" ]; then
+                    emit_lock_diagnostics "$existing_pid"
+                    err "Another ralphie process is running (pid $existing_pid)."
+                    err "Timed out waiting ${wait_seconds}s for lock release: $display_lock_file"
+                    log_reason_code "RB_LOCK_WAIT_TIMEOUT" "pid=$existing_pid waited=${wait_seconds}s lock=$display_lock_file"
+                    exit 1
+                fi
+                sleep 1
+                continue
+            fi
+
+            emit_lock_diagnostics "$existing_pid"
+            err "Another ralphie process is running (pid $existing_pid)."
+            err "Stop that process or remove stale lock: $display_lock_file"
+            log_reason_code "RB_LOCK_ALREADY_HELD" "pid=$existing_pid wait=0 lock=$display_lock_file"
+            exit 1
+        fi
+
+        if [ -n "$existing_pid" ] && is_number "$existing_pid" && ! is_pid_alive "$existing_pid"; then
+            warn "Removing stale lock file: $display_lock_file"
+            rm -f "$LOCK_FILE" 2>/dev/null || true
+            continue
+        fi
+
+        # PID is missing/unparseable; treat as held to preserve atomicity.
+        if [ "$wait_seconds" -gt 0 ]; then
+            if ! is_true "$warned_wait"; then
+                warn "Another ralphie process is running (pid unavailable). Waiting up to ${wait_seconds}s for lock release..."
+                warned_wait=true
+            fi
+            if [ -z "$wait_begin" ]; then
+                wait_begin="$(date +%s)"
+            fi
+            local now elapsed
+            now="$(date +%s)"
+            elapsed=$((now - wait_begin))
+            if [ "$elapsed" -ge "$wait_seconds" ]; then
+                emit_lock_diagnostics "$existing_pid"
+                err "Another ralphie process is running (pid unavailable)."
+                err "Timed out waiting ${wait_seconds}s for lock release: $display_lock_file"
+                log_reason_code "RB_LOCK_WAIT_TIMEOUT" "pid=${existing_pid:-unknown} waited=${wait_seconds}s lock=$display_lock_file"
+                exit 1
+            fi
+            sleep 1
+            continue
+        fi
+
+        emit_lock_diagnostics "$existing_pid"
+        err "Another ralphie process is running (pid unavailable)."
+        err "Stop that process or remove stale lock: $display_lock_file"
+        log_reason_code "RB_LOCK_ALREADY_HELD" "pid=${existing_pid:-unknown} wait=0 lock=$display_lock_file"
+        exit 1
+    done
+}
+
+start_session_logging() {
+    local log_file="$1"
+
+    if [ -z "$log_file" ]; then
+        return 1
+    fi
+    if ! command -v mkfifo >/dev/null 2>&1; then
+        warn "mkfifo not found; session logging disabled."
+        return 1
+    fi
+    if ! command -v tee >/dev/null 2>&1; then
+        warn "tee not found; session logging disabled."
+        return 1
+    fi
+
+    SESSION_LOG_FIFO="$LOG_DIR/ralphie_session_${MODE}_$$.fifo"
+    rm -f "$SESSION_LOG_FIFO" 2>/dev/null || true
+    if ! mkfifo "$SESSION_LOG_FIFO" 2>/dev/null; then
+        warn "Failed to create session log FIFO. Session logging disabled."
+        SESSION_LOG_FIFO=""
+        return 1
+    fi
+
+    # Preserve original stdout/stderr so the background tee can keep printing to the terminal.
+    exec 3>&1 4>&2
+
+    tee -a "$log_file" < "$SESSION_LOG_FIFO" >&3 &
+    SESSION_LOG_TEE_PID=$!
+
+    # Redirect orchestrator output into the FIFO. The tee process copies it to both terminal and log file.
+    exec > "$SESSION_LOG_FIFO" 2>&1
+    return 0
+}
+
+cleanup_session_logging() {
+    if [ -z "${SESSION_LOG_FIFO:-}" ]; then
+        return 0
+    fi
+
+    # Close the FIFO writer by restoring stdout/stderr, then give tee a moment to flush.
+    exec 1>&3 2>&4 || true
+    exec 3>&- 4>&- || true
+
+    if [ -n "${SESSION_LOG_TEE_PID:-}" ]; then
+        local i
+        for i in 1 2 3 4 5; do
+            if ! kill -0 "$SESSION_LOG_TEE_PID" 2>/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
+        kill "$SESSION_LOG_TEE_PID" 2>/dev/null || true
+        wait "$SESSION_LOG_TEE_PID" 2>/dev/null || true
+    fi
+
+    rm -f "$SESSION_LOG_FIFO" 2>/dev/null || true
+    SESSION_LOG_FIFO=""
+    SESSION_LOG_TEE_PID=""
+    return 0
+}
+
+cleanup_exit() {
+    cleanup_session_logging || true
+    release_lock || true
+    return 0
 }
 
 archive_and_reset_runtime_artifacts() {
@@ -1085,6 +1337,8 @@ save_config() {
         printf "ENGINE_PREF=%q\n" "$ENGINE_PREF"
         printf "CODEX_MODEL=%q\n" "$CODEX_MODEL"
         printf "CLAUDE_MODEL=%q\n" "$CLAUDE_MODEL"
+        printf "AUTO_UPDATE_ENABLED=%q\n" "$AUTO_UPDATE_ENABLED"
+        printf "AUTO_UPDATE_URL=%q\n" "$AUTO_UPDATE_URL"
         printf "YOLO_MODE=%q\n" "$YOLO_MODE"
         printf "GIT_AUTONOMY=%q\n" "$GIT_AUTONOMY"
         printf "BUILD_APPROVAL_POLICY=%q\n" "$BUILD_APPROVAL_POLICY"
@@ -1125,6 +1379,8 @@ load_config() {
     ENGINE_PREF="${ENGINE_PREF:-auto}"
     CODEX_MODEL="${CODEX_MODEL:-}"
     CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+    AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-true}"
+    AUTO_UPDATE_URL="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
     YOLO_MODE="${YOLO_MODE:-true}"
     GIT_AUTONOMY="${GIT_AUTONOMY:-true}"
     BUILD_APPROVAL_POLICY="${BUILD_APPROVAL_POLICY:-upfront}"
@@ -1739,6 +1995,12 @@ run_setup_wizard() {
         STACK_SUMMARY="$(prompt_line "Stack summary" "$detected_stack")"
         CODEX_MODEL="$(prompt_optional_line "Default Codex model override (blank keeps codex default)" "${CODEX_MODEL:-}")"
         CLAUDE_MODEL="$(prompt_optional_line "Default Claude model override (blank keeps claude default)" "${CLAUDE_MODEL:-}")"
+        AUTO_UPDATE_ENABLED="$(prompt_yes_no "Enable ralphie.sh auto-update from upstream on each run?" "y")"
+        if is_true "$AUTO_UPDATE_ENABLED"; then
+            AUTO_UPDATE_URL="$(prompt_optional_line "Auto-update URL" "$DEFAULT_AUTO_UPDATE_URL")"
+        else
+            AUTO_UPDATE_URL="$DEFAULT_AUTO_UPDATE_URL"
+        fi
         offer_binary_bootstrap_setup
     else
         PROJECT_NAME="$(basename "$PROJECT_DIR")"
@@ -1757,6 +2019,8 @@ run_setup_wizard() {
         STACK_SUMMARY="$detected_stack"
         CODEX_MODEL="${CODEX_MODEL:-}"
         CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+        AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-true}"
+        AUTO_UPDATE_URL="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
         SKIP_BOOTSTRAP_NODE_TOOLCHAIN="${SKIP_BOOTSTRAP_NODE_TOOLCHAIN:-false}"
         SKIP_BOOTSTRAP_CHUTES_CLAUDE="${SKIP_BOOTSTRAP_CHUTES_CLAUDE:-false}"
         SKIP_BOOTSTRAP_CHUTES_CODEX="${SKIP_BOOTSTRAP_CHUTES_CODEX:-false}"
@@ -1780,12 +2044,14 @@ collect_incomplete_specs() {
         return
     fi
 
+    local spec_list
+    spec_list="$(find "$SPECS_DIR" -maxdepth 2 -type f \( -name "spec.md" -o -name "*.md" \) 2>/dev/null | sort || true)"
     while IFS= read -r spec_file; do
         [ -n "$spec_file" ] || continue
         if ! grep -qiE 'status[[:space:]]*:[[:space:]]*complete' "$spec_file" 2>/dev/null; then
             INCOMPLETE_SPECS+=("$spec_file")
         fi
-    done < <(find "$SPECS_DIR" -maxdepth 2 -type f \( -name "spec.md" -o -name "*.md" \) 2>/dev/null | sort)
+    done <<< "$spec_list"
 }
 
 check_plan_tasks() {
@@ -2189,10 +2455,11 @@ preflight_runtime_checks() {
     fi
 
     local gitignore_missing=()
-    local missing_entry missing_joined
+    local missing_entry missing_joined missing_output
+    missing_output="$(gitignore_missing_required_entries || true)"
     while IFS= read -r missing_entry; do
         [ -n "$missing_entry" ] && gitignore_missing+=("$missing_entry")
-    done < <(gitignore_missing_required_entries)
+    done <<< "$missing_output"
     if [ "${#gitignore_missing[@]}" -gt 0 ]; then
         warn ".gitignore is missing guardrail entries for local/sensitive/runtime artifacts:"
         for missing_entry in "${gitignore_missing[@]}"; do
@@ -2244,12 +2511,14 @@ gitignore_missing_required_entries() {
         return 0
     fi
 
+    local required_entries
+    required_entries="$(gitignore_required_entries)"
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
         if ! grep -qxF "$entry" "$gitignore_file"; then
             echo "$entry"
         fi
-    done < <(gitignore_required_entries)
+    done <<< "$required_entries"
 }
 
 extract_tag_value() {
@@ -2486,13 +2755,13 @@ run_agent_with_prompt() {
         fi
 
         if [ -n "$timeout_cmd" ]; then
-            if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${claude_cmd[@]}" > >(tee "$output_file" >> "$log_file") 2>>"$log_file"; then
+            if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
                 exit_code=0
             else
                 exit_code=$?
             fi
         else
-            if cat "$prompt_file" | "${claude_cmd[@]}" > >(tee "$output_file" >> "$log_file") 2>>"$log_file"; then
+            if cat "$prompt_file" | "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
                 exit_code=0
             else
                 exit_code=$?
@@ -2533,10 +2802,10 @@ self_heal_codex_reasoning_effort_xhigh() {
     sed -E 's/^([[:space:]]*model_reasoning_effort[[:space:]]*=[[:space:]]*)"xhigh"/\1"high"/' "$codex_config" > "$tmp_file"
     mv "$tmp_file" "$codex_config"
 
-    ok "Self-heal applied: updated $codex_config (xhigh -> high)"
+    ok "Self-heal applied: updated $(path_for_display "$codex_config") (xhigh -> high)"
     append_self_improvement_log \
         "Self-heal: Codex config compatibility" \
-        "- Trigger: Codex failed to parse model_reasoning_effort='xhigh'.\n- Action: Rewrote model_reasoning_effort to 'high'.\n- Backup: $backup_file\n- Outcome: Ready to retry agent loop."
+        "- Trigger: Codex failed to parse model_reasoning_effort='xhigh'.\n- Action: Rewrote model_reasoning_effort to 'high'.\n- Backup: $(path_for_display "$backup_file")\n- Outcome: Ready to retry agent loop."
     return 0
 }
 
@@ -2574,7 +2843,7 @@ print_fatal_agent_config_help() {
     if grep -qE 'model_reasoning_effort|unknown variant' "$log_file" "$output_file" 2>/dev/null; then
         err "Codex config has an unsupported 'model_reasoning_effort' value for this CLI build."
         warn "Valid values for this build are: none, minimal, low, medium, high"
-        warn "Update: $codex_config"
+        warn "Update: $(path_for_display "$codex_config")"
         warn "Example: model_reasoning_effort = \"high\""
     fi
 
@@ -2735,13 +3004,16 @@ markdown_artifacts_are_clean() {
     [ -f "$PLAN_FILE" ] && files+=("$PLAN_FILE")
     [ -f "$PROJECT_DIR/README.md" ] && files+=("$PROJECT_DIR/README.md")
 
+    local research_files spec_files
+    research_files="$(find "$RESEARCH_DIR" -maxdepth 2 -type f -name "*.md" 2>/dev/null || true)"
     while IFS= read -r file; do
         [ -n "$file" ] && files+=("$file")
-    done < <(find "$RESEARCH_DIR" -maxdepth 2 -type f -name "*.md" 2>/dev/null)
+    done <<< "$research_files"
 
+    spec_files="$(find "$SPECS_DIR" -maxdepth 3 -type f -name "*.md" 2>/dev/null || true)"
     while IFS= read -r file; do
         [ -n "$file" ] && files+=("$file")
-    done < <(find "$SPECS_DIR" -maxdepth 3 -type f -name "*.md" 2>/dev/null)
+    done <<< "$spec_files"
 
     for file in "${files[@]}"; do
         [ -f "$file" ] || continue
@@ -3228,6 +3500,137 @@ effective_yolo_mode() {
     fi
 }
 
+effective_auto_update_enabled() {
+    if [ -n "$AUTO_UPDATE_OVERRIDE" ]; then
+        echo "$AUTO_UPDATE_OVERRIDE"
+    else
+        echo "$AUTO_UPDATE_ENABLED"
+    fi
+}
+
+effective_auto_update_url() {
+    if [ -n "$AUTO_UPDATE_URL_OVERRIDE" ]; then
+        echo "$AUTO_UPDATE_URL_OVERRIDE"
+    elif [ -n "$AUTO_UPDATE_URL" ]; then
+        echo "$AUTO_UPDATE_URL"
+    else
+        echo "$DEFAULT_AUTO_UPDATE_URL"
+    fi
+}
+
+download_url_to_file() {
+    local url="$1"
+    local dest="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 2 --max-time 10 "$url" -o "$dest"
+        return $?
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -O "$dest" "$url"
+        return $?
+    fi
+    return 127
+}
+
+auto_update_candidate_is_valid() {
+    local file="$1"
+    [ -f "$file" ] || return 1
+    if ! head -n 1 "$file" 2>/dev/null | grep -qE '^#!/usr/bin/env[[:space:]]+bash'; then
+        return 1
+    fi
+    if ! grep -qF 'Ralphie - Unified autonomous loop for Codex and Claude Code' "$file" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+maybe_auto_update_self() {
+    # Best-effort, never block the run on update failures.
+    if [ "${RALPHIE_LIB:-0}" = "1" ]; then
+        return 0
+    fi
+    if is_true "${RALPHIE_SKIP_AUTO_UPDATE:-false}"; then
+        return 0
+    fi
+
+    local enabled url
+    enabled="$(effective_auto_update_enabled)"
+    if ! is_true "$enabled"; then
+        return 0
+    fi
+
+    url="$(effective_auto_update_url)"
+    url="$(printf '%s' "$url" | tr -d '[:space:]')"
+    if [ -z "$url" ]; then
+        return 0
+    fi
+
+    local self_base self_dir self_path
+    self_base="${BASH_SOURCE[0]:-$0}"
+    if [ -z "$self_base" ]; then
+        return 0
+    fi
+    self_dir="$(cd "$(dirname "$self_base")" 2>/dev/null && pwd)"
+    self_path="$self_dir/$(basename "$self_base")"
+    if [ ! -f "$self_path" ]; then
+        return 0
+    fi
+
+    mkdir -p "$CONFIG_DIR" "$READY_ARCHIVE_DIR" 2>/dev/null || true
+    local tmp_file
+    tmp_file="$(mktemp "$CONFIG_DIR/ralphie_update.XXXXXX" 2>/dev/null || mktemp 2>/dev/null || echo "")"
+    if [ -z "$tmp_file" ]; then
+        return 0
+    fi
+
+    local fetch_rc=0
+    if download_url_to_file "$url" "$tmp_file" >/dev/null 2>&1; then
+        fetch_rc=0
+    else
+        fetch_rc=$?
+    fi
+    if [ "$fetch_rc" -eq 127 ]; then
+        warn "Auto-update enabled but neither curl nor wget is available; skipping."
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+    if [ "$fetch_rc" -ne 0 ]; then
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+
+    if ! auto_update_candidate_is_valid "$tmp_file"; then
+        warn "Auto-update downloaded unexpected content; skipping."
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+
+    if cmp -s "$tmp_file" "$self_path" 2>/dev/null; then
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+
+    local ts backup_file
+    ts="$(date '+%Y%m%d_%H%M%S')"
+    backup_file="$READY_ARCHIVE_DIR/ralphie_sh_backup_${ts}.sh"
+    if ! cp "$self_path" "$backup_file" 2>/dev/null; then
+        warn "Auto-update could not write backup; skipping."
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+
+    chmod +x "$tmp_file" 2>/dev/null || true
+    if ! mv "$tmp_file" "$self_path" 2>/dev/null; then
+        warn "Auto-update could not replace script; skipping."
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 0
+    fi
+
+    info "Auto-update applied; re-executing latest ralphie.sh."
+    exec env RALPHIE_SKIP_AUTO_UPDATE=1 "$self_path" "$@"
+}
+
 prompt_file_for_mode() {
     local mode="$1"
     case "$mode" in
@@ -3558,6 +3961,8 @@ show_status() {
     echo "  Engine (default):  $ENGINE_PREF"
     echo "  Codex model:       ${CODEX_MODEL:-default}"
     echo "  Claude model:      ${CLAUDE_MODEL:-default}"
+    echo "  Auto update:       $(effective_auto_update_enabled)"
+    echo "  Update url:        $(effective_auto_update_url)"
     echo "  YOLO:              $YOLO_MODE"
     echo "  Git autonomy:      $GIT_AUTONOMY"
     echo "  Build approval:    $BUILD_APPROVAL_POLICY"
@@ -3618,6 +4023,8 @@ show_doctor() {
     echo "  Build approval:   $BUILD_APPROVAL_POLICY"
     echo "  Auto backfill:    $AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD"
     echo "  Interrupt menu:   $INTERRUPT_MENU_ENABLED"
+    echo "  Auto update:      $(effective_auto_update_enabled)"
+    echo "  Update url:       $(effective_auto_update_url)"
     echo "  Codex model:      ${CODEX_MODEL:-default}"
     echo "  Claude model:     ${CLAUDE_MODEL:-default}"
     echo "  Notify channel:   $HUMAN_NOTIFY_CHANNEL"
@@ -3911,6 +4318,19 @@ parse_args() {
                 YOLO_OVERRIDE="false"
                 shift
                 ;;
+            --auto-update)
+                AUTO_UPDATE_OVERRIDE="true"
+                shift
+                ;;
+            --no-auto-update)
+                AUTO_UPDATE_OVERRIDE="false"
+                shift
+                ;;
+            --update-url)
+                require_arg_value "--update-url" "${2:-}"
+                AUTO_UPDATE_URL_OVERRIDE="${2:-}"
+                shift 2
+                ;;
             --no-backoff)
                 BACKOFF_ENABLED=false
                 shift
@@ -4023,7 +4443,7 @@ main() {
     fi
 
     if is_true "$needs_lock"; then
-        trap release_lock EXIT
+        trap cleanup_exit EXIT
         trap handle_interrupt INT
         trap handle_sigterm TERM
         acquire_lock
@@ -4081,6 +4501,8 @@ main() {
             fi
         fi
     fi
+
+    maybe_auto_update_self "$@"
 
     local auto_phase_pipeline=false
     if ! is_true "$MODE_EXPLICIT" \
@@ -4204,7 +4626,10 @@ main() {
 
     ensure_layout
     SESSION_LOG="$LOG_DIR/ralphie_${MODE}_session_$(date '+%Y%m%d_%H%M%S').log"
-    exec > >(tee -a "$SESSION_LOG") 2>&1
+    if ! start_session_logging "$SESSION_LOG"; then
+        warn "Session logging disabled (mkfifo/tee unavailable). Continuing without a session log."
+        SESSION_LOG=""
+    fi
 
     write_state_snapshot "run_start"
 
