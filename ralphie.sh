@@ -3673,7 +3673,8 @@ maybe_collect_human_feedback() {
     if [ -n "$note" ]; then
         {
             echo "## $(date '+%Y-%m-%d %H:%M:%S')"
-            echo "$note"
+            echo "- Question: $prompt"
+            echo "- Answer: $note"
             echo ""
         } >> "$RESEARCH_DIR/HUMAN_FEEDBACK.md"
         ok "Saved feedback to $RESEARCH_DIR/HUMAN_FEEDBACK.md"
