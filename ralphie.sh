@@ -2899,19 +2899,32 @@ run_agent_with_prompt() {
             yolo_prefix=("env" "IS_SANDBOX=1")
         fi
 
-        if [ -n "$timeout_cmd" ]; then
-            if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
-                exit_code=0
+        local attempt=1
+        local max_run_attempts=3
+        while [ "$attempt" -le "$max_run_attempts" ]; do
+            if [ -n "$timeout_cmd" ]; then
+                if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                    exit_code=0; break
+                else
+                    exit_code=$?
+                fi
             else
-                exit_code=$?
+                if cat "$prompt_file" | "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                    exit_code=0; break
+                else
+                    exit_code=$?
+                fi
             fi
-        else
-            if cat "$prompt_file" | "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
-                exit_code=0
-            else
-                exit_code=$?
+            
+            # Resilience: Retry on transient inference hiccups (e.g. backend errors)
+            if grep -qiE "backend error|token error|timeout|connection refused|overloaded" "$log_file" 2>/dev/null; then
+                warn "Inference hiccup detected (attempt $attempt/$max_run_attempts). Retrying with backoff..."
+                sleep $((attempt * 5))
+                attempt=$((attempt + 1))
+                continue
             fi
-        fi
+            break
+        done
     fi
 
     return "$exit_code"
@@ -4726,8 +4739,8 @@ main() {
         fi
     done
 
-    # State Awareness: Prompt for resume if state exists and no explicit action is taken.
-    if ! is_true "$RESUME_MODE" && [ -f "$STATE_FILE" ] && is_interactive; then
+    # State Awareness: Auto-resume or prompt if state exists and no explicit action is taken.
+    if ! is_true "$RESUME_MODE" && [ -f "$STATE_FILE" ]; then
         local explicit_action=false
         for arg in "$@"; do
             case "$arg" in
@@ -4735,16 +4748,23 @@ main() {
                     explicit_action=true; break ;;
             esac
         done
+
         if ! is_true "$explicit_action"; then
-             local last_ts
+             local last_ts last_mode
              last_ts="$(read_state_value timestamp)"
-             local last_mode
              last_mode="$(read_state_value mode)"
-             echo -e "${YELLOW}Ralphie: Previous state detected (${last_ts:-unknown}, Mode: ${last_mode:-unknown}).${NC}"
-             if is_true "$(prompt_yes_no "Resume previous session?" "y")"; then
+
+             if is_interactive; then
+                 echo -e "${YELLOW}Ralphie: Previous state detected (${last_ts:-unknown}, Mode: ${last_mode:-unknown}).${NC}"
+                 if is_true "$(prompt_yes_no "Resume previous session?" "y")"; then
+                     RESUME_MODE=true
+                 fi
+                 echo ""
+             elif is_true "$NON_INTERACTIVE"; then
+                 # In non-interactive mode, prioritize loop continuity for autonomous recovery.
+                 info "Autonomous Recovery: Auto-resuming from state snapshot ($last_ts)."
                  RESUME_MODE=true
              fi
-             echo ""
         fi
     fi
 
@@ -5012,7 +5032,7 @@ main() {
     local plan_stagnation=0
     local plan_last_human_escalation=0
     local auto_engine_failovers=0
-    local auto_engine_failover_limit=1
+    local auto_engine_failover_limit=2
     local idle_auto_plan_attempted=false
     local pipeline_test_completions=0
     local allow_auto_failover=false
@@ -5025,6 +5045,16 @@ main() {
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$iteration" -ge "$MAX_ITERATIONS" ]; then
             ok "Reached max iterations: $MAX_ITERATIONS"
             break
+        fi
+
+        # Master Orchestrator Integrity Check: Validate environment state before every iteration
+        local current_plan_hash="$(get_checksum "$PLAN_FILE")"
+        local current_const_hash="$(get_checksum "$CONSTITUTION_FILE")"
+        if [ "$iteration" -gt 1 ]; then
+            local last_plan_hash="$(read_state_value plan_checksum)"
+            if [ "$last_plan_hash" != "none" ] && [ "$last_plan_hash" != "$current_plan_hash" ]; then
+                info "State Sync: Implementation plan modification detected. Ingesting changes."
+            fi
         fi
 
         if [ "$MODE" = "build" ]; then
@@ -5345,7 +5375,15 @@ main() {
 
         if [ "$consecutive_failures" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
             warn "$MAX_CONSECUTIVE_FAILURES consecutive failed/incomplete iterations."
-            warn "Review logs under $LOG_DIR for blockers."
+            if is_true "$allow_auto_failover"; then
+                local stuck_engine_failover
+                stuck_engine_failover="$(pick_fallback_engine "$MODE" "$ACTIVE_ENGINE" || true)"
+                if [ -n "$stuck_engine_failover" ] && switch_active_engine "$stuck_engine_failover" "consecutive failures"; then
+                    info "Auto-failover engaged to break stall."
+                    consecutive_failures=0
+                    continue
+                fi
+            fi
             consecutive_failures=0
         fi
 
