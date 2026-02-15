@@ -11,7 +11,7 @@ Remaining build-readiness blockers are in:
 ## Requirements
 
 - Enforce semantic build-prerequisite validation.
-- Preserve required prepare tags under noisy output conditions.
+- Preserve required plan tags under noisy output conditions.
 - Separate Claude runtime logs from primary output artifacts.
 - Prove reviewer execution is bounded by configured parallelism.
 - Preserve neutral orchestration across Codex and Claude.
@@ -25,14 +25,14 @@ Remaining build-readiness blockers are in:
 5. Claude execution path no longer writes runtime stream and final output to the same artifact file.
 6. Tests prove active reviewer jobs never exceed `SWARM_MAX_PARALLEL`.
 7. Existing consensus-failure-threshold behavior remains green.
-8. One-iteration prepare smoke checks pass for both `--engine codex` and `--engine claude`.
+8. One-iteration plan smoke checks pass for both `--engine codex` and `--engine claude`.
 
 ## Verification Steps
 
 1. Run `bash tests/ralphie_shell_tests.sh`.
 2. Run `./ralphie.sh --doctor`.
-3. Run `./ralphie.sh --engine codex prepare --max 1`.
-4. Run `./ralphie.sh --engine claude prepare --max 1`.
+3. Run `./ralphie.sh --engine codex plan --max 1`.
+4. Run `./ralphie.sh --engine claude plan --max 1`.
 5. Inspect output artifacts for required tags and transcript-leakage absence.
 
 ## Status: COMPLETE

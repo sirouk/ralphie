@@ -66,7 +66,6 @@ SETUP_SUBREPOS_SCRIPT="$PROJECT_DIR/scripts/setup-agent-subrepos.sh"
 
 PROMPT_BUILD_FILE="$PROJECT_DIR/PROMPT_build.md"
 PROMPT_PLAN_FILE="$PROJECT_DIR/PROMPT_plan.md"
-PROMPT_PREPARE_FILE="$PROJECT_DIR/PROMPT_prepare.md"
 PROMPT_TEST_FILE="$PROJECT_DIR/PROMPT_test.md"
 PROMPT_REFACTOR_FILE="$PROJECT_DIR/PROMPT_refactor.md"
 PROMPT_LINT_FILE="$PROJECT_DIR/PROMPT_lint.md"
@@ -112,7 +111,7 @@ HUMAN_NOTIFY_CHANNEL="${HUMAN_NOTIFY_CHANNEL:-terminal}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
-AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD="${AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD:-true}"
+AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
 INTERRUPT_MENU_ENABLED="${INTERRUPT_MENU_ENABLED:-true}"
 SWARM_ENABLED=true
 SWARM_SIZE="${SWARM_SIZE:-3}"
@@ -133,6 +132,8 @@ MAX_CONSECUTIVE_FAILURES=3
 ACTIVE_ENGINE=""
 ACTIVE_CMD=""
 SESSION_LOG=""
+# Global background process registry for atomic lifecycle management
+RALPHIE_BG_PIDS=()
 SESSION_LOG_FIFO=""
 SESSION_LOG_TEE_PID=""
 RUN_START_EPOCH="$(date +%s)"
@@ -175,10 +176,9 @@ print_help() {
 Ralphie - Unified autonomous code loop (Codex + Claude Code)
 
 Usage:
-  ./ralphie.sh                   # Default pipeline: prepare -> build -> test -> refactor -> test -> lint -> document
+  ./ralphie.sh                   # Default pipeline: plan -> build -> test -> refactor -> test -> lint -> document
   ./ralphie.sh 20                # Build mode, max 20 iterations
-  ./ralphie.sh plan              # Planning mode (default max=1)
-  ./ralphie.sh prepare           # Deep prepare mode (research+spec+plan)
+  ./ralphie.sh plan              # Planning mode (research+spec+plan)
   ./ralphie.sh test              # Test-focused mode
   ./ralphie.sh refactor          # Refactor/simplify mode
   ./ralphie.sh lint              # Lint/format/static-check mode
@@ -192,10 +192,11 @@ Usage:
   ./ralphie.sh --status          # Show current configuration
 
 Options:
+  --resume                           Resume from last known state snapshot
   --engine codex|claude|auto|ask     Override configured engine
   --codex-model MODEL                Default codex model passed to agent invocations
   --claude-model MODEL               Default claude model passed to agent invocations
-  --mode build|plan|prepare|test|refactor|lint|document
+  --mode build|plan|test|refactor|lint|document
                                      Explicit mode
   --max N                            Max iterations (0 = unlimited)
   --context-file FILE                Add large external context file guidance
@@ -208,11 +209,11 @@ Options:
   --human                            Interactive capture of one-by-one human priorities into HUMAN_INSTRUCTIONS.md
   --timeout SECONDS                  Kill an agent run after this many seconds (0=off)
   --wait-for-lock SECONDS            Wait for active run lock before failing (0=off)
-  --auto-continue-build              In prepare mode, auto-enter build when approved
+  --auto-continue-build              In plan mode, auto-enter build when approved
   --build-approval MODE              Build approval policy: upfront|on_ready
   --notify CHANNEL                   Human notification channel: none|terminal|telegram|discord
   --force-build                      Bypass strict build readiness gate
-  --no-auto-prepare-backfill        Keep build mode idle behavior (do not auto-switch to prepare when queue is empty)
+  --no-auto-plan-backfill           Keep build mode idle behavior (do not auto-switch to plan when queue is empty)
   --no-interrupt-menu               On Ctrl+C, exit immediately (disable resume/human-instruction submenu)
   --swarm-size N                     Number of panel reviewers for consensus
   --swarm-max-parallel N             Max concurrent panel reviewers
@@ -240,7 +241,7 @@ Environment:
   CONSENSUS_MAX_REVIEWER_FAILURES  Max failed reviewers allowed before consensus invalidates
   BUILD_APPROVAL_POLICY    upfront|on_ready (default: upfront)
   HUMAN_NOTIFY_CHANNEL     none|terminal|telegram|discord (default: terminal)
-  AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD   true|false (default: true)
+  AUTO_PLAN_BACKFILL_ON_IDLE_BUILD      true|false (default: true)
   INTERRUPT_MENU_ENABLED   true|false (default: true)
   AUTO_UPDATE_ENABLED      true|false (default: true)
   AUTO_UPDATE_URL          Auto-update URL (default: upstream ralphie.sh raw github URL)
@@ -333,7 +334,7 @@ readiness_rubric_for_prompt() {
     cat <<'EOF'
 ## Ralphie Readiness Rubric (Machine-Checked)
 
-Do not emit `<promise>DONE</promise>` in plan/prepare unless these are true:
+Do not emit `<promise>DONE</promise>` in plan unless these are true:
 
 - `IMPLEMENTATION_PLAN.md` exists and is actionable:
   - Includes a goal/scope/objective signal.
@@ -414,14 +415,30 @@ path_for_display() {
     esac
 }
 
+get_checksum() {
+    local file="$1"
+    if [ ! -f "$file" ]; then echo "none"; return; fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | cut -d ' ' -f 1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | cut -d ' ' -f 1
+    else
+        date +%s%N
+    fi
+}
+
 write_state_snapshot() {
     local stage="${1:-}"
-    local ts tmp_file
+    local ts tmp_file checksums=""
 
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     tmp_file="${STATE_FILE}.tmp.$$"
 
     mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+
+    # Comprehensive State Gate Validation
+    [ -f "$PLAN_FILE" ] && checksums+=" plan_checksum=$(get_checksum "$PLAN_FILE")"
+    [ -f "$CONSTITUTION_FILE" ] && checksums+=" constitution_checksum=$(get_checksum "$CONSTITUTION_FILE")"
 
     {
         echo "timestamp=$ts"
@@ -444,14 +461,17 @@ write_state_snapshot() {
         echo "consensus_pass=${LAST_CONSENSUS_PASS:-false}"
         if [ -f "$GATE_FEEDBACK_FILE" ]; then
             echo "gate_feedback_present=true"
+            echo "gate_checksum=$(get_checksum "$GATE_FEEDBACK_FILE")"
         else
             echo "gate_feedback_present=false"
         fi
+        for entry in $checksums; do echo "$entry"; done
     } >"$tmp_file" 2>/dev/null || {
         rm -f "$tmp_file" 2>/dev/null || true
         return 0
     }
 
+    # Atomic swap for state integrity
     mv "$tmp_file" "$STATE_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
     return 0
 }
@@ -913,6 +933,17 @@ cleanup_session_logging() {
 }
 
 cleanup_exit() {
+    local bg_pid
+    # Atomic cleanup of orphaned background agents
+    if [ ${#RALPHIE_BG_PIDS[@]} -gt 0 ]; then
+        warn "Terminating ${#RALPHIE_BG_PIDS[@]} background processes..."
+        for bg_pid in "${RALPHIE_BG_PIDS[@]}"; do
+            if kill -0 "$bg_pid" 2>/dev/null; then
+                kill -TERM "$bg_pid" 2>/dev/null || true
+                (sleep 2; kill -9 "$bg_pid" 2>/dev/null || true) &
+            fi
+        done
+    fi
     cleanup_session_logging || true
     release_lock || true
     return 0
@@ -975,7 +1006,6 @@ create_deep_cleanup_backup() {
     [ -d "$SPECS_DIR" ] && targets+=("specs")
     [ -f "$PROMPT_BUILD_FILE" ] && targets+=("PROMPT_build.md")
     [ -f "$PROMPT_PLAN_FILE" ] && targets+=("PROMPT_plan.md")
-    [ -f "$PROMPT_PREPARE_FILE" ] && targets+=("PROMPT_prepare.md")
     [ -f "$PROMPT_TEST_FILE" ] && targets+=("PROMPT_test.md")
     [ -f "$PROMPT_REFACTOR_FILE" ] && targets+=("PROMPT_refactor.md")
     [ -f "$PROMPT_LINT_FILE" ] && targets+=("PROMPT_lint.md")
@@ -1013,8 +1043,8 @@ clean_deep_artifacts() {
 
     find "$LOG_DIR" "$CONSENSUS_DIR" "$COMPLETION_LOG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
     find "$MAPS_DIR" "$SUBREPOS_DIR" "$RESEARCH_DIR" "$SPECS_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
-    rm -f "$PROMPT_BUILD_FILE" "$PROMPT_PLAN_FILE" "$PROMPT_PREPARE_FILE" "$PROMPT_TEST_FILE" "$PROMPT_REFACTOR_FILE" "$PROMPT_LINT_FILE" "$PROMPT_DOCUMENT_FILE"
-    rm -f "$CONFIG_DIR/PROMPT_prepare_once.md"
+    rm -f "$PROMPT_BUILD_FILE" "$PROMPT_PLAN_FILE" "$PROMPT_TEST_FILE" "$PROMPT_REFACTOR_FILE" "$PROMPT_LINT_FILE" "$PROMPT_DOCUMENT_FILE"
+    rm -f "$CONFIG_DIR/PROMPT_plan_once.md"
     rm -f "$LOCK_FILE"
     rm -f "$REASON_LOG_FILE" "$GATE_FEEDBACK_FILE" "$STATE_FILE" 2>/dev/null || true
 
@@ -1386,6 +1416,7 @@ offer_binary_bootstrap_setup() {
 
 save_config() {
     ensure_layout
+    local tmp_file="${CONFIG_FILE}.tmp.$$"
     {
         echo "# Generated by ralphie.sh"
         echo "RALPHIE_VERSION=$(printf '%q' "$SCRIPT_VERSION")"
@@ -1408,7 +1439,7 @@ save_config() {
         printf "SKIP_BOOTSTRAP_CHUTES_CLAUDE=%q\n" "$SKIP_BOOTSTRAP_CHUTES_CLAUDE"
         printf "SKIP_BOOTSTRAP_CHUTES_CODEX=%q\n" "$SKIP_BOOTSTRAP_CHUTES_CODEX"
         printf "INTERRUPT_MENU_ENABLED=%q\n" "$INTERRUPT_MENU_ENABLED"
-        printf "AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD=%q\n" "$AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD"
+        printf "AUTO_PLAN_BACKFILL_ON_IDLE_BUILD=%q\n" "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD"
         printf "HUMAN_NOTIFY_CHANNEL=%q\n" "$HUMAN_NOTIFY_CHANNEL"
         printf "ENABLE_GITHUB_ISSUES=%q\n" "$ENABLE_GITHUB_ISSUES"
         printf "GITHUB_REPO=%q\n" "$GITHUB_REPO"
@@ -1421,7 +1452,8 @@ save_config() {
         printf "CONSENSUS_MAX_REVIEWER_FAILURES=%q\n" "$CONSENSUS_MAX_REVIEWER_FAILURES"
         printf "CONFIDENCE_TARGET=%q\n" "$CONFIDENCE_TARGET"
         printf "CREATED_AT=%q\n" "$(date '+%Y-%m-%d %H:%M:%S')"
-    } > "$CONFIG_FILE"
+    } > "$tmp_file"
+    mv "$tmp_file" "$CONFIG_FILE"
 }
 
 load_config() {
@@ -1451,7 +1483,7 @@ load_config() {
     SKIP_BOOTSTRAP_CHUTES_CLAUDE="${SKIP_BOOTSTRAP_CHUTES_CLAUDE:-false}"
     SKIP_BOOTSTRAP_CHUTES_CODEX="${SKIP_BOOTSTRAP_CHUTES_CODEX:-false}"
     INTERRUPT_MENU_ENABLED="${INTERRUPT_MENU_ENABLED:-true}"
-    AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD="${AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD:-true}"
+    AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
     HUMAN_NOTIFY_CHANNEL="${HUMAN_NOTIFY_CHANNEL:-terminal}"
     ENABLE_GITHUB_ISSUES="${ENABLE_GITHUB_ISSUES:-false}"
     GITHUB_REPO="${GITHUB_REPO:-$(guess_github_repo_from_remote)}"
@@ -1476,8 +1508,9 @@ load_config() {
 
 write_constitution() {
     ensure_layout
+    local tmp_file="${CONSTITUTION_FILE}.tmp.$$"
 
-    cat > "$CONSTITUTION_FILE" <<EOF
+    cat > "$tmp_file" <<EOF
 # $PROJECT_NAME Constitution
 
 > $PROJECT_VISION
@@ -1527,7 +1560,7 @@ $( [ -n "$GITHUB_REPO" ] && echo "- **GitHub Repo:** $GITHUB_REPO" )
 
 ## Execution Model
 
-### Phase 1: Prepare
+### Phase 1: Plan (Research + Spec + Implementation Plan)
 
 - Build deep understanding with recursive planning and critique.
 - Research each major component using reputable sources when available.
@@ -1545,11 +1578,12 @@ $( [ -n "$GITHUB_REPO" ] && echo "- **GitHub Repo:** $GITHUB_REPO" )
 ## Completion Signal
 
 Only output \`<promise>DONE</promise>\` when the current mode's acceptance criteria are met:
-1. **Prepare/Plan:** required artifacts are written, coherent, and pass readiness checks.
+1. **Plan:** required artifacts (research, specs, and implementation plan) are written, coherent, and pass readiness checks.
 2. **Build:** requirements are implemented, tests/lint pass (or blockers are documented), and git actions are complete when autonomy is enabled.
 
 Never output the completion signal early.
 EOF
+    mv "$tmp_file" "$CONSTITUTION_FILE"
 }
 
 write_agent_entry_files() {
@@ -1595,7 +1629,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke \`./ralphie.sh\` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Human queue:
 - If \`$HUMAN_INSTRUCTIONS_REL\` exists, treat \`Status: NEW\` entries as top-priority candidate work.
@@ -1655,48 +1689,7 @@ EOF
 
     if [ ! -f "$PROMPT_PLAN_FILE" ] || is_true "$REFRESH_PROMPTS"; then
         cat > "$PROMPT_PLAN_FILE" <<'EOF'
-# Ralphie Plan Mode
-
-Read `.specify/memory/constitution.md`.
-
-Output policy:
-- Do not emit pseudo tool-invocation wrappers (for example: `assistant to=...` or JSON tool-call envelopes).
-- Write the plan file directly, then provide plain-text status.
-- Do not include tool execution trace lines in the plan markdown.
-- Do not include local usernames, home-directory paths, or absolute workstation paths in artifacts; use repo-relative paths.
-- Keep `.gitignore` updated for sensitive/local/generated artifacts (for example: `.env*`, runtime logs, caches, and machine-local files).
-
-Execution boundary:
-- Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
-
-Human queue:
-- If `$HUMAN_INSTRUCTIONS_REL` exists, prioritize `Status: NEW` entries in planning.
-- Convert one human request at a time into explicit checklist tasks.
-
-Analysis doctrine:
-- Be skeptical of local markdown/docs/comments and naming semantics until verified in code/config/runtime.
-- Prefer first-principles reasoning plus primary-source references.
-- If `research/COVERAGE_MATRIX.md` exists, prioritize uncovered code/config paths first.
-
-Create or refresh `IMPLEMENTATION_PLAN.md` from current specs and code state.
-
-Requirements:
-1. Prioritize by dependency and impact.
-2. Use actionable checkbox tasks (`- [ ]`).
-3. Keep tasks small enough for one loop iteration.
-4. Add a short "Completed" section for done items (`- [x]`).
-5. If `maps/agent-source-map.yaml` exists, include at least one cross-engine improvement task for `ralphie.sh`.
-6. For any provider-specific task, add a paired parity/fallback task.
-
-When the plan is saved and coherent, output:
-`<promise>DONE</promise>`
-EOF
-    fi
-
-    if [ ! -f "$PROMPT_PREPARE_FILE" ] || is_true "$REFRESH_PROMPTS"; then
-        cat > "$PROMPT_PREPARE_FILE" <<'EOF'
-# Ralphie Prepare Mode (Research + Plan + Spec)
+# Ralphie Plan Mode (Research + Spec + Plan)
 
 Read `.specify/memory/constitution.md` first.
 
@@ -1709,7 +1702,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Human queue:
 - If `$HUMAN_INSTRUCTIONS_REL` exists, treat `Status: NEW` entries as highest-priority planning inputs.
@@ -1753,7 +1746,7 @@ For each cycle:
 6. Research each major dependency/module externally with reputable primary sources.
 7. If web access fails, continue with reasoned fallback and mark uncertainty + what needs later verification.
 8. Update confidence per component and per coverage area.
-9. If `maps/agent-source-map.yaml` exists, run one map-guided critique focused on `ralphie.sh` parity and reliability.
+9. If `maps/agent-source-map.yaml` exists, include at least one cross-engine improvement task for `ralphie.sh`.
 10. Apply anti-overfit rules from the map before recommending tool-specific behavior.
 
 ## Human Interaction Rules
@@ -1769,7 +1762,7 @@ Always include:
 - `<needs_human>true|false</needs_human>`
 - `<human_question>...</human_question>` (empty if not needed)
 
-When preparation is truly complete and build can begin:
+When planning is truly complete and build can begin:
 - `<phase>PLAN_READY</phase>`
 - `<promise>DONE</promise>`
 EOF
@@ -1789,7 +1782,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Testing doctrine:
 - Use first principles and executable behavior; distrust comments/docs until verified.
@@ -1823,7 +1816,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Refactor doctrine:
 - Preserve behavior exactly unless a spec explicitly allows behavior changes.
@@ -1857,7 +1850,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Required actions:
 1. Run repository lint/format/static-check workflows that already exist.
@@ -1885,7 +1878,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Documentation doctrine:
 - Prefer updating nearest existing docs over creating new top-level docs.
@@ -2695,7 +2688,7 @@ output_has_tool_wrapper_leakage() {
     return 1
 }
 
-output_has_prepare_status_tags() {
+output_has_plan_status_tags() {
     local output_file="$1"
     if [ ! -f "$output_file" ]; then
         return 1
@@ -2880,22 +2873,40 @@ run_agent_with_prompt() {
             claude_cmd+=("--model" "$CLAUDE_MODEL")
         fi
         if is_true "$yolo_effective"; then
+            # Enforce YOLO standards for Claude: IS_SANDBOX=1 and --dangerously-skip-permissions.
             if [ -n "$CLAUDE_CAP_YOLO_FLAG" ]; then
-                claude_cmd+=("$CLAUDE_CAP_YOLO_FLAG")
+                # Only add the flag if it's not already in the command list from a capability probe.
+                local flag_found=false
+                local existing_arg
+                for existing_arg in "${claude_cmd[@]}"; do
+                    if [ "$existing_arg" = "$CLAUDE_CAP_YOLO_FLAG" ]; then
+                        flag_found=true
+                        break
+                    fi
+                done
+                if ! is_true "$flag_found"; then
+                    claude_cmd+=("$CLAUDE_CAP_YOLO_FLAG")
+                fi
             else
                 warn "YOLO requested, but Claude dangerous skip-permissions flag is unsupported. Continuing without it."
                 log_reason_code "RB_RUN_CLA_YOLO_UNSUPPORTED" "requested claude yolo flag is unavailable"
             fi
         fi
 
+        # Determine if we should prefix with IS_SANDBOX=1.
+        local yolo_prefix=()
+        if is_true "$yolo_effective"; then
+            yolo_prefix=("env" "IS_SANDBOX=1")
+        fi
+
         if [ -n "$timeout_cmd" ]; then
-            if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+            if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
                 exit_code=0
             else
                 exit_code=$?
             fi
         else
-            if cat "$prompt_file" | "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+            if cat "$prompt_file" | "${yolo_prefix[@]}" "${claude_cmd[@]}" 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
                 exit_code=0
             else
                 exit_code=$?
@@ -2981,7 +2992,7 @@ print_fatal_agent_config_help() {
         warn "Example: model_reasoning_effort = \"high\""
     fi
 
-    warn "You can bypass Codex for now with: ./ralphie.sh --engine claude prepare"
+    warn "You can bypass Codex for now with: ./ralphie.sh --engine claude plan"
 }
 
 json_escape() {
@@ -3060,7 +3071,7 @@ notify_human() {
 }
 
 secure_build_approval_upfront() {
-    if [ "$MODE" != "prepare" ]; then
+    if [ "$MODE" != "plan" ]; then
         return 0
     fi
     if is_true "$AUTO_CONTINUE_BUILD"; then
@@ -3075,7 +3086,7 @@ secure_build_approval_upfront() {
         warn "Use --auto-continue-build or run with --build-approval on_ready."
         log_reason_code "RB_APPROVAL_UPFRONT_NON_INTERACTIVE" "upfront approval requires interactive mode or auto-continue-build"
         notify_human \
-            "Build approval needed before prepare run" \
+            "Build approval needed before plan run" \
             "Re-run interactively to approve upfront, or use --auto-continue-build."
         return 1
     fi
@@ -3083,16 +3094,16 @@ secure_build_approval_upfront() {
     local answer
     while true; do
         answer=""
-        read_user_line "Secure build approval now? Auto-enter build if prepare passes [y/n] (n): " answer
+        read_user_line "Secure build approval now? Auto-enter build if plan passes [y/n] (n): " answer
         case "$(to_lower "${answer:-n}")" in
             y|yes)
                 AUTO_CONTINUE_BUILD=true
-                ok "Upfront approval captured. Build will auto-start after prepare consensus."
+                ok "Upfront approval captured. Build will auto-start after plan consensus."
                 return 0
                 ;;
             n|no)
                 BUILD_APPROVAL_POLICY="on_ready"
-                warn "Upfront approval skipped. Approval will be requested at prepare completion."
+                warn "Upfront approval skipped. Approval will be requested at plan completion."
                 return 0
                 ;;
             *)
@@ -3108,26 +3119,26 @@ request_build_permission() {
     fi
 
     if ! is_interactive; then
-        warn "Prepare phase is complete, but human approval is required to enter build mode."
+        warn "Plan phase is complete, but human approval is required to enter build mode."
         warn "Run again with --auto-continue-build or restart in build mode manually."
-        log_reason_code "RB_PREPARE_BUILD_APPROVAL_REQUIRED" "interactive approval required to transition from prepare to build"
+        log_reason_code "RB_PLAN_BUILD_APPROVAL_REQUIRED" "interactive approval required to transition from plan to build"
         notify_human \
             "Build approval required" \
-            "Prepare is complete. Approve with --auto-continue-build or run build manually."
+            "Plan is complete. Approve with --auto-continue-build or run build manually."
         return 1
     fi
 
     local answer
     while true; do
         answer=""
-        read_user_line "Preparation is complete. Begin build mode now? [y/n] (n): " answer
+        read_user_line "Planning is complete. Begin build mode now? [y/n] (n): " answer
         case "$(to_lower "${answer:-n}")" in
             y|yes) return 0 ;;
             n|no)
-                log_reason_code "RB_PREPARE_BUILD_APPROVAL_DECLINED" "human declined build transition"
+                log_reason_code "RB_PLAN_BUILD_APPROVAL_DECLINED" "human declined build transition"
                 notify_human \
                     "Build approval declined" \
-                    "Prepare completed but build was not approved in this run."
+                    "Plan completed but build was not approved in this run."
                 return 1
                 ;;
             *) echo "Please answer y or n." ;;
@@ -3298,11 +3309,13 @@ make_swarm_reviewer_prompt() {
     local reviewer_index="$2"
     local reviewer_total="$3"
     local prompt_path="$4"
+    local persona="${5:-default}"
+    local jitter_topic="${6:-general}"
     local stage_goal
 
     case "$stage" in
-        prepare-gate)
-            stage_goal="Decide if preparation/research/specification is complete enough to start build mode."
+        plan-gate)
+            stage_goal="Decide if planning/research/specification is complete enough to start build mode."
             ;;
         build-gate)
             stage_goal="Decide if this repository is ready to enter autonomous build mode now."
@@ -3324,10 +3337,28 @@ make_swarm_reviewer_prompt() {
             ;;
     esac
 
+    local persona_instruction=""
+    case "$persona" in
+        adversarial)
+            persona_instruction="ROLE: ADVERSARIAL AUDITOR. Your goal is to find reasons to REJECT the current state. Be skeptical, hunt for edge cases, and assume the primary agent is over-confident or has missed critical complexity."
+            ;;
+        optimist)
+            persona_instruction="ROLE: SUPPORTIVE ARCHITECT. Your goal is to identify if the current path is viable and if the foundations are solid enough to proceed. Focus on momentum and block only on catastrophic risks."
+            ;;
+        forensic)
+            persona_instruction="ROLE: FORENSIC CODE AUDITOR. You trust executable logic over comments. Demand proof of behavior and check for artifact consistency and tool leakage."
+            ;;
+        *)
+            persona_instruction="ROLE: INDEPENDENT REVIEWER. Provide a balanced assessment of readiness and risk."
+            ;;
+    esac
+
     cat > "$prompt_path" <<EOF
 # Independent Reviewer $reviewer_index/$reviewer_total
+## $persona Persona
 
-You are an independent reviewer in a multi-agent panel.
+$persona_instruction
+
 Goal: $stage_goal
 
 ## Review Inputs
@@ -3359,6 +3390,11 @@ Output exactly these tags:
 \`<summary>one short paragraph</summary>\`
 \`<gaps>comma-separated critical gaps, or none</gaps>\`
 \`<promise>DONE</promise>\`
+
+---
+## Stochastic Variation (Panel Diversity)
+- **Reviewer Seed:** $((RANDOM % 9999))
+- **Primary Analytical Lens:** Focus 20% more effort than usual on investigating **$jitter_topic** to ensure the panel explores non-obvious failure modes.
 EOF
 }
 
@@ -3408,6 +3444,7 @@ run_swarm_consensus() {
 
     info "Running consensus panel for stage '$stage' (reviewers=$swarm_size, parallel=$swarm_parallel)"
 
+    # Reset local PIDs but keep them registered globally
     while [ "$i" -le "$swarm_size" ]; do
         local running_jobs
         running_jobs="$(count_running_pids "${pids[@]:-}")"
@@ -3416,11 +3453,30 @@ run_swarm_consensus() {
             running_jobs="$(count_running_pids "${pids[@]:-}")"
         done
 
-        local pfile lfile ofile
+        local pfile lfile ofile reviewer_engine reviewer_cmd reviewer_persona reviewer_jitter
         pfile="$CONSENSUS_DIR/${stage}_${ts}_reviewer_${i}_prompt.md"
         lfile="$CONSENSUS_DIR/${stage}_${ts}_reviewer_${i}.log"
         ofile="$CONSENSUS_DIR/${stage}_${ts}_reviewer_${i}.out"
-        make_swarm_reviewer_prompt "$stage" "$i" "$swarm_size" "$pfile"
+
+        # Rotate personas to ensure multi-perspective consensus.
+        case $((i % 3)) in
+            1) reviewer_persona="adversarial" ;;
+            2) reviewer_persona="optimist" ;;
+            0) reviewer_persona="forensic" ;;
+            *) reviewer_persona="default" ;;
+        esac
+
+        # Apply stochastic jitter topics to force deep-brain exploration in single-engine setups.
+        case $((i % 5)) in
+            1) reviewer_jitter="integration boundaries and seams" ;;
+            2) reviewer_jitter="pathological edge cases and error handling" ;;
+            3) reviewer_jitter="dependency risks and versioning" ;;
+            4) reviewer_jitter="security, privacy, and local path leakage" ;;
+            0) reviewer_jitter="documentation vs reality discrepancies" ;;
+            *) reviewer_jitter="general readiness" ;;
+        esac
+
+        make_swarm_reviewer_prompt "$stage" "$i" "$swarm_size" "$pfile" "$reviewer_persona" "$reviewer_jitter"
         : > "$lfile"
         : > "$ofile"
 
@@ -3428,10 +3484,29 @@ run_swarm_consensus() {
         logs+=("$lfile")
         outputs+=("$ofile")
 
+        # Diversify consensus by alternating engines if multiple are available.
+        reviewer_engine="$ACTIVE_ENGINE"
+        reviewer_cmd="$ACTIVE_CMD"
+        if [ "$swarm_size" -gt 1 ]; then
+            if [ $((i % 2)) -eq 0 ]; then
+                local fallback
+                fallback="$(pick_fallback_engine "$stage" "$ACTIVE_ENGINE" || true)"
+                if [ -n "$fallback" ]; then
+                    reviewer_engine="$fallback"
+                    reviewer_cmd="$(engine_command_for "$fallback")"
+                fi
+            fi
+        fi
+
         (
+            # Subshell ensures global ACTIVE_ENGINE/CMD remains stable for the main loop.
+            ACTIVE_ENGINE="$reviewer_engine"
+            ACTIVE_CMD="$reviewer_cmd"
             run_agent_with_prompt "$pfile" "$lfile" "$ofile" "$yolo_effective"
         ) &
-        pids+=("$!")
+        local current_bg_pid=$!
+        pids+=("$current_bg_pid")
+        RALPHIE_BG_PIDS+=("$current_bg_pid")
 
         i=$((i + 1))
     done
@@ -3595,7 +3670,7 @@ enforce_build_gate() {
 
     if ! check_build_prerequisites; then
         err "Build mode requires specs + research + implementation plan."
-        err "Run './ralphie.sh prepare' to generate these artifacts."
+        err "Run './ralphie.sh plan' to generate these artifacts."
         log_reason_code "RB_BUILD_GATE_PREREQ_FAILED" "build prerequisites failed"
         return 1
     fi
@@ -3826,7 +3901,6 @@ prompt_file_for_mode() {
     case "$mode" in
         build) echo "$PROMPT_BUILD_FILE" ;;
         plan) echo "$PROMPT_PLAN_FILE" ;;
-        prepare) echo "$PROMPT_PREPARE_FILE" ;;
         test) echo "$PROMPT_TEST_FILE" ;;
         refactor) echo "$PROMPT_REFACTOR_FILE" ;;
         lint) echo "$PROMPT_LINT_FILE" ;;
@@ -3913,7 +3987,7 @@ run_bootstrap_scripts_if_applicable() {
     return 0
 }
 
-prepare_prompt_for_iteration() {
+plan_prompt_for_iteration() {
     local base_prompt="$1"
     local iteration="$2"
     local out="$base_prompt"
@@ -3932,7 +4006,7 @@ prepare_prompt_for_iteration() {
         cat "$base_prompt" > "$out"
     fi
 
-    if { [ "${MODE:-}" = "prepare" ] || [ "${MODE:-}" = "plan" ]; } && is_true "$needs_augmented_prompt"; then
+    if [ "${MODE:-}" = "plan" ] && is_true "$needs_augmented_prompt"; then
         cat >>"$out" <<EOF
 
 ---
@@ -4043,7 +4117,7 @@ run_idle_plan_refresh() {
     touch "$plan_log_file" "$plan_output_file"
 
     info "No work items found. Running one planning iteration to refresh work queue."
-    plan_prompt="$(prepare_prompt_for_iteration "$PROMPT_PLAN_FILE" "idle-plan-${build_iteration}")"
+    plan_prompt="$(plan_prompt_for_iteration "$PROMPT_PLAN_FILE" "idle-plan-${build_iteration}")"
 
     if run_agent_with_prompt "$plan_prompt" "$plan_log_file" "$plan_output_file" "$yolo_effective"; then
         signal="$(detect_completion_signal "$plan_log_file" "$plan_output_file" || true)"
@@ -4158,7 +4232,7 @@ show_status() {
     echo "  YOLO:              $YOLO_MODE"
     echo "  Git autonomy:      $GIT_AUTONOMY"
     echo "  Build approval:    $BUILD_APPROVAL_POLICY"
-    echo "  Auto backfill:     $AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD"
+    echo "  Auto backfill:     $AUTO_PLAN_BACKFILL_ON_IDLE_BUILD"
     echo "  Interrupt menu:    $INTERRUPT_MENU_ENABLED"
     echo "  Notify channel:    $HUMAN_NOTIFY_CHANNEL"
     echo "  Lock wait:         ${LOCK_WAIT_SECONDS}s"
@@ -4181,7 +4255,7 @@ show_status() {
     echo "  Constitution:      $(path_for_display "$CONSTITUTION_FILE") ($( [ -f "$CONSTITUTION_FILE" ] && echo present || echo missing ))"
     echo "  Build prompt:      $(path_for_display "$PROMPT_BUILD_FILE") ($( [ -f "$PROMPT_BUILD_FILE" ] && echo present || echo missing ))"
     echo "  Plan prompt:       $(path_for_display "$PROMPT_PLAN_FILE") ($( [ -f "$PROMPT_PLAN_FILE" ] && echo present || echo missing ))"
-    echo "  Prepare prompt:    $(path_for_display "$PROMPT_PREPARE_FILE") ($( [ -f "$PROMPT_PREPARE_FILE" ] && echo present || echo missing ))"
+    echo "  Plan prompt:       $(path_for_display "$PROMPT_PLAN_FILE") ($( [ -f "$PROMPT_PLAN_FILE" ] && echo present || echo missing ))"
     echo "  Test prompt:       $(path_for_display "$PROMPT_TEST_FILE") ($( [ -f "$PROMPT_TEST_FILE" ] && echo present || echo missing ))"
     echo "  Refactor prompt:   $(path_for_display "$PROMPT_REFACTOR_FILE") ($( [ -f "$PROMPT_REFACTOR_FILE" ] && echo present || echo missing ))"
     echo "  Lint prompt:       $(path_for_display "$PROMPT_LINT_FILE") ($( [ -f "$PROMPT_LINT_FILE" ] && echo present || echo missing ))"
@@ -4208,13 +4282,13 @@ show_doctor() {
     echo "  Constitution:     $( [ -f "$CONSTITUTION_FILE" ] && echo yes || echo no )"
     echo "  Build prompt:     $( [ -f "$PROMPT_BUILD_FILE" ] && echo yes || echo no )"
     echo "  Plan prompt:      $( [ -f "$PROMPT_PLAN_FILE" ] && echo yes || echo no )"
-    echo "  Prepare prompt:   $( [ -f "$PROMPT_PREPARE_FILE" ] && echo yes || echo no )"
+    echo "  Plan prompt:      $( [ -f "$PROMPT_PLAN_FILE" ] && echo yes || echo no )"
     echo "  Test prompt:      $( [ -f "$PROMPT_TEST_FILE" ] && echo yes || echo no )"
     echo "  Refactor prompt:  $( [ -f "$PROMPT_REFACTOR_FILE" ] && echo yes || echo no )"
     echo "  Lint prompt:      $( [ -f "$PROMPT_LINT_FILE" ] && echo yes || echo no )"
     echo "  Document prompt:  $( [ -f "$PROMPT_DOCUMENT_FILE" ] && echo yes || echo no )"
     echo "  Build approval:   $BUILD_APPROVAL_POLICY"
-    echo "  Auto backfill:    $AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD"
+    echo "  Auto backfill:     $AUTO_PLAN_BACKFILL_ON_IDLE_BUILD"
     echo "  Interrupt menu:   $INTERRUPT_MENU_ENABLED"
     echo "  Auto update:      $(effective_auto_update_enabled)"
     echo "  Update url:       $(effective_auto_update_url)"
@@ -4303,8 +4377,8 @@ handle_interrupt() {
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            prepare)
-                MODE="prepare"
+            plan|prepare)
+                MODE="plan"
                 MODE_EXPLICIT=true
                 if [ "${2:-}" != "" ] && is_number "${2:-}"; then
                     MAX_ITERATIONS="$2"
@@ -4460,8 +4534,8 @@ parse_args() {
                 FORCE_BUILD=true
                 shift
                 ;;
-            --no-auto-prepare-backfill)
-                AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD=false
+            --no-auto-plan-backfill)
+                AUTO_PLAN_BACKFILL_ON_IDLE_BUILD=false
                 shift
                 ;;
             --no-interrupt-menu)
@@ -4559,7 +4633,7 @@ parse_args() {
         esac
     done
 
-    if [ "$MODE" != "build" ] && [ "$MODE" != "plan" ] && [ "$MODE" != "prepare" ] && [ "$MODE" != "test" ] && [ "$MODE" != "refactor" ] && [ "$MODE" != "lint" ] && [ "$MODE" != "document" ]; then
+    if [ "$MODE" != "build" ] && [ "$MODE" != "plan" ] && [ "$MODE" != "test" ] && [ "$MODE" != "refactor" ] && [ "$MODE" != "lint" ] && [ "$MODE" != "document" ]; then
         err "Invalid mode: $MODE"
         exit 1
     fi
@@ -4643,6 +4717,36 @@ parse_args() {
 }
 
 main() {
+    local RESUME_MODE=false
+    for arg in "$@"; do
+        if [ "$arg" = "--resume" ]; then
+            RESUME_MODE=true
+            break
+        fi
+    done
+
+    if is_true "$RESUME_MODE"; then
+        if [ ! -f "$STATE_FILE" ]; then
+            err "Resume failed: No state snapshot found at $STATE_FILE"
+            exit 1
+        fi
+        info "Resuming from state snapshot: $(read_state_value timestamp)"
+        
+        # Hydrate critical orchestrator state from snapshot
+        MODE="$(read_state_value mode)"
+        ACTIVE_ENGINE="$(read_state_value engine)"
+        ACTIVE_CMD="$(engine_command_for "$ACTIVE_ENGINE")"
+        iteration="$(read_state_value iteration)"
+        LAST_COMPLETION_SIGNAL="$(read_state_value last_completion_signal)"
+        
+        # Validate checksum consistency before hydration
+        local snapshot_plan_hash="$(read_state_value plan_checksum)"
+        local current_plan_hash="$(get_checksum "$PLAN_FILE")"
+        if [ "$snapshot_plan_hash" != "none" ] && [ "$snapshot_plan_hash" != "$current_plan_hash" ]; then
+            warn "State Integrity Warning: Implementation plan has changed since last snapshot."
+        fi
+    fi
+
     parse_args "$@"
 
     local needs_lock=true
@@ -4672,7 +4776,7 @@ main() {
 
         if ! is_true "$SETUP_AND_RUN" && ! is_true "$DOCTOR_MODE" && ! is_true "$SHOW_STATUS"; then
             ok "Setup finished."
-            info "Next step: run './ralphie.sh prepare' for deep planning, then approve build mode."
+            info "Next step: run './ralphie.sh plan' for deep planning, then approve build mode."
             exit 0
         fi
     fi
@@ -4704,8 +4808,8 @@ main() {
             config_loaded=true
 
             if ! is_true "$MODE_EXPLICIT" && ! is_true "$FORCE_SETUP"; then
-                MODE="prepare"
-                info "First-run default: entering prepare mode."
+                MODE="plan"
+                info "First-run default: entering plan mode."
             fi
         fi
     fi
@@ -4722,9 +4826,9 @@ main() {
         && ! is_true "$READY_MODE"; then
         auto_phase_pipeline=true
         if [ "$MODE" = "build" ]; then
-            MODE="prepare"
+            MODE="plan"
         fi
-        info "Default pipeline enabled: prepare -> build -> test -> refactor -> test -> lint -> document"
+        info "Default pipeline enabled: plan -> build -> test -> refactor -> test -> lint -> document"
     fi
 
     if is_true "$HUMAN_MODE"; then
@@ -4826,8 +4930,8 @@ main() {
         fi
     elif [ "$MODE" = "test" ] || [ "$MODE" = "refactor" ] || [ "$MODE" = "lint" ] || [ "$MODE" = "document" ]; then
         if ! check_build_prerequisites; then
-            err "Mode '$MODE' requires completed prepare artifacts first."
-            err "Run './ralphie.sh prepare' before '$MODE'."
+            err "Mode '$MODE' requires completed plan artifacts first."
+            err "Run './ralphie.sh plan' before '$MODE'."
             exit 1
         fi
     fi
@@ -4881,12 +4985,12 @@ main() {
     local consecutive_failures=0
     local completed_iterations=0
     local failed_iterations=0
-    local prepare_last_confidence=0
-    local prepare_stagnation=0
-    local prepare_last_human_escalation=0
+    local plan_last_confidence=0
+    local plan_stagnation=0
+    local plan_last_human_escalation=0
     local auto_engine_failovers=0
     local auto_engine_failover_limit=1
-    local idle_auto_prepare_attempted=false
+    local idle_auto_plan_attempted=false
     local pipeline_test_completions=0
     local allow_auto_failover=false
     if [ -z "$ENGINE_OVERRIDE" ] || [ "$ENGINE_OVERRIDE" = "auto" ]; then
@@ -4903,14 +5007,14 @@ main() {
         if [ "$MODE" = "build" ]; then
             if ! has_work_items; then
                 if [ "$BACKOFF_LEVEL" -eq 0 ]; then
-                    if is_true "$AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD" && ! is_true "$idle_auto_prepare_attempted"; then
-                        warn "No work items found in build mode. Switching to prepare mode for deep backfill."
-                        log_reason_code "RB_BUILD_IDLE_AUTO_PREPARE" "switched from build to prepare due to empty work queue"
-                        if ! switch_mode_with_prompt "prepare"; then
+                    if is_true "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" && ! is_true "$idle_auto_plan_attempted"; then
+                        warn "No work items found in build mode. Switching to plan mode for deep backfill."
+                        log_reason_code "RB_BUILD_IDLE_AUTO_PLAN" "switched from build to plan due to empty work queue"
+                        if ! switch_mode_with_prompt "plan"; then
                             run_exit_code=1
                             break
                         fi
-                        idle_auto_prepare_attempted=true
+                        idle_auto_plan_attempted=true
                         continue
                     else
                         run_idle_plan_refresh "$yolo_effective" "$iteration" || true
@@ -4934,7 +5038,7 @@ main() {
                 ok "Work detected; backoff reset."
                 BACKOFF_LEVEL=0
             fi
-            idle_auto_prepare_attempted=false
+            idle_auto_plan_attempted=false
         fi
 
         iteration=$((iteration + 1))
@@ -4944,7 +5048,7 @@ main() {
         output_file="$LOG_DIR/ralphie_output_iter_${iteration}_$(date '+%Y%m%d_%H%M%S').txt"
         touch "$log_file" "$output_file"
 
-        effective_prompt="$(prepare_prompt_for_iteration "$prompt_file" "$iteration")"
+        effective_prompt="$(plan_prompt_for_iteration "$prompt_file" "$iteration")"
         write_state_snapshot "iteration_start"
 
         echo ""
@@ -5011,38 +5115,38 @@ main() {
                         fi
                         break
                         ;;
-                    prepare)
+                    plan)
                         if ! check_build_prerequisites; then
-                            warn "Prepare completion signal ignored because readiness artifacts are incomplete."
-                            log_reason_code "RB_PREPARE_SIGNAL_IGNORED_PREREQ" "prepare emitted DONE but readiness artifacts failed checks"
+                            warn "Plan completion signal ignored because readiness artifacts are incomplete."
+                            log_reason_code "RB_PLAN_SIGNAL_IGNORED_PREREQ" "plan emitted DONE but readiness artifacts failed checks"
                             failed_iterations=$((failed_iterations + 1))
                             continue
                         fi
-                        ok "Prepare phase reports readiness. Running panel consensus..."
-                        run_swarm_consensus "prepare-gate" "$yolo_effective"
+                        ok "Plan phase reports readiness. Running panel consensus..."
+                        run_swarm_consensus "plan-gate" "$yolo_effective"
                         if ! is_true "$LAST_CONSENSUS_PASS"; then
-                            warn "Prepare consensus below threshold; continuing preparation."
-                            log_reason_code "RB_PREPARE_CONSENSUS_FAILED" "prepare consensus score=$LAST_CONSENSUS_SCORE go=$LAST_CONSENSUS_GO_COUNT hold=$LAST_CONSENSUS_HOLD_COUNT panel_failures=$LAST_CONSENSUS_PANEL_FAILURES"
+                            warn "Plan consensus below threshold; continuing planning."
+                            log_reason_code "RB_PLAN_CONSENSUS_FAILED" "plan consensus score=$LAST_CONSENSUS_SCORE go=$LAST_CONSENSUS_GO_COUNT hold=$LAST_CONSENSUS_HOLD_COUNT panel_failures=$LAST_CONSENSUS_PANEL_FAILURES"
                             failed_iterations=$((failed_iterations + 1))
                             continue
                         fi
 
                         if ! request_build_permission; then
-                            warn "Build permission not granted. Exiting at end of prepare phase."
-                            log_reason_code "RB_PREPARE_BUILD_NOT_APPROVED" "human approval not granted after prepare success"
+                            warn "Build permission not granted. Exiting at end of plan phase."
+                            log_reason_code "RB_PLAN_BUILD_NOT_APPROVED" "human approval not granted after plan success"
                             break
                         fi
 
-                        ok "Switching from prepare phase to build phase."
+                        ok "Switching from plan phase to build phase."
                         if ! switch_mode_with_prompt "build"; then
                             run_exit_code=1
                             break
                         fi
                         pipeline_test_completions=0
                         if ! enforce_build_gate "$yolo_effective"; then
-                            err "Build gate failed after prepare phase. Continue prepare mode to improve readiness."
-                            log_reason_code "RB_BUILD_GATE_FAILED_AFTER_PREPARE" "build gate failed after prepare->build transition"
-                            switch_mode_with_prompt "prepare" || true
+                            err "Build gate failed after plan phase. Continue plan mode to improve readiness."
+                            log_reason_code "RB_BUILD_GATE_FAILED_AFTER_PLAN" "build gate failed after plan->build transition"
+                            switch_mode_with_prompt "plan" || true
                             failed_iterations=$((failed_iterations + 1))
                         fi
                         continue
@@ -5110,69 +5214,69 @@ main() {
                         ;;
                 esac
             else
-                if [ "$MODE" = "prepare" ]; then
+                if [ "$MODE" = "plan" ]; then
                     local confidence needs_human human_question new_last_escalation contract_issue failover_reason fallback_engine
                     confidence="$(extract_confidence_value "$output_file" "$log_file")"
-                    if [ "$confidence" -gt "$prepare_last_confidence" ]; then
-                        prepare_stagnation=0
+                    if [ "$confidence" -gt "$plan_last_confidence" ]; then
+                        plan_stagnation=0
                     else
-                        prepare_stagnation=$((prepare_stagnation + 1))
+                        plan_stagnation=$((plan_stagnation + 1))
                     fi
-                    prepare_last_confidence="$confidence"
+                    plan_last_confidence="$confidence"
 
                     needs_human="$(extract_needs_human_flag "$output_file" "$log_file")"
                     human_question="$(extract_human_question "$output_file" "$log_file")"
-                    new_last_escalation="$(maybe_collect_human_feedback "$iteration" "$confidence" "$prepare_stagnation" "$needs_human" "$human_question" "$prepare_last_human_escalation")"
+                    new_last_escalation="$(maybe_collect_human_feedback "$iteration" "$confidence" "$plan_stagnation" "$needs_human" "$human_question" "$plan_last_human_escalation")"
                     if is_number "$new_last_escalation"; then
-                        prepare_last_human_escalation="$new_last_escalation"
+                        plan_last_human_escalation="$new_last_escalation"
                     fi
 
-                    info "Prepare confidence: $confidence (target: $CONFIDENCE_TARGET, stagnation: $prepare_stagnation)"
+                    info "Plan confidence: $confidence (target: $CONFIDENCE_TARGET, stagnation: $plan_stagnation)"
 
                     contract_issue=""
                     if output_has_tool_wrapper_leakage "$output_file"; then
-                        contract_issue="tool-wrapper leakage in prepare output"
+                        contract_issue="tool-wrapper leakage in plan output"
                     fi
-                    if ! output_has_prepare_status_tags "$output_file"; then
+                    if ! output_has_plan_status_tags "$output_file"; then
                         if [ -n "$contract_issue" ]; then
-                            contract_issue="${contract_issue}; missing required prepare tags"
+                            contract_issue="${contract_issue}; missing required plan tags"
                         else
-                            contract_issue="missing required prepare tags"
+                            contract_issue="missing required plan tags"
                         fi
                     fi
                     if output_has_local_identity_leakage "$output_file"; then
                         if [ -n "$contract_issue" ]; then
-                            contract_issue="${contract_issue}; local identity/path leakage in prepare output"
+                            contract_issue="${contract_issue}; local identity/path leakage in plan output"
                         else
-                            contract_issue="local identity/path leakage in prepare output"
+                            contract_issue="local identity/path leakage in plan output"
                         fi
                     fi
                     if [ -n "$contract_issue" ]; then
-                        warn "Prepare output contract issue: $contract_issue"
-                        log_reason_code "RB_PREPARE_OUTPUT_CONTRACT" "$contract_issue"
-                        write_gate_feedback "prepare-output-contract" "$contract_issue"
+                        warn "Plan output contract issue: $contract_issue"
+                        log_reason_code "RB_PLAN_OUTPUT_CONTRACT" "$contract_issue"
+                        write_gate_feedback "plan-output-contract" "$contract_issue"
                     fi
 
                     failover_reason=""
                     if [ -n "$contract_issue" ]; then
-                        failover_reason="prepare output contract violation"
-                    elif [ "$prepare_stagnation" -ge "$CONFIDENCE_STAGNATION_LIMIT" ] && [ "$confidence" -lt "$CONFIDENCE_TARGET" ]; then
-                        failover_reason="prepare confidence stagnation"
+                        failover_reason="plan output contract violation"
+                    elif [ "$plan_stagnation" -ge "$CONFIDENCE_STAGNATION_LIMIT" ] && [ "$confidence" -lt "$CONFIDENCE_TARGET" ]; then
+                        failover_reason="plan confidence stagnation"
                     fi
 
                     if [ -n "$failover_reason" ] && is_true "$allow_auto_failover" && [ "$auto_engine_failovers" -lt "$auto_engine_failover_limit" ]; then
-                        fallback_engine="$(pick_fallback_engine "prepare" "$ACTIVE_ENGINE" || true)"
+                        fallback_engine="$(pick_fallback_engine "plan" "$ACTIVE_ENGINE" || true)"
                         if [ -n "$fallback_engine" ] && switch_active_engine "$fallback_engine" "$failover_reason"; then
                             auto_engine_failovers=$((auto_engine_failovers + 1))
-                            prepare_stagnation=0
-                            prepare_last_confidence=0
+                            plan_stagnation=0
+                            plan_last_confidence=0
                             consecutive_failures=0
-                            log_reason_code "RB_PREPARE_AUTO_FAILOVER" "engine switched to $ACTIVE_ENGINE due to $failover_reason"
-                            info "Auto failover engaged for prepare mode; continuing with $ACTIVE_ENGINE."
+                            log_reason_code "RB_PLAN_AUTO_FAILOVER" "engine switched to $ACTIVE_ENGINE due to $failover_reason"
+                            info "Auto failover engaged for plan mode; continuing with $ACTIVE_ENGINE."
                         fi
                     fi
                     if [ -z "$contract_issue" ]; then
-                        log_reason_code "RB_PREPARE_NO_COMPLETION_SIGNAL" "prepare iteration ended without DONE signal"
+                        log_reason_code "RB_PLAN_NO_COMPLETION_SIGNAL" "plan iteration ended without DONE signal"
                     fi
                 else
                     warn "No completion signal detected. Retrying next iteration."

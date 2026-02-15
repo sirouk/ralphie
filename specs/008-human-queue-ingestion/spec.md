@@ -21,8 +21,8 @@ When the file exists:
 1. `count_pending_human_requests` returns `0` when `HUMAN_INSTRUCTIONS.md` is missing.
 2. `count_pending_human_requests` counts `Status: NEW` entries case-insensitively (e.g. `status: new`, `STATUS: NEW`).
 3. `check_human_requests` sets `HAS_HUMAN_REQUESTS=true` when at least one pending request exists.
-4. `prepare_prompt_for_iteration` injects a "Human Priority Queue" section and includes the queue contents when the file exists.
-5. `prepare_prompt_for_iteration` does not inject the human section when the file is missing.
+4. `plan_prompt_for_iteration` injects a "Human Priority Queue" section and includes the queue contents when the file exists.
+5. `plan_prompt_for_iteration` does not inject the human section when the file is missing.
 6. `capture_human_priorities` returns non-zero in non-interactive mode and logs `reason_code=RB_HUMAN_MODE_NON_INTERACTIVE`.
 7. `bash tests/ralphie_shell_tests.sh` passes end-to-end.
 

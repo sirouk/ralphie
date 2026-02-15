@@ -83,7 +83,7 @@ EOF
     rm -f "$tmp"
 }
 
-test_prepare_tag_detection() {
+test_plan_tag_detection() {
     local tmp
     tmp="$(mktemp)"
     cat > "$tmp" <<'EOF'
@@ -91,16 +91,16 @@ test_prepare_tag_detection() {
 <needs_human>false</needs_human>
 <human_question></human_question>
 EOF
-    assert_true "prepare status tags detected" output_has_prepare_status_tags "$tmp"
+    assert_true "plan status tags detected" output_has_plan_status_tags "$tmp"
 
     cat > "$tmp" <<'EOF'
 <confidence>88</confidence>
 EOF
-    assert_false "prepare status tags reject incomplete tags" output_has_prepare_status_tags "$tmp"
+    assert_false "plan status tags reject incomplete tags" output_has_plan_status_tags "$tmp"
     rm -f "$tmp"
 }
 
-test_prepare_tag_fallback_parsing() {
+test_plan_tag_fallback_parsing() {
     local tmp_out tmp_log
     tmp_out="$(mktemp)"
     tmp_log="$(mktemp)"
@@ -162,8 +162,8 @@ EOF
     CODEX_CMD="codex-mock"
     CLAUDE_CMD="claude-mock"
 
-    assert_eq "claude" "$(pick_fallback_engine "prepare" "codex")" "fallback picks claude from codex"
-    assert_eq "codex" "$(pick_fallback_engine "prepare" "claude")" "fallback picks codex from claude"
+    assert_eq "claude" "$(pick_fallback_engine "plan" "codex")" "fallback picks claude from codex"
+    assert_eq "codex" "$(pick_fallback_engine "plan" "claude")" "fallback picks codex from claude"
 
     PATH="$old_path"
     rm -rf "$tmpbin"
@@ -254,7 +254,7 @@ test_interrupt_handler_non_interactive_path() {
 test_prompt_file_mapping() {
     assert_eq "$PROMPT_BUILD_FILE" "$(prompt_file_for_mode build)" "prompt mapping build"
     assert_eq "$PROMPT_PLAN_FILE" "$(prompt_file_for_mode plan)" "prompt mapping plan"
-    assert_eq "$PROMPT_PREPARE_FILE" "$(prompt_file_for_mode prepare)" "prompt mapping prepare"
+    assert_eq "$PROMPT_PLAN_FILE" "$(prompt_file_for_mode prepare)" "prompt mapping plan"
     assert_eq "$PROMPT_TEST_FILE" "$(prompt_file_for_mode test)" "prompt mapping test"
     assert_eq "$PROMPT_REFACTOR_FILE" "$(prompt_file_for_mode refactor)" "prompt mapping refactor"
     assert_eq "$PROMPT_LINT_FILE" "$(prompt_file_for_mode lint)" "prompt mapping lint"
@@ -364,7 +364,7 @@ EOF
     rm -rf "$tmpdir"
 }
 
-test_prepare_prompt_for_iteration_injects_human_queue_when_present() {
+test_plan_prompt_for_iteration_injects_human_queue_when_present() {
     local tmpdir old_log_dir old_human_instructions_file old_human_instructions_rel old_agent_source_map_file old_binary_steering_map_file old_gate_feedback_file old_context_file old_mode
     tmpdir="$(mktemp -d)"
     old_log_dir="$LOG_DIR"
@@ -404,7 +404,7 @@ EOF
     GATE_FEEDBACK_FILE="$tmpdir/no-gate-feedback.md"
     MODE="build"
 
-    out_path="$(prepare_prompt_for_iteration "$base_prompt" "human-queue")"
+    out_path="$(plan_prompt_for_iteration "$base_prompt" "human-queue")"
 
     assert_true "prompt injection writes augmented prompt" test -f "$out_path"
     assert_true "prompt injection includes human queue header" rg -q "## Human Priority Queue" "$out_path"
@@ -421,7 +421,7 @@ EOF
     rm -rf "$tmpdir"
 }
 
-test_prepare_prompt_for_iteration_skips_human_queue_when_missing() {
+test_plan_prompt_for_iteration_skips_human_queue_when_missing() {
     local tmpdir old_human_instructions_file old_human_instructions_rel old_agent_source_map_file old_binary_steering_map_file old_gate_feedback_file old_context_file old_mode
     tmpdir="$(mktemp -d)"
     old_human_instructions_file="$HUMAN_INSTRUCTIONS_FILE"
@@ -446,7 +446,7 @@ EOF
     GATE_FEEDBACK_FILE="$tmpdir/no-gate-feedback.md"
     MODE="build"
 
-    out_path="$(prepare_prompt_for_iteration "$base_prompt" "no-human")"
+    out_path="$(plan_prompt_for_iteration "$base_prompt" "no-human")"
 
     assert_eq "$base_prompt" "$out_path" "prompt injection returns base prompt when no augmentation is needed"
     assert_false "prompt injection does not include human queue header when missing" rg -q "## Human Priority Queue" "$out_path"
@@ -1267,7 +1267,7 @@ test_clean_deep_artifacts() {
     local tmpdir
     tmpdir="$(mktemp -d)"
 
-    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir old_subrepos_dir old_prompt_build_file old_prompt_plan_file old_prompt_prepare_file old_prompt_test_file old_prompt_refactor_file old_prompt_lint_file old_prompt_document_file old_reason_log_file old_gate_feedback_file old_state_file
+    local old_project_dir old_config_dir old_lock_file old_log_dir old_consensus_dir old_completion_log_dir old_ready_archive_dir old_specs_dir old_research_dir old_maps_dir old_specify_dir old_subrepos_dir old_prompt_build_file old_prompt_plan_file old_prompt_plan_file_internal old_prompt_test_file old_prompt_refactor_file old_prompt_lint_file old_prompt_document_file old_reason_log_file old_gate_feedback_file old_state_file
     old_project_dir="$PROJECT_DIR"
     old_config_dir="$CONFIG_DIR"
     old_lock_file="$LOCK_FILE"
@@ -1285,7 +1285,7 @@ test_clean_deep_artifacts() {
     old_subrepos_dir="$SUBREPOS_DIR"
     old_prompt_build_file="$PROMPT_BUILD_FILE"
     old_prompt_plan_file="$PROMPT_PLAN_FILE"
-    old_prompt_prepare_file="$PROMPT_PREPARE_FILE"
+    old_prompt_plan_file_internal="$PROMPT_PLAN_FILE"
     old_prompt_test_file="$PROMPT_TEST_FILE"
     old_prompt_refactor_file="$PROMPT_REFACTOR_FILE"
     old_prompt_lint_file="$PROMPT_LINT_FILE"
@@ -1308,7 +1308,7 @@ test_clean_deep_artifacts() {
     SUBREPOS_DIR="$tmpdir/subrepos"
     PROMPT_BUILD_FILE="$tmpdir/PROMPT_build.md"
     PROMPT_PLAN_FILE="$tmpdir/PROMPT_plan.md"
-    PROMPT_PREPARE_FILE="$tmpdir/PROMPT_prepare.md"
+    PROMPT_PLAN_FILE="$tmpdir/PROMPT_prepare.md"
     PROMPT_TEST_FILE="$tmpdir/PROMPT_test.md"
     PROMPT_REFACTOR_FILE="$tmpdir/PROMPT_refactor.md"
     PROMPT_LINT_FILE="$tmpdir/PROMPT_lint.md"
@@ -1329,7 +1329,7 @@ test_clean_deep_artifacts() {
     echo "repo" > "$SUBREPOS_DIR/a.txt"
     echo "prompt" > "$PROMPT_BUILD_FILE"
     echo "prompt" > "$PROMPT_PLAN_FILE"
-    echo "prompt" > "$PROMPT_PREPARE_FILE"
+    echo "prompt" > "$PROMPT_PLAN_FILE"
     echo "prompt" > "$PROMPT_TEST_FILE"
     echo "prompt" > "$PROMPT_REFACTOR_FILE"
     echo "prompt" > "$PROMPT_LINT_FILE"
@@ -1346,7 +1346,7 @@ test_clean_deep_artifacts() {
     assert_false "clean-deep removes subrepo artifacts" bash -lc "find \"$SUBREPOS_DIR\" -mindepth 1 -print -quit 2>/dev/null | grep -q ."
     assert_false "clean-deep removes build prompt" test -f "$PROMPT_BUILD_FILE"
     assert_false "clean-deep removes plan prompt" test -f "$PROMPT_PLAN_FILE"
-    assert_false "clean-deep removes prepare prompt" test -f "$PROMPT_PREPARE_FILE"
+    assert_false "clean-deep removes plan prompt" test -f "$PROMPT_PLAN_FILE"
     assert_false "clean-deep removes test prompt" test -f "$PROMPT_TEST_FILE"
     assert_false "clean-deep removes refactor prompt" test -f "$PROMPT_REFACTOR_FILE"
     assert_false "clean-deep removes lint prompt" test -f "$PROMPT_LINT_FILE"
@@ -1375,7 +1375,7 @@ test_clean_deep_artifacts() {
     SUBREPOS_DIR="$old_subrepos_dir"
     PROMPT_BUILD_FILE="$old_prompt_build_file"
     PROMPT_PLAN_FILE="$old_prompt_plan_file"
-    PROMPT_PREPARE_FILE="$old_prompt_prepare_file"
+    PROMPT_PLAN_FILE="$old_prompt_plan_file_internal"
     PROMPT_TEST_FILE="$old_prompt_test_file"
     PROMPT_REFACTOR_FILE="$old_prompt_refactor_file"
     PROMPT_LINT_FILE="$old_prompt_lint_file"
@@ -1772,8 +1772,8 @@ EOF
 
 main() {
     test_confidence_parsing
-    test_prepare_tag_detection
-    test_prepare_tag_fallback_parsing
+    test_plan_tag_detection
+    test_plan_tag_fallback_parsing
     test_completion_signal_detection
     test_fallback_engine_selection
     test_effective_lock_wait_seconds
@@ -1786,8 +1786,8 @@ main() {
     test_count_pending_human_requests_missing_file
     test_count_pending_human_requests_case_insensitive
     test_check_human_requests_sets_flag
-    test_prepare_prompt_for_iteration_injects_human_queue_when_present
-    test_prepare_prompt_for_iteration_skips_human_queue_when_missing
+    test_plan_prompt_for_iteration_injects_human_queue_when_present
+    test_plan_prompt_for_iteration_skips_human_queue_when_missing
     test_capture_human_priorities_fails_non_interactive_with_reason_code
     test_notify_human_none_is_noop
     test_notify_human_terminal_emits_messages

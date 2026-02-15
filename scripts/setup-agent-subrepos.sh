@@ -366,7 +366,7 @@ heuristic_tools:
     self_improvement_budget_fraction: 0.25
     boost_budget_fraction: 0.50
     boost_when:
-      - "Prepare confidence stalls for at least 3 loops."
+      - "Plan confidence stalls for at least 3 loops."
       - "Consensus score is below threshold."
       - "Three consecutive failed or incomplete iterations occur."
     required_artifact: "research/SELF_IMPROVEMENT_LOG.md"
@@ -385,7 +385,7 @@ version: 1
 generated_at_utc: "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 purpose: "Code references and command steering guidance for ralphie.sh engine execution paths."
 engine_mode_bindings:
-  prepare:
+  plan:
     preferred_engine: "auto"
     fallback_order: ["codex", "claude"]
   plan:

@@ -56,7 +56,7 @@ heuristic_tools:
     self_improvement_budget_fraction: 0.25
     boost_budget_fraction: 0.50
     boost_when:
-      - "Prepare confidence stalls for at least 3 loops."
+      - "Plan confidence stalls for at least 3 loops."
       - "Consensus score is below threshold."
       - "Three consecutive failed or incomplete iterations occur."
     required_artifact: "research/SELF_IMPROVEMENT_LOG.md"

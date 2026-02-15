@@ -43,7 +43,7 @@
 
 ## Execution Model
 
-### Phase 1: Prepare
+### Phase 1: Plan
 
 - Build deep understanding with recursive planning and critique.
 - Research each major component using reputable sources when available.
@@ -61,7 +61,7 @@
 ## Completion Signal
 
 Only output `<promise>DONE</promise>` when the current mode's acceptance criteria are met:
-1. **Prepare/Plan:** required artifacts are written, coherent, and pass readiness checks.
+1. **Plan/Plan:** required artifacts are written, coherent, and pass readiness checks.
 2. **Build:** requirements are implemented, tests/lint pass (or blockers are documented), and git actions are complete when autonomy is enabled.
 
 Never output the completion signal early.

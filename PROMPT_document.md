@@ -10,7 +10,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Documentation doctrine:
 - Prefer updating nearest existing docs over creating new top-level docs.

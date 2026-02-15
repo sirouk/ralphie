@@ -12,7 +12,7 @@ Build maintainable software with autonomous loops.
 
 ## Acceptance Criteria (Testable)
 
-1. `README.md` documents setup, prepare, and build usage with at least one command each.
+1. `README.md` documents setup, plan, and build usage with at least one command each.
 2. `IMPLEMENTATION_PLAN.md` exists and includes clear scope, phased execution steps, and validation criteria.
 3. `specs/` contains active specs with explicit acceptance criteria.
 4. `research/RESEARCH_SUMMARY.md` exists and includes required confidence tags.

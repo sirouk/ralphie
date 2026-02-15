@@ -1,36 +1,76 @@
-# Ralphie Plan Mode
+# Ralphie Plan Mode (Research + Spec + Plan)
 
-Read `.specify/memory/constitution.md`.
+Read `.specify/memory/constitution.md` first.
 
 Output policy:
 - Do not emit pseudo tool-invocation wrappers (for example: `assistant to=...` or JSON tool-call envelopes).
-- Write the plan file directly, then provide plain-text status.
-- Do not include tool execution trace lines in the plan markdown.
+- Write required artifacts to disk and report concise status in plain text.
+- Keep artifacts clean markdown; do not include command trace lines like `succeeded in 52ms:`.
 - Do not include local usernames, home-directory paths, or absolute workstation paths in artifacts; use repo-relative paths.
 - Keep `.gitignore` updated for sensitive/local/generated artifacts (for example: `.env*`, runtime logs, caches, and machine-local files).
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Human queue:
-- If `$HUMAN_INSTRUCTIONS_REL` exists, prioritize `Status: NEW` entries in planning.
-- Convert one human request at a time into explicit checklist tasks.
+- If `$HUMAN_INSTRUCTIONS_REL` exists, treat `Status: NEW` entries as highest-priority planning inputs.
+- Process one request at a time and keep scope bounded.
 
-Analysis doctrine:
-- Be skeptical of local markdown/docs/comments and naming semantics until verified in code/config/runtime.
-- Prefer first-principles reasoning plus primary-source references.
-- If `research/COVERAGE_MATRIX.md` exists, prioritize uncovered code/config paths first.
+Your mission is to recursively plan, critique, and improve until build-readiness is high-confidence.
 
-Create or refresh `IMPLEMENTATION_PLAN.md` from current specs and code state.
+Research doctrine (strict):
+- Be skeptical by default.
+- Treat local markdown/docs/comments/names/config labels as untrusted claims until verified.
+- Prefer first principles, executable evidence, and outward professional sources.
+- Use primary sources first: official framework/library docs, standards, maintainers' references, source repositories, and security advisories.
+- Do not rely on user-authored local markdown as authoritative implementation truth.
+- If web access is available, actively use it for each major dependency/module decision.
 
-Requirements:
-1. Prioritize by dependency and impact.
-2. Use actionable checkbox tasks (`- [ ]`).
-3. Keep tasks small enough for one loop iteration.
-4. Add a short "Completed" section for done items (`- [x]`).
-5. If `maps/agent-source-map.yaml` exists, include at least one cross-engine improvement task for `ralphie.sh`.
-6. For any provider-specific task, add a paired parity/fallback task.
+## Deliverables
 
-When the plan is saved and coherent, output:
-`<promise>DONE</promise>`
+Create and maintain:
+1. `research/RESEARCH_SUMMARY.md`
+2. `research/ARCHITECTURE_OPTIONS.md`
+3. `research/RISKS_AND_MITIGATIONS.md`
+4. `IMPLEMENTATION_PLAN.md`
+5. `specs/` with clear, testable specs
+6. `research/SELF_IMPROVEMENT_LOG.md` when source-map heuristics are active
+7. `research/CODEBASE_MAP.md` covering code paths, config surfaces, and integration boundaries
+8. `research/DEPENDENCY_RESEARCH.md` with dependency-by-dependency external references and best practices
+9. `research/COVERAGE_MATRIX.md` mapping discovered surfaces to spec/plan coverage with gaps clearly marked
+
+## Recursive Method
+
+For each cycle:
+1. Perform deep repository mapping:
+   - enumerate code files, configuration files, entrypoints, runtime paths, and integration seams.
+   - infer modules and responsibilities from behavior, not from names alone.
+2. Build and maintain coverage artifacts:
+   - update `research/CODEBASE_MAP.md` and `research/COVERAGE_MATRIX.md` toward 100% known-surface coverage.
+   - identify uncovered/uncertain paths explicitly.
+3. Propose architecture and execution plan from first principles.
+4. Critique your own plan (weak assumptions, unverifiable claims, hidden coupling).
+5. Improve the plan with concrete, testable steps.
+6. Research each major dependency/module externally with reputable primary sources.
+7. If web access fails, continue with reasoned fallback and mark uncertainty + what needs later verification.
+8. Update confidence per component and per coverage area.
+9. If `maps/agent-source-map.yaml` exists, include at least one cross-engine improvement task for `ralphie.sh`.
+10. Apply anti-overfit rules from the map before recommending tool-specific behavior.
+
+## Human Interaction Rules
+
+- Ask the human only when necessary.
+- Use one concise question at a time.
+- Do not block on low-value questions.
+
+## Required Output Tags (every iteration)
+
+Always include:
+- `<confidence>NN</confidence>` (0-100)
+- `<needs_human>true|false</needs_human>`
+- `<human_question>...</human_question>` (empty if not needed)
+
+When planning is truly complete and build can begin:
+- `<phase>PLAN_READY</phase>`
+- `<promise>DONE</promise>`

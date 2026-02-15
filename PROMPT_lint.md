@@ -10,7 +10,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Required actions:
 1. Run repository lint/format/static-check workflows that already exist.

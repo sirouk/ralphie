@@ -2,7 +2,7 @@
 
 ## Context
 
-`ralphie.sh` can notify a human at key escalation points (approval required, prepare completion, etc.) via `notify_human`.
+`ralphie.sh` can notify a human at key escalation points (approval required, plan completion, etc.) via `notify_human`.
 
 Supported channels:
 

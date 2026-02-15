@@ -124,7 +124,7 @@
 - Validation status: Pending implementation + test execution in next build cycle.
 
 ## 2026-02-13 00:00:00 - Map-guided critique: plan gate semantics and output-contract parity
-- Hypothesis: Prepare/build reliability will increase if plan gating becomes semantic and output parsing no longer depends on mixed log/output streams.
+- Hypothesis: Plan/build reliability will increase if plan gating becomes semantic and output parsing no longer depends on mixed log/output streams.
 - Evidence sampled:
   - Codex: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/codex-rs/README.md`, runtime `codex exec --help` (`codex-cli 0.101.0`).
   - Claude: `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/examples/settings/settings-strict.json`, runtime `claude --help` (`2.1.7`), and `subrepos/claude-code/CHANGELOG.md` (`-p` mode fixes).
@@ -144,7 +144,7 @@
   - confined engine-specific behavior to invocation boundary
   - avoided assumptions tied to one provider's output style
 - Result: Accepted for build-phase implementation. Updated artifacts: `research/RESEARCH_SUMMARY.md`, `research/ARCHITECTURE_OPTIONS.md`, `research/RISKS_AND_MITIGATIONS.md`, `IMPLEMENTATION_PLAN.md`, `specs/003-consensus-concurrency-and-output-contract/spec.md`.
-- Validation pending: implement code changes and pass shell tests plus dual-engine prepare smoke checks.
+- Validation pending: implement code changes and pass shell tests plus dual-engine plan smoke checks.
 
 ## 2026-02-13 23:35:00 - Map-guided critique: build-gate semantics + output parsing reliability
 - Hypothesis: Build readiness confidence will increase if plan prerequisites become semantic and tag parsing supports deterministic fallback files.
@@ -168,7 +168,7 @@
   - isolated provider-specific behavior to invocation flags and capability probes
   - required parity validation tasks for both codex and claude paths
 - Result: Accepted and incorporated into `IMPLEMENTATION_PLAN.md`, `research/RISKS_AND_MITIGATIONS.md`, and `specs/003-consensus-concurrency-and-output-contract/spec.md`.
-- Validation status: Pending build-phase implementation and dual-engine prepare smoke checks.
+- Validation status: Pending build-phase implementation and dual-engine plan smoke checks.
 
 ## 2026-02-13 23:59:00 - Map-guided critique: parity and reliability before build
 - Hypothesis: Build success probability increases if gate semantics, output parsing fallback, and Claude output artifact handling are hardened before implementation.
@@ -180,7 +180,7 @@
   - kept engine-specific details at invocation boundaries only
   - avoided version-pinned assumptions; relied on runtime capability probes
 - Result: Accepted. Updated `research/RESEARCH_SUMMARY.md`, `research/ARCHITECTURE_OPTIONS.md`, `research/RISKS_AND_MITIGATIONS.md`, `IMPLEMENTATION_PLAN.md`, and `specs/003-consensus-concurrency-and-output-contract/spec.md`.
-- Validation next: implement spec `003`, run shell tests, then dual-engine one-iteration prepare smokes.
+- Validation next: implement spec `003`, run shell tests, then dual-engine one-iteration plan smokes.
 ## 2026-02-12 23:35:48 - Ready position established
 - Source map: maps/agent-source-map.yaml
 - Binary steering map: maps/binary-steering-map.yaml
@@ -212,7 +212,7 @@
 - Validation status: Pending build implementation and shell-test/doctor verification.
 
 ## 2026-02-13 04:06:46 - Map-guided critique: lock correctness parity before next build
-- Hypothesis: Prepare/build reliability is still materially exposed by non-atomic lock acquisition; fixing lock correctness should be prioritized before additional feature scope.
+- Hypothesis: Plan/build reliability is still materially exposed by non-atomic lock acquisition; fixing lock correctness should be prioritized before additional feature scope.
 - Evidence sampled:
   - Codex sources: `subrepos/codex/codex-rs/exec/src/cli.rs`, `subrepos/codex/sdk/typescript/src/exec.ts`, `subrepos/codex/docs/exec.md`.
   - Claude sources: `subrepos/claude-code/README.md`, `subrepos/claude-code/examples/settings/README.md`, `subrepos/claude-code/CHANGELOG.md`.
@@ -236,7 +236,7 @@
 - Result: Accepted for next build scope as spec `006` and captured in `IMPLEMENTATION_PLAN.md`.
 - Validation pending: implement spec `006`, then run `bash tests/ralphie_shell_tests.sh`.
 
-## 2026-02-13 04:51:16 - Prepare verification: executable evidence and plan correction
+## 2026-02-13 04:51:16 - Plan verification: executable evidence and plan correction
 - Hypothesis: Preparation artifacts should reflect executable evidence; prioritize correctness work that is environment-independent.
 - Evidence sampled:
   - Local: `bash tests/ralphie_shell_tests.sh` passes end-to-end in this environment (including Claude output/log separation).
@@ -267,8 +267,8 @@
   - Re-scoped `IMPLEMENTATION_PLAN.md` to spec `005` (atomic lock acquisition).
   - Added spec `007` to prevent self-heal from introducing markdown privacy leakage.
 
-## 2026-02-13 08:54:04 - Prepare hygiene: artifact policy alignment + readiness verification
-- Hypothesis: Build-readiness confidence improves if prepare artifacts are validated against the same privacy/transcript gates enforced by `check_build_prerequisites`.
+## 2026-02-13 08:54:04 - Plan hygiene: artifact policy alignment + readiness verification
+- Hypothesis: Build-readiness confidence improves if plan artifacts are validated against the same privacy/transcript gates enforced by `check_build_prerequisites`.
 - Evidence sampled:
   - Local runtime: `bash tests/ralphie_shell_tests.sh` (all tests pass).
   - Gate behavior: `check_build_prerequisites` passes on current durable artifacts.
@@ -277,7 +277,7 @@
   - External docs: OpenAI Codex non-interactive + config-reference docs; Claude Code CLI reference.
 - Anti-overfit checks applied:
   - kept provider-specific details confined to invocation boundaries and capability probes
-  - kept prepare changes focused on neutral artifact hygiene and verification
+  - kept plan changes focused on neutral artifact hygiene and verification
 - Result:
   - Removed example home-directory absolute-path strings from committed markdown artifacts.
-  - Verified build gate prerequisites succeed with the current prepare outputs.
+  - Verified build gate prerequisites succeed with the current plan outputs.

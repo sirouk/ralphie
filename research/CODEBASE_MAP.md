@@ -17,7 +17,7 @@ Tracked project files (excluding subrepo internals) are centered in:
 
 1. `ralphie.sh`
 - Primary orchestrator.
-- Supports modes: `prepare`, `plan`, `build`, `test`, `refactor`, `lint`, `document`, plus admin operations (`--doctor`, `--status`, `--clean`, `--ready`, `--human`).
+- Supports modes: `plan`, `plan`, `build`, `test`, `refactor`, `lint`, `document`, plus admin operations (`--doctor`, `--status`, `--clean`, `--ready`, `--human`).
 
 2. `scripts/setup-agent-subrepos.sh`
 - Installs/updates `subrepos/codex` and `subrepos/claude-code` via submodule or clone mode.
@@ -60,7 +60,7 @@ Tracked project files (excluding subrepo internals) are centered in:
 
 6. Agent invocation and output contract parsing (`ralphie.sh`)
 - Unified invocation wrapper with per-engine flag boundaries.
-- XML-tag extraction for prepare/build orchestration contracts.
+- XML-tag extraction for plan/build orchestration contracts.
 - Claude stdout/stderr capture is pipeline-based (stdout to output artifact; stderr to log artifact).
 - Session logging uses FIFO + `tee` (no process substitution; spec `006` COMPLETE).
 

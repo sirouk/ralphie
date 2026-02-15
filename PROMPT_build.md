@@ -11,7 +11,7 @@ Output policy:
 
 Execution boundary:
 - Never invoke `./ralphie.sh` from inside this run.
-- Do not start nested prepare/plan/build loops.
+- Do not start nested plan/build loops.
 
 Human queue:
 - If `HUMAN_INSTRUCTIONS.md` exists, treat `Status: NEW` entries as top-priority candidate work.
