@@ -4,14 +4,14 @@ This document outlines the core human-centric requirements and engineering solut
 
 ## 1. The Need for Predictability & Governance
 Humans require that autonomous agents do not "go rogue" or skip critical quality checks. Ralphie addresses this through **Phase Governance**.
--   **Structured Pipeline:** Enforces a linear `Plan -> Build -> Test -> Refactor -> Lint -> Document` lifecycle.
+-   **Structured Pipeline:** Enforces a linear `Plan -> Build -> Test -> Refactor -> Test -> Lint -> Document` lifecycle.
 -   **Validation Gates:** No phase can advance without meeting explicit exit criteria, verified by a diverse consensus panel.
 -   **Isolation:** Supports single-phase execution to allow targeted human intervention without breaking pipeline integrity.
 
 ## 2. The Need for Reliability & Continuity
 In distant future or remote (off-planet) deployments, humans cannot manually debug state corruption. Ralphie addresses this through **State Integrity**.
 -   **Atomic Snapshots:** Every iteration is check-summed and snapshotted to `.ralphie/state.env`.
--   **Autonomous Recovery:** Supports `--resume` to recover from inference stalls or power failures, validating artifact consistency before resumption.
+-   **Autonomous Recovery:** Supports `--resume` to recover from inference stalls or power failures, validating artifact consistency before resumption. In non-interactive modes, recovery is automatic to maintain mission continuity.
 -   **Locking Protocol:** Prevents race conditions and concurrent state modification through atomic filesystem locks.
 
 ## 3. The Need for Intellectual Honesty & Truth
@@ -23,7 +23,7 @@ A single model's output can be biased or hallucinatory. Humans need a "second op
 ## 4. The Need for Toolchain Versatility
 Humans should not be tied to a single provider whose API might fail or be deprecated. Ralphie addresses this through **Engine Failover**.
 -   **Dynamic Resolution:** Automatically detects and probes the capabilities of available agent binaries.
--   **Seamless Failover:** Pivot to a diversified engine if a model becomes stuck or reaches a reasoning plateau.
+-   **Seamless Failover:** Pivot to a diversified engine if a model becomes stuck, reaches a reasoning plateau, or encounters consecutive failures.
 -   **Self-Healing:** Automatically remediates known engine-specific configuration errors (e.g., Codex reasoning effort mismatches).
 
 ## 5. The Need for Safety & Risk Mitigation
