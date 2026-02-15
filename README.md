@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ra
 ```
 
 ### Autonomous Resumption
-If a run is interrupted by a timeout or crash, resume from the last known-good checkpoint:
+If a run is interrupted by a timeout or crash, Ralphie will automatically detect the previous state at launch and prompt you to resume. You can also bypass the prompt and force a resumption via:
 ```bash
 ./ralphie.sh --resume
 ```

@@ -4718,12 +4718,35 @@ parse_args() {
 
 main() {
     local RESUME_MODE=false
+    local arg
     for arg in "$@"; do
         if [ "$arg" = "--resume" ]; then
             RESUME_MODE=true
             break
         fi
     done
+
+    # State Awareness: Prompt for resume if state exists and no explicit action is taken.
+    if ! is_true "$RESUME_MODE" && [ -f "$STATE_FILE" ] && is_interactive; then
+        local explicit_action=false
+        for arg in "$@"; do
+            case "$arg" in
+                --setup|--setup-and-run|--clean|--clean-deep|--ready|--human|--status|--doctor|--help|-h)
+                    explicit_action=true; break ;;
+            esac
+        done
+        if ! is_true "$explicit_action"; then
+             local last_ts
+             last_ts="$(read_state_value timestamp)"
+             local last_mode
+             last_mode="$(read_state_value mode)"
+             echo -e "${YELLOW}Ralphie: Previous state detected (${last_ts:-unknown}, Mode: ${last_mode:-unknown}).${NC}"
+             if is_true "$(prompt_yes_no "Resume previous session?" "y")"; then
+                 RESUME_MODE=true
+             fi
+             echo ""
+        fi
+    fi
 
     if is_true "$RESUME_MODE"; then
         if [ ! -f "$STATE_FILE" ]; then
