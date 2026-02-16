@@ -590,7 +590,7 @@ INTERRUPT_MENU_ACTIVE="false"
 MARKDOWN_ARTIFACTS_CLEANED_LIST=""
 
 # Configuration defaults
-DEFAULT_ENGINE="claude"
+DEFAULT_ENGINE="auto"
 DEFAULT_CODEX_CMD="codex"
 DEFAULT_CLAUDE_CMD="claude"
 DEFAULT_YOLO="true"
@@ -631,6 +631,9 @@ DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
 DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
 DEFAULT_SWARM_CONSENSUS_TIMEOUT=600             # max seconds for all reviewers in a consensus round
+DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=3             # attempts before refusing to proceed
+DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
+DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
 
 # Load configuration from environment or file.
 COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-$DEFAULT_COMMAND_TIMEOUT_SECONDS}"
@@ -664,6 +667,9 @@ SESSION_TOKEN_RATE_CENTS_PER_MILLION="${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-$D
 SESSION_COST_BUDGET_CENTS="${SESSION_COST_BUDGET_CENTS:-$DEFAULT_SESSION_COST_BUDGET_CENTS}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
 SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
+ENGINE_HEALTH_MAX_ATTEMPTS="${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
+ENGINE_HEALTH_RETRY_DELAY_SECONDS="${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
+ENGINE_HEALTH_RETRY_VERBOSE="${ENGINE_HEALTH_RETRY_VERBOSE:-$DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE}"
 
 if [ -f "$CONFIG_FILE" ]; then
     # Validate config file contains only safe KEY=VALUE lines before sourcing
@@ -693,8 +699,8 @@ PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
 case "$(to_lower "$ACTIVE_ENGINE")" in
     claude|codex|auto) ACTIVE_ENGINE="$(to_lower "$ACTIVE_ENGINE")" ;;
     *)
-        warn "Unrecognized engine '$ACTIVE_ENGINE'. Falling back to 'claude'."
-        ACTIVE_ENGINE="claude"
+        warn "Unrecognized engine '$ACTIVE_ENGINE'. Falling back to '$DEFAULT_ENGINE'."
+        ACTIVE_ENGINE="$DEFAULT_ENGINE"
         ;;
 esac
 
@@ -741,6 +747,12 @@ CLAUDE_CAP_YOLO_FLAG=""
 CODEX_CAP_OUTPUT_LAST_MESSAGE=0
 CODEX_CAP_YOLO_FLAG=0
 ENGINE_CAPABILITIES_PROBED=false
+CODEX_CAP_NOTE=""
+CLAUDE_CAP_NOTE=""
+CODEX_HEALTHY="false"
+CLAUDE_HEALTHY="false"
+ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+LAST_ENGINE_SELECTION_BLOCK_REASON=""
 
 # Resilience Dial implementation
 get_reviewer_count() {
@@ -947,10 +959,7 @@ enforce_session_budget() {
 
 # Interactive Questions
 is_tty_input_available() {
-    if [ -t 0 ]; then
-        return 0
-    fi
-    [ -r /dev/tty ] && [ -w /dev/tty ]
+    [ -t 0 ]
 }
 
 prompt_read_line() {
@@ -965,7 +974,7 @@ prompt_read_line() {
     fi
 
     if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        read -rp "$prompt" response < /dev/tty > /dev/tty
+        read -rp "$prompt" response < /dev/tty > /dev/tty 2>/dev/null
         echo "${response:-$default}"
         return 0
     fi
@@ -1174,19 +1183,43 @@ build_is_preapproved() {
 
 # Multi-Agent Capability Detection
 probe_engine_capabilities() {
-    if is_true "$ENGINE_CAPABILITIES_PROBED"; then
+    local force_reprobe="${1:-false}"
+
+    if is_true "$ENGINE_CAPABILITIES_PROBED" && ! is_true "$force_reprobe"; then
         return 0
     fi
+
+    CODEX_CAP_OUTPUT_LAST_MESSAGE=0
+    CODEX_CAP_YOLO_FLAG=0
+    CODEX_CAP_NOTE=""
+    CLAUDE_CAP_NOTE=""
+    CLAUDE_CAP_PRINT=0
+    CLAUDE_CAP_YOLO_FLAG=""
+    CODEX_HEALTHY="false"
+    CLAUDE_HEALTHY="false"
+
     # Probing Claude Code
     if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
         local claude_help
         claude_help="$("$CLAUDE_CMD" --help 2>&1 || true)"
         if echo "$claude_help" | grep -qE -- "-p, --print"; then
             CLAUDE_CAP_PRINT=1
+        else
+            CLAUDE_CAP_NOTE="missing required --print mode"
         fi
+
         if echo "$claude_help" | grep -qE -- "--dangerously-skip-permissions"; then
             CLAUDE_CAP_YOLO_FLAG="--dangerously-skip-permissions"
         fi
+
+        if ! echo "$claude_help" | grep -qiE "read|write|tool|file|edit|command"; then
+            [ -n "$CLAUDE_CAP_NOTE" ] && CLAUDE_CAP_NOTE="${CLAUDE_CAP_NOTE}; "
+            CLAUDE_CAP_NOTE="${CLAUDE_CAP_NOTE}read/write/tool capability hint not present in help output"
+        fi
+
+        [ -z "$CLAUDE_CAP_NOTE" ] && CLAUDE_HEALTHY="true"
+    else
+        CLAUDE_CAP_NOTE="command not found: $CLAUDE_CMD"
     fi
 
     # Probing Codex
@@ -1195,12 +1228,171 @@ probe_engine_capabilities() {
         codex_help="$("$CODEX_CMD" exec --help 2>&1 || true)"
         if echo "$codex_help" | grep -qE -- "--output-last-message"; then
             CODEX_CAP_OUTPUT_LAST_MESSAGE=1
+        else
+            CODEX_CAP_NOTE="missing required --output-last-message"
         fi
+
         if echo "$codex_help" | grep -qE -- "--dangerously-bypass-approvals-and-sandbox"; then
             CODEX_CAP_YOLO_FLAG=1
         fi
+
+        if ! echo "$codex_help" | grep -qiE "read|write|tool|file|edit|command|exec"; then
+            [ -n "$CODEX_CAP_NOTE" ] && CODEX_CAP_NOTE="${CODEX_CAP_NOTE}; "
+            CODEX_CAP_NOTE="${CODEX_CAP_NOTE}read/write/tool capability hint not present in help output"
+        fi
+
+        [ -z "$CODEX_CAP_NOTE" ] && CODEX_HEALTHY="true"
+    else
+        CODEX_CAP_NOTE="command not found: $CODEX_CMD"
     fi
+
     ENGINE_CAPABILITIES_PROBED=true
+}
+
+log_engine_health_summary() {
+    local codex_line
+    local claude_line
+    if [ "$CODEX_HEALTHY" = "true" ]; then
+        codex_line="codex: available"
+    else
+        codex_line="codex: unavailable (${CODEX_CAP_NOTE})"
+    fi
+    if [ "$CLAUDE_HEALTHY" = "true" ]; then
+        claude_line="claude: available"
+    else
+        claude_line="claude: unavailable (${CLAUDE_CAP_NOTE})"
+    fi
+    info "Engine health check: $codex_line; $claude_line"
+}
+
+resolve_active_engine() {
+    local requested_engine="$1"
+    local allow_auto_fallback="${2:-true}"
+    LAST_ENGINE_SELECTION_BLOCK_REASON=""
+
+    case "$requested_engine" in
+        auto)
+            if [ "$CODEX_HEALTHY" = "true" ]; then
+                ACTIVE_ENGINE="codex"
+                ACTIVE_CMD="$CODEX_CMD"
+                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                return 0
+            fi
+            if [ "$CLAUDE_HEALTHY" = "true" ]; then
+                if is_true "$allow_auto_fallback"; then
+                    if is_tty_input_available; then
+                        if ! prompt_yes_no "AUTO mode preferred codex, but codex is unavailable (${CODEX_CAP_NOTE}). Proceed with CLAUDE instead?" "y"; then
+                            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO mode skipped Claude fallback after user decline."
+                            return 1
+                        fi
+                    else
+                        LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO mode preferred codex, but codex is unavailable (${CODEX_CAP_NOTE}) and this is non-interactive."
+                        return 1
+                    fi
+                fi
+                ACTIVE_ENGINE="claude"
+                ACTIVE_CMD="$CLAUDE_CMD"
+                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                return 0
+            fi
+            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO requested but neither codex nor claude appears capable."
+            return 1
+            ;;
+        codex)
+            if [ "$CODEX_HEALTHY" = "true" ]; then
+                ACTIVE_ENGINE="codex"
+                ACTIVE_CMD="$CODEX_CMD"
+                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                return 0
+            fi
+            if [ "$CLAUDE_HEALTHY" = "true" ]; then
+                if is_tty_input_available; then
+                    if prompt_yes_no "Configured engine is codex, but codex is unavailable (${CODEX_CAP_NOTE}). Switch to CLAUDE and continue?" "y"; then
+                        ACTIVE_ENGINE="claude"
+                        ACTIVE_CMD="$CLAUDE_CMD"
+                        ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                        return 0
+                    fi
+                    LAST_ENGINE_SELECTION_BLOCK_REASON="User declined codex fallback to claude."
+                    return 1
+                fi
+                LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is codex, but codex is unavailable (${CODEX_CAP_NOTE}) in non-interactive mode."
+                return 1
+            fi
+            LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is codex and no fallback is healthy."
+            return 1
+            ;;
+        claude)
+            if [ "$CLAUDE_HEALTHY" = "true" ]; then
+                ACTIVE_ENGINE="claude"
+                ACTIVE_CMD="$CLAUDE_CMD"
+                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                return 0
+            fi
+            if [ "$CODEX_HEALTHY" = "true" ]; then
+                if is_tty_input_available; then
+                    if prompt_yes_no "Configured engine is claude, but claude is unavailable (${CLAUDE_CAP_NOTE}). Switch to CODEX and continue?" "y"; then
+                        ACTIVE_ENGINE="codex"
+                        ACTIVE_CMD="$CODEX_CMD"
+                        ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+                        return 0
+                    fi
+                    LAST_ENGINE_SELECTION_BLOCK_REASON="User declined claude fallback to codex."
+                    return 1
+                fi
+                LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is claude, but claude is unavailable (${CLAUDE_CAP_NOTE}) in non-interactive mode."
+                return 1
+            fi
+            LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is claude and no fallback is healthy."
+            return 1
+            ;;
+        *)
+            LAST_ENGINE_SELECTION_BLOCK_REASON="Unsupported requested engine '$requested_engine' during resolution."
+            return 1
+            ;;
+    esac
+}
+
+ensure_engines_ready() {
+    local requested_engine="$1"
+    local max_attempts="$ENGINE_HEALTH_MAX_ATTEMPTS"
+    local base_delay="$ENGINE_HEALTH_RETRY_DELAY_SECONDS"
+    local attempt=1
+
+    if ! is_number "$max_attempts" || [ "$max_attempts" -lt 1 ]; then
+        max_attempts=1
+    fi
+    if ! is_number "$base_delay" || [ "$base_delay" -lt 0 ]; then
+        base_delay=5
+    fi
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        probe_engine_capabilities "true"
+        ENGINE_CAPABILITIES_PROBED=true
+
+        if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+            log_engine_health_summary
+        fi
+
+        if resolve_active_engine "$requested_engine" "true"; then
+            return 0
+        fi
+
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            warn "Engine readiness check failed after $attempt/$max_attempts attempts: $LAST_ENGINE_SELECTION_BLOCK_REASON"
+            return 1
+        fi
+
+        local backoff_delay jitter
+        backoff_delay=$(( base_delay * (1 << (attempt - 1)) ))
+        [ "$backoff_delay" -gt 120 ] && backoff_delay=120
+        jitter=$(( ${RANDOM:-0} % (base_delay + 1) ))
+        backoff_delay=$((backoff_delay + jitter))
+        warn "Engine readiness blocked (${LAST_ENGINE_SELECTION_BLOCK_REASON}); retrying in ${backoff_delay}s..."
+        sleep "$backoff_delay"
+        attempt=$((attempt + 1))
+        ENGINE_CAPABILITIES_PROBED=false
+    done
 }
 
 # Lock Management (atomic via mkdir)
@@ -1357,6 +1549,14 @@ run_agent_with_prompt() {
     fi
     if [ -z "${ACTIVE_CMD:-}" ] || ! command -v "$ACTIVE_CMD" >/dev/null 2>&1; then
         err "Active engine command unavailable: ${ACTIVE_CMD:-<unset>}"
+        return 2
+    fi
+    if [ "$ACTIVE_ENGINE" = "codex" ] && [ "$CODEX_HEALTHY" != "true" ]; then
+        err "Selected engine 'codex' is currently marked unhealthy: ${CODEX_CAP_NOTE:-missing required capability state}"
+        return 2
+    fi
+    if [ "$ACTIVE_ENGINE" = "claude" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+        err "Selected engine 'claude' is currently marked unhealthy: ${CLAUDE_CAP_NOTE:-missing required capability state}"
         return 2
     fi
 
@@ -1526,6 +1726,27 @@ run_agent_with_prompt() {
     return "$exit_code"
 }
 
+consensus_reviewer_persona() {
+    local stage="${1:-plan}"
+    local reviewer_index="${2:-1}"
+    local normalized_index
+
+    is_number "$reviewer_index" || reviewer_index=1
+    normalized_index=$(( (reviewer_index - 1) % 6 ))
+    if [ "$normalized_index" -lt 0 ]; then
+        normalized_index=0
+    fi
+
+    case "$normalized_index" in
+        0) echo "Architect: validate scope integrity, assumptions, and future maintainability for ${stage}." ;;
+        1) echo "Skeptic: challenge edge cases, hidden risks, and silent failure modes in ${stage}." ;;
+        2) echo "Execution Reviewer: verify concrete evidence and artifact completeness from this attempt." ;;
+        3) echo "Safety Reviewer: enforce policy compliance, guardrails, and regression risk containment." ;;
+        4) echo "Operations Reviewer: focus on operational impact, deployment readiness, and reversibility." ;;
+        5) echo "Quality Reviewer: prioritize signal quality, confidence, and decision consistency." ;;
+    esac
+}
+
 run_swarm_reviewer() {
     local reviewer_index="$1"
     local prompt_file="$2"
@@ -1547,6 +1768,12 @@ run_swarm_reviewer() {
 
     for attempt_cmd in "${candidate_cmds[@]}"; do
         [ -n "$attempt_cmd" ] || continue
+        if [ "$attempt_cmd" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
+            continue
+        fi
+        if [ "$attempt_cmd" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+            continue
+        fi
         command -v "$attempt_cmd" >/dev/null 2>&1 || continue
 
         if [[ "$attempt_cmd" == *"codex"* ]]; then
@@ -1613,18 +1840,18 @@ run_swarm_consensus() {
     local -a primary_cmds=() fallback_cmds=() summary_lines=()
     local claude_available=false
     local codex_available=false
-    if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
-        claude_available=true
-    fi
-    if command -v "$CODEX_CMD" >/dev/null 2>&1; then
+    if [ "$CODEX_HEALTHY" = "true" ] && command -v "$CODEX_CMD" >/dev/null 2>&1; then
         codex_available=true
     fi
+    if [ "$CLAUDE_HEALTHY" = "true" ] && command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+        claude_available=true
+    fi
     if [ "$claude_available" = false ] && [ "$codex_available" = false ]; then
-        warn "No reviewer engines available for consensus."
+        warn "No healthy reviewer engines available for consensus."
         LAST_CONSENSUS_SCORE=0
         LAST_CONSENSUS_PASS=false
         LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
-        LAST_CONSENSUS_NEXT_PHASE_REASON="no reviewer engines available"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="no healthy reviewer engines available"
         LAST_CONSENSUS_RESPONDED_VOTES=0
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
@@ -1638,7 +1865,7 @@ run_swarm_consensus() {
 
         if [ "$claude_available" = false ] && [ "$codex_available" = true ]; then
             primary_cmd="$CODEX_CMD"
-        elif [ "$codex_available" = true ] && [ $((i % 2)) -eq 1 ]; then
+        elif [ "$claude_available" = true ] && [ "$codex_available" = true ] && [ $(( (i - 1) % 2 )) -eq 0 ]; then
             primary_cmd="$CODEX_CMD"
         fi
 
@@ -1658,7 +1885,7 @@ run_swarm_consensus() {
 
         {
             echo "# Consensus Review: $stage"
-            consensus_prompt_for_stage "$base_stage" "$history_context"
+            consensus_prompt_for_stage "$base_stage" "$history_context" "$(consensus_reviewer_persona "$base_stage" "$i")"
         } > "${prompts[$((i - 1))]}"
     done
 
@@ -2988,10 +3215,15 @@ setup_phase_prompts() {
 consensus_prompt_for_stage() {
     local stage="${1%-gate}"
     local loop_context="${2:-}"
+    local reviewer_persona="${3:-}"
     local next_phase_choices="plan|build|test|refactor|lint|document|done"
     if [ -n "$loop_context" ] && [ "$loop_context" != "no transitions yet" ]; then
         echo "Recent phase path context:"
         echo "$loop_context"
+        echo ""
+    fi
+    if [ -n "$reviewer_persona" ]; then
+        echo "Reviewer Persona: $reviewer_persona"
         echo ""
     fi
     echo "Use this transition history to decide whether to continue, backtrack, or stop."
@@ -3306,6 +3538,11 @@ main() {
 
     local consensus_route_count=0
     while true; do
+        if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
+            should_exit="true"
+            log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
+            break
+        fi
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
             CURRENT_PHASE_INDEX="$phase_index"
@@ -3367,6 +3604,7 @@ main() {
                 local handoff_validator_primary=""
                 local handoff_validator_fallback=""
                 local phase_warnings_text=""
+                local -a consensus_failures=()
 
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
@@ -3495,6 +3733,32 @@ main() {
                         handoff_validator_fallback="$CLAUDE_CMD"
                     fi
 
+                    if [ "$handoff_validator_primary" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
+                        handoff_validator_primary=""
+                    fi
+                    if [ "$handoff_validator_primary" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+                        handoff_validator_primary=""
+                    fi
+                    [ -n "$handoff_validator_primary" ] && command -v "$handoff_validator_primary" >/dev/null 2>&1 || handoff_validator_primary=""
+
+                    if [ -z "$handoff_validator_primary" ]; then
+                        if [ "${ACTIVE_ENGINE}" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ] && command -v "$CODEX_CMD" >/dev/null 2>&1; then
+                            handoff_validator_primary="$CODEX_CMD"
+                        elif [ "${ACTIVE_ENGINE}" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ] && command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+                            handoff_validator_primary="$CLAUDE_CMD"
+                        fi
+                    fi
+
+                    if [ "$handoff_validator_fallback" = "$handoff_validator_primary" ] || [ -z "$handoff_validator_fallback" ]; then
+                        handoff_validator_fallback=""
+                    elif [ "$handoff_validator_fallback" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
+                        handoff_validator_fallback=""
+                    elif [ "$handoff_validator_fallback" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+                        handoff_validator_fallback=""
+                    elif ! command -v "$handoff_validator_fallback" >/dev/null 2>&1; then
+                        handoff_validator_fallback=""
+                    fi
+
                     if ! run_handoff_validation \
                         "$phase" \
                         "$handoff_validator_prompt" \
@@ -3508,10 +3772,9 @@ main() {
                     fi
 
                     if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
-                        local -a consensus_failures=()
                         phase_failures+=("intelligence validation failed after $phase")
                         mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
-                        for issue in "${consensus_failures[@]}"; do
+                        for issue in "${consensus_failures[@]+"${consensus_failures[@]}"}"; do
                             phase_failures+=("consensus: $issue")
                         done
                         if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
