@@ -68,6 +68,22 @@ curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ra
 - `.specify/memory/constitution.md`
 - placeholder research artifacts under `research/`
 - placeholder implementation scaffolding under `IMPLEMENTATION_PLAN.md`
+- `.ralphie/project-bootstrap.md` containing:
+  - project type (`existing` or `new`)
+  - primary objective for this session
+  - explicit plan→build transition consent
+
+Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is present):
+- `project_type`: is this a new project?
+- `objective`: what should Ralphie optimize for?
+- `build_consent`: proceed from PLAN to BUILD automatically when gates pass?
+
+If `project_bootstrap.md` already exists and was created interactively, `ralphie.sh` will reuse it.
+If it was created non-interactively, the first interactive run will refresh it by default.
+To force a refresh at any time, run:
+```bash
+./ralphie.sh --rebootstrap
+```
 
 ### Autonomous Resumption
 If a run is interrupted by a timeout or crash, Ralphie automatically resumes from the previous state by default. You can force a fresh start with:
@@ -88,6 +104,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 
 - `--resume`  
 - `--no-resume`  
+- `--rebootstrap`  
 - `--max-session-cycles N`  
 - `--session-token-budget N`  
 - `--session-token-rate-cents-per-million N`  
@@ -120,6 +137,7 @@ Equivalent environment variables in `.ralphie/config.env`:
 `MAX_ITERATIONS`.
 
 `RESUME_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_RESUME_REQUESTED=true|false` (default: true).
+`REBOOTSTRAP_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_REBOOTSTRAP_REQUESTED=true|false`.
 
 `PHASE_NOOP_PROFILE` can be supplied via `.ralphie/config.env` as `RALPHIE_PHASE_NOOP_PROFILE=balanced|strict|read-only-first|custom`.
 

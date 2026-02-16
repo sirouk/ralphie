@@ -72,6 +72,7 @@ PROMPT_REFACTOR_FILE="$PROJECT_DIR/PROMPT_refactor.md"
 PROMPT_LINT_FILE="$PROJECT_DIR/PROMPT_lint.md"
 PROMPT_DOCUMENT_FILE="$PROJECT_DIR/PROMPT_document.md"
 PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
 
 # Shared logic for interactive questions and formatting.
 err() { echo -e "\033[1;31m$*\033[0m" >&2; }
@@ -238,6 +239,7 @@ Usage: ./ralphie.sh [options]
 Core options:
   --resume                               Resume from previous persisted session state (default: true)
   --no-resume                            Force fresh start; ignore persisted state
+  --rebootstrap                          Rebuild project bootstrap context (project type/objective/build consent)
   --max-session-cycles N                 Max total inference attempts in this session (0 = unlimited)
   --session-token-budget N                Max session token budget (0 = unlimited)
   --session-token-rate-cents-per-million N  Cost rate in cents per million tokens
@@ -288,21 +290,25 @@ parse_arg_value() {
 
 parse_args() {
     while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --help|-h)
-                print_usage
-                exit 0
-                ;;
+    case "$1" in
+        --help|-h)
+            print_usage
+            exit 0
+            ;;
             --resume)
                 RESUME_REQUESTED=true
                 shift
                 ;;
-            --no-resume)
-                RESUME_REQUESTED=false
-                shift
-                ;;
-            --max-session-cycles)
-                MAX_SESSION_CYCLES="$(parse_arg_value "--max-session-cycles" "${2:-}")"
+        --no-resume)
+            RESUME_REQUESTED=false
+            shift
+            ;;
+        --rebootstrap)
+            REBOOTSTRAP_REQUESTED=true
+            shift
+            ;;
+        --max-session-cycles)
+            MAX_SESSION_CYCLES="$(parse_arg_value "--max-session-cycles" "${2:-}")"
                 require_non_negative_int "MAX_SESSION_CYCLES" "$MAX_SESSION_CYCLES"
                 shift 2
                 ;;
@@ -473,6 +479,7 @@ DEFAULT_RUN_AGENT_MAX_ATTEMPTS=3
 DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=5
 DEFAULT_RUN_AGENT_RETRY_VERBOSE="true"
 DEFAULT_RESUME_REQUESTED="true"
+DEFAULT_REBOOTSTRAP_REQUESTED="false"
 DEFAULT_STRICT_VALIDATION_NOOP="false"
 DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3 # bounded retries per phase (0 = one attempt)
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
@@ -536,6 +543,7 @@ ACTIVE_ENGINE="${RALPHIE_ENGINE:-$DEFAULT_ENGINE}"
 CODEX_CMD="${CODEX_ENGINE_CMD:-$DEFAULT_CODEX_CMD}"
 CLAUDE_CMD="${CLAUDE_ENGINE_CMD:-$DEFAULT_CLAUDE_CMD}"
 RESUME_REQUESTED="${RALPHIE_RESUME_REQUESTED:-$DEFAULT_RESUME_REQUESTED}"
+REBOOTSTRAP_REQUESTED="${RALPHIE_REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}"
 YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
@@ -751,16 +759,46 @@ output_has_plan_status_tags() {
 }
 
 # Interactive Questions
+is_tty_input_available() {
+    if [ -t 0 ]; then
+        return 0
+    fi
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read_line() {
+    local prompt="$1"
+    local default="$2"
+    local response=""
+
+    if [ -t 0 ]; then
+        read -rp "$prompt" response
+        echo "${response:-$default}"
+        return 0
+    fi
+
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        read -rp "$prompt" response < /dev/tty > /dev/tty
+        echo "${response:-$default}"
+        return 0
+    fi
+
+    echo "$default"
+}
+
 prompt_yes_no() {
     local prompt="$1"
     local default="${2:-y}"
     local response
-    if [ -t 0 ]; then
-        read -rp "$prompt [Y/n]: " response
-    else
-        response=""
-    fi
-    case "${response:-$default}" in
+    local default_marker="[Y/n]"
+
+    case "$(to_lower "$default")" in
+        n|no|false|0) default_marker="[y/N]" ;;
+        *) default_marker="[Y/n]" ;;
+    esac
+
+    response="$(prompt_read_line "$prompt $default_marker: " "$default")"
+    case "${response}" in
         [Yy]*) echo "true"; return 0 ;;
         *) echo "false"; return 1 ;;
     esac
@@ -769,25 +807,178 @@ prompt_yes_no() {
 prompt_line() {
     local prompt="$1"
     local default="$2"
-    local response
-    if [ -t 0 ]; then
-        read -rp "$prompt [$default]: " response
-    else
-        response=""
-    fi
-    echo "${response:-$default}"
+    prompt_read_line "$prompt [$default]: " "$default"
 }
 
 prompt_optional_line() {
     local prompt="$1"
     local default="${2:-}"
-    local response
-    if [ -t 0 ]; then
-        read -rp "$prompt: " response
-    else
-        response=""
+    prompt_read_line "$prompt: " "$default"
+}
+
+bootstrap_prompt_value() {
+    local key="$1"
+    [ -f "$PROJECT_BOOTSTRAP_FILE" ] || return 1
+    awk -F': ' -v key="$key" '
+        $1 == key {
+            value=$0
+            sub(/^"?"/, "", value)
+            sub(/^"?[^:]+: /, "", value)
+            sub(/"$/, "", value)
+            print value
+            exit
+        }
+    ' "$PROJECT_BOOTSTRAP_FILE"
+}
+
+bootstrap_context_is_valid() {
+    local project_type objective build_consent interactive_prompted
+    project_type="$(bootstrap_prompt_value "project_type" 2>/dev/null || true)"
+    objective="$(bootstrap_prompt_value "objective" 2>/dev/null || true)"
+    build_consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null || true)"
+    interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+
+    if [ -z "$project_type" ] || [ -z "$objective" ] || [ -z "$build_consent" ] || [ -z "$interactive_prompted" ]; then
+        return 1
     fi
-    echo "${response:-$default}"
+    case "$project_type" in
+        new|existing) ;;
+        *) return 1 ;;
+    esac
+    if ! is_bool_like "$build_consent"; then
+        return 1
+    fi
+    if ! is_bool_like "$interactive_prompted"; then
+        return 1
+    fi
+    return 0
+}
+
+write_bootstrap_context_file() {
+    local project_type="$1"
+    local objective="$2"
+    local build_consent="$3"
+    local interactive_source="$4"
+
+    cat > "$PROJECT_BOOTSTRAP_FILE" <<EOF
+# Ralphie Project Bootstrap
+project_type: $project_type
+build_consent: $build_consent
+objective: $objective
+interactive_prompted: $interactive_source
+captured_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+}
+
+ensure_project_bootstrap() {
+    local project_type objective build_consent interactive_source
+    project_type="existing"
+    objective="Improve project with a deterministic, evidence-first implementation path."
+    build_consent="true"
+    interactive_source="false"
+
+    mkdir -p "$(dirname "$PROJECT_BOOTSTRAP_FILE")"
+    local existing_project_type existing_objective existing_build_consent existing_interactive_prompted needs_prompt="false"
+
+    if [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        existing_project_type="$(bootstrap_prompt_value "project_type" 2>/dev/null || true)"
+        existing_objective="$(bootstrap_prompt_value "objective" 2>/dev/null || true)"
+        existing_build_consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null || true)"
+        existing_interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+
+        if [ -n "$existing_project_type" ]; then
+            project_type="$existing_project_type"
+        fi
+        if [ -n "$existing_objective" ]; then
+            objective="$existing_objective"
+        fi
+        if [ -n "$existing_build_consent" ]; then
+            build_consent="$existing_build_consent"
+        fi
+        if [ "$existing_interactive_prompted" = "true" ]; then
+            interactive_source="true"
+        fi
+    fi
+
+    if [ "$REBOOTSTRAP_REQUESTED" = true ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ] || ! bootstrap_context_is_valid; then
+        needs_prompt="true"
+    fi
+    if is_tty_input_available && [ "$existing_interactive_prompted" = "false" ] && [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        needs_prompt="true"
+    fi
+
+    if [ "$needs_prompt" = "true" ]; then
+        if [ -f "$PROJECT_BOOTSTRAP_FILE" ] && ! bootstrap_context_is_valid; then
+            warn "Existing project bootstrap file is invalid or incomplete. Rebuilding context."
+        elif [ "$REBOOTSTRAP_REQUESTED" = true ]; then
+            warn "Rebuilding project bootstrap context due to --rebootstrap request."
+        elif is_tty_input_available && [ "$existing_interactive_prompted" = "false" ]; then
+            info "Previous bootstrap was collected non-interactively; refreshing bootstrap context now."
+        fi
+    fi
+
+    if is_true "$needs_prompt" && is_tty_input_available; then
+        interactive_source="true"
+        if [ "$REBOOTSTRAP_REQUESTED" = true ] || ! bootstrap_context_is_valid || [ "$existing_interactive_prompted" = "false" ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+            if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "n")" = "true" ]; then
+                project_type="new"
+            fi
+            objective="$(prompt_optional_line "What is the primary objective for this session" "$objective")"
+            if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "y")" = "true" ]; then
+                build_consent="true"
+            else
+                build_consent="false"
+            fi
+            info "Project bootstrap captured from interactive input."
+        fi
+    fi
+
+    if ! is_true "$needs_prompt" && [ -f "$PROJECT_BOOTSTRAP_FILE" ] && is_tty_input_available; then
+        info "Loaded existing project bootstrap context: $(path_for_display "$PROJECT_BOOTSTRAP_FILE")"
+        info "   - project_type: $project_type"
+        info "   - objective: $objective"
+        info "   - build_consent: $build_consent"
+        return 0
+    fi
+
+    if is_true "$needs_prompt" && ! is_tty_input_available; then
+        info "Non-interactive bootstrap fallback retained: objective and build consent defaults were applied."
+    fi
+
+    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source"
+    info "Captured project bootstrap context: $(path_for_display "$PROJECT_BOOTSTRAP_FILE")"
+    REBOOTSTRAP_REQUESTED=false
+}
+
+append_bootstrap_context_to_plan_prompt() {
+    local source_prompt="$1"
+    local target_prompt="$2"
+    local project_type objective build_consent
+
+    if [ ! -f "$source_prompt" ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        cp "$source_prompt" "$target_prompt"
+        return 0
+    fi
+
+    project_type="$(bootstrap_prompt_value "project_type")"
+    objective="$(bootstrap_prompt_value "objective")"
+    build_consent="$(bootstrap_prompt_value "build_consent")"
+
+    cat > "$target_prompt" <<EOF
+$(cat "$source_prompt")
+
+## Project Bootstrap Context
+- Project type: ${project_type:-existing}
+- Objective: ${objective:-unspecified}
+- Build consent after plan: ${build_consent:-true}
+
+EOF
+}
+
+build_is_preapproved() {
+    local consent
+    consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null)"
+    [ "$consent" = "true" ]
 }
 
 # Multi-Agent Capability Detection
@@ -868,6 +1059,7 @@ run_agent_with_prompt() {
     local log_file="$2"
     local output_file="$3"
     local yolo_effective="$4"
+    local attempt_no="${5:-1}"
     local timeout_cmd=""
     local exit_code=0
     local -a engine_args=()
@@ -926,6 +1118,7 @@ run_agent_with_prompt() {
     fi
 
     while [ "$attempt" -le "$max_run_attempts" ]; do
+        info "Dispatching ${ACTIVE_ENGINE} for attempt ${attempt}/${max_run_attempts} (phase attempt ${attempt_no}) with prompt $(path_for_display "$prompt_file")."
         if [ "$ACTIVE_ENGINE" = "codex" ]; then
             if [ -n "$timeout_cmd" ]; then
                 if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
@@ -1462,6 +1655,7 @@ stack_confidence_label() {
 
 run_stack_discovery() {
     mkdir -p "$RESEARCH_DIR"
+    info "Running deterministic stack discovery scan."
 
     local pyproject_hits
     local node_score=0 node_signal=()
@@ -1594,6 +1788,8 @@ run_stack_discovery() {
             alt_idx=$((alt_idx + 1))
         done
     } > "$STACK_SNAPSHOT_FILE"
+
+    info "Stack snapshot complete: primary stack ${primary_candidate} (${primary_score}/100, ${primary_confidence})."
 }
 
 collect_constitution_schema_issues() {
@@ -2735,6 +2931,9 @@ format_retry_budget_block_reason() {
 main() {
     parse_args "$@"
     finalize_phase_noop_profile_config
+    REBOOTSTRAP_REQUESTED="$(to_lower "${REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}")"
+    is_bool_like "$REBOOTSTRAP_REQUESTED" || REBOOTSTRAP_REQUESTED="$DEFAULT_REBOOTSTRAP_REQUESTED"
+
     acquire_lock || exit 1
 
     if is_true "$RESUME_REQUESTED" && load_state; then
@@ -2769,6 +2968,7 @@ main() {
     ensure_core_artifacts
     setup_phase_prompts
     ensure_gitignore_guardrails
+    ensure_project_bootstrap
 
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
     local phase_index=0
@@ -2819,6 +3019,13 @@ main() {
             if [ ! -f "$pfile" ]; then
                 ensure_prompt_file "$phase" "$pfile"
             fi
+            if [ "$phase" = "build" ] && ! build_is_preapproved; then
+                warn "Build execution was not pre-approved in project bootstrap context."
+                warn "Edit $(path_for_display "$PROJECT_BOOTSTRAP_FILE") and set build_consent: true to continue automatically into BUILD."
+                log_reason_code "RB_BUILD_CONSENT_REQUIRED" "bootstrap build_consent is false"
+                should_exit="true"
+                break 2
+            fi
             if [ "$phase" = "plan" ]; then
                 run_stack_discovery
                 if [ ! -f "$STACK_SNAPSHOT_FILE" ] || ! grep -qE '^##[[:space:]]*Project Stack Ranking' "$STACK_SNAPSHOT_FILE" 2>/dev/null; then
@@ -2839,6 +3046,7 @@ main() {
                 local -a phase_failures=("${cumulative_phase_failures[@]}")
                 local -a phase_warnings=()
                 local attempt_feedback_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.prompt.md"
+                local bootstrap_prompt_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.bootstrap.prompt.md"
                 local previous_attempt_output_hash=""
                 local phase_noop_mode manifest_before_file manifest_after_file
                 phase_noop_mode="$(phase_noop_policy "$phase")"
@@ -2857,8 +3065,13 @@ main() {
                     fi
                 fi
 
+                if [ "$phase" = "plan" ]; then
+                    append_bootstrap_context_to_plan_prompt "$pfile" "$bootstrap_prompt_file"
+                    active_prompt="$bootstrap_prompt_file"
+                fi
+
                 if [ "$phase_attempt" -gt 1 ]; then
-                    build_phase_prompt_with_feedback "$phase" "$pfile" "$attempt_feedback_file" "$phase_attempt" "${cumulative_phase_failures[@]}"
+                    build_phase_prompt_with_feedback "$phase" "$active_prompt" "$attempt_feedback_file" "$phase_attempt" "${cumulative_phase_failures[@]}"
                     active_prompt="$attempt_feedback_file"
                 fi
 
@@ -2887,7 +3100,7 @@ main() {
                     done
                 fi
 
-                if [ "${#phase_failures[@]}" -eq 0 ] && run_agent_with_prompt "$active_prompt" "$lfile" "$ofile" "$YOLO"; then
+                if [ "${#phase_failures[@]}" -eq 0 ] && run_agent_with_prompt "$active_prompt" "$lfile" "$ofile" "$YOLO" "$phase_attempt"; then
                     if detect_completion_signal "$lfile" "$ofile" >/dev/null; then
                         if [ -n "$previous_attempt_output_hash" ]; then
                             local phase_output_hash
