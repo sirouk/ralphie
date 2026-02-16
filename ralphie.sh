@@ -1437,11 +1437,13 @@ release_lock() {
 
 # Interrupt handling
 cleanup_managed_processes() {
-    for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -TERM "$pid" 2>/dev/null || true
-        fi
-    done
+    if [ "${#RALPHIE_BG_PIDS[@]:-0}" -gt 0 ]; then
+        for pid in "${RALPHIE_BG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done
+    fi
 }
 
 cleanup_resources() {
@@ -1638,13 +1640,13 @@ run_agent_with_prompt() {
         else
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]-}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]-}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1652,13 +1654,13 @@ run_agent_with_prompt() {
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
+                    if "${yolo_prefix[@]-}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
+                    if "${yolo_prefix[@]-}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1911,7 +1913,7 @@ run_swarm_consensus() {
                 # Portable: poll only swarm PIDs until at least one finishes
                 while true; do
                     local __alive=0
-                    for __pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
+                    for __pid in ${RALPHIE_BG_PIDS[@]-}; do
                         kill -0 "$__pid" 2>/dev/null && __alive=$((__alive + 1))
                     done
                     [ "$__alive" -lt "$active" ] && break
@@ -1929,27 +1931,27 @@ run_swarm_consensus() {
     while true; do
         local running_jobs=0
         local __active_jobs=()
-        for __pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
-            if kill -0 "$__pid" 2>/dev/null; then
-                __active_jobs+=("$__pid")
-                running_jobs=$((running_jobs + 1))
+            for __pid in ${RALPHIE_BG_PIDS[@]-}; do
+                if kill -0 "$__pid" 2>/dev/null; then
+                    __active_jobs+=("$__pid")
+                    running_jobs=$((running_jobs + 1))
+                fi
+            done
+            RALPHIE_BG_PIDS=("${__active_jobs[@]-}")
+            [ "${running_jobs:-0}" -eq 0 ] && break
+            swarm_elapsed=$(( $(date +%s) - swarm_start ))
+            if [ "$swarm_elapsed" -ge "$swarm_timeout" ]; then
+                warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
+                swarm_timed_out=true
+                for pid in "${RALPHIE_BG_PIDS[@]-}"; do
+                    kill -TERM "$pid" 2>/dev/null || true
+                done
+                sleep 2
+                for pid in "${RALPHIE_BG_PIDS[@]-}"; do
+                    kill -KILL "$pid" 2>/dev/null || true
+                done
+                break
             fi
-        done
-        RALPHIE_BG_PIDS=(${__active_jobs[@]+"${__active_jobs[@]}"})
-        [ "${running_jobs:-0}" -eq 0 ] && break
-        swarm_elapsed=$(( $(date +%s) - swarm_start ))
-        if [ "$swarm_elapsed" -ge "$swarm_timeout" ]; then
-            warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
-            swarm_timed_out=true
-            for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
-                kill -TERM "$pid" 2>/dev/null || true
-            done
-            sleep 2
-            for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
-                kill -KILL "$pid" 2>/dev/null || true
-            done
-            break
-        fi
         sleep 1
     done
     wait 2>/dev/null || true
@@ -2727,13 +2729,13 @@ run_stack_discovery() {
 
     local ranking_file
     ranking_file="$(mktemp "$CONFIG_DIR/stack-ranking.XXXXXX")"
-    printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas ${node_signal[@]+"${node_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas ${python_signal[@]+"${python_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas ${go_signal[@]+"${go_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas ${rust_signal[@]+"${rust_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas ${java_signal[@]+"${java_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas ${dotnet_signal[@]+"${dotnet_signal[@]}"})" >> "$ranking_file"
-    printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas ${unknown_signal[@]+"${unknown_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas "${node_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas "${python_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas "${go_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas "${rust_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas "${java_signal[@]}")" >> "$ranking_file"
+    printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas "${dotnet_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas "${unknown_signal[@]}")" >> "$ranking_file"
     printf "%03d|Unknown|-\n" "$unknown_score" >> "$ranking_file"
 
     local -a ranked_candidates=()
@@ -3711,7 +3713,7 @@ main() {
                         fi
                     fi
 
-                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]+"${phase_warnings[@]}"}")"
+                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]}")"
                     write_handoff_validation_prompt \
                         "$phase" \
                         "$phase_attempt" \
@@ -3774,7 +3776,7 @@ main() {
                     if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
                         phase_failures+=("intelligence validation failed after $phase")
                         mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
-                        for issue in "${consensus_failures[@]+"${consensus_failures[@]}"}"; do
+                        for issue in "${consensus_failures[@]:-}"; do
                             phase_failures+=("consensus: $issue")
                         done
                         if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
@@ -3801,7 +3803,7 @@ main() {
                         warn "$issue"
                     done
                     if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                        for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
+                        for issue in "${phase_warnings[@]:-}"; do
                             info "note: $issue"
                         done
                     fi
@@ -3822,7 +3824,7 @@ main() {
                 fi
 
                 if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                    for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
+                    for issue in "${phase_warnings[@]:-}"; do
                         info "note: $issue"
                     done
                 fi
