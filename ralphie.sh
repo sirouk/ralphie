@@ -114,6 +114,12 @@ is_number() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+print_array_lines() {
+    local array_name="${1:-}"
+    [ -z "$array_name" ] && return 0
+    eval "printf '%s\\n' \"\\${${array_name}[@]-}\""
+}
+
 # Compatibility layer for environments that still run Bash 3.x (for example, macOS
 # default Bash), which lack the `mapfile` builtin used throughout this script.
 if ! command -v mapfile >/dev/null 2>&1; then
@@ -134,7 +140,12 @@ if ! command -v mapfile >/dev/null 2>&1; then
         done
 
         # `-t` should strip trailing newlines. `read -r` already strips them.
-        eval "${var_name}=(\"${__mapfile_lines[@]-}\")"
+        eval "${var_name}=()"
+        local __mapfile_value
+        for __mapfile_value in "${__mapfile_lines[@]}"; do
+            eval "${var_name}+=(\"\$__mapfile_value\")"
+        done
+        return 0
     }
 fi
 
@@ -1764,7 +1775,7 @@ collect_phase_resume_blockers() {
             ;;
     esac
 
-    printf '%s\n' "${blockers[@]-}"
+    print_array_lines blockers
 }
 
 summarize_blocks_for_log() {
@@ -2130,7 +2141,7 @@ collect_constitution_schema_issues() {
             issues+=("constitution missing required governance sections")
         fi
     fi
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 constitution_schema_is_valid() {
@@ -2336,7 +2347,7 @@ collect_phase_validation_schema_issues() {
     local evidence_block
     local -a issues=()
 
-    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); printf '%s\n' "${issues[@]-}"; return 0; }
+    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); print_array_lines issues; return 0; }
     evidence_block="$(extract_evidence_block "$output_file")"
     if [ -z "$evidence_block" ]; then
         issues+=("phase requires machine-readable <evidence>...</evidence> block")
@@ -2466,7 +2477,7 @@ collect_phase_validation_schema_issues() {
             fi
             ;;
     esac
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 collect_phase_schema_issues() {
@@ -2521,7 +2532,7 @@ collect_phase_schema_issues() {
             ;;
     esac
 
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 collect_build_schema_issues() {
@@ -2541,7 +2552,7 @@ collect_build_schema_issues() {
         issues+=("specs must include acceptance criteria sections")
     fi
     [ -f "$PLAN_FILE" ] || issues+=("IMPLEMENTATION_PLAN.md missing before build")
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 collect_research_schema_issues() {
@@ -2583,7 +2594,7 @@ collect_research_schema_issues() {
         issues+=("research/STACK_SNAPSHOT.md missing ranking table")
     fi
 
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 collect_plan_schema_issues() {
@@ -2604,7 +2615,7 @@ collect_plan_schema_issues() {
         fi
     fi
 
-    printf '%s\n' "${issues[@]-}"
+    print_array_lines issues
 }
 
 plan_is_semantically_actionable() {
@@ -2735,7 +2746,7 @@ collect_build_prerequisites_issues() {
         done
     fi
 
-    printf '%s\n' "${missing[@]}"
+    print_array_lines missing
 }
 
 enforce_build_gate() {
@@ -3237,7 +3248,7 @@ build_phase_prompt_with_feedback() {
 
 collect_phase_retry_failures_from_consensus() {
     local -a failures=()
-    [ -n "$LAST_CONSENSUS_DIR" ] || { printf '%s\n' "${failures[@]}"; return 0; }
+    [ -n "$LAST_CONSENSUS_DIR" ] || { print_array_lines failures; return 0; }
     local reviewer_summary ofile
     for ofile in "$LAST_CONSENSUS_DIR"/*.out; do
         [ -f "$ofile" ] || continue
@@ -3257,7 +3268,7 @@ collect_phase_retry_failures_from_consensus() {
         reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} gaps=${gaps}"
         failures+=("consensus review: $reviewer_summary")
     done
-    printf '%s\n' "${failures[@]}"
+    print_array_lines failures
 }
 
 ensure_constitution_bootstrap() {
