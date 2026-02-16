@@ -1437,7 +1437,7 @@ release_lock() {
 
 # Interrupt handling
 cleanup_managed_processes() {
-    if [ "${#RALPHIE_BG_PIDS[@]:-0}" -gt 0 ]; then
+    if [ "${#RALPHIE_BG_PIDS[@]-0}" -gt 0 ]; then
         for pid in "${RALPHIE_BG_PIDS[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
                 kill -TERM "$pid" 2>/dev/null || true
@@ -1640,13 +1640,13 @@ run_agent_with_prompt() {
         else
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]-}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]-}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1654,13 +1654,13 @@ run_agent_with_prompt() {
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "${yolo_prefix[@]-}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
+                    if "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if "${yolo_prefix[@]-}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
+                    if "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1913,7 +1913,7 @@ run_swarm_consensus() {
                 # Portable: poll only swarm PIDs until at least one finishes
                 while true; do
                     local __alive=0
-                    for __pid in ${RALPHIE_BG_PIDS[@]-}; do
+                    for __pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
                         kill -0 "$__pid" 2>/dev/null && __alive=$((__alive + 1))
                     done
                     [ "$__alive" -lt "$active" ] && break
@@ -1931,23 +1931,23 @@ run_swarm_consensus() {
     while true; do
         local running_jobs=0
         local __active_jobs=()
-            for __pid in ${RALPHIE_BG_PIDS[@]-}; do
+            for __pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
                 if kill -0 "$__pid" 2>/dev/null; then
                     __active_jobs+=("$__pid")
                     running_jobs=$((running_jobs + 1))
                 fi
             done
-            RALPHIE_BG_PIDS=("${__active_jobs[@]-}")
+            RALPHIE_BG_PIDS=("${__active_jobs[@]+"${__active_jobs[@]}"}")
             [ "${running_jobs:-0}" -eq 0 ] && break
             swarm_elapsed=$(( $(date +%s) - swarm_start ))
             if [ "$swarm_elapsed" -ge "$swarm_timeout" ]; then
                 warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
                 swarm_timed_out=true
-                for pid in "${RALPHIE_BG_PIDS[@]-}"; do
+                for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
                     kill -TERM "$pid" 2>/dev/null || true
                 done
                 sleep 2
-                for pid in "${RALPHIE_BG_PIDS[@]-}"; do
+                for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
                     kill -KILL "$pid" 2>/dev/null || true
                 done
                 break
@@ -2443,7 +2443,7 @@ collect_phase_resume_blockers() {
             ;;
     esac
 
-    print_array_lines "${blockers[@]-}"
+    print_array_lines "${blockers[@]+"${blockers[@]}"}"
 }
 
 summarize_blocks_for_log() {
@@ -2910,7 +2910,7 @@ collect_build_prerequisites_issues() {
         missing+=("constitution file missing: .specify/memory/constitution.md")
     fi
 
-    print_array_lines "${missing[@]-}"
+    print_array_lines "${missing[@]+"${missing[@]}"}"
 }
 
 enforce_build_gate() {
@@ -2931,7 +2931,7 @@ collect_phase_schema_issues() {
     [ -f "$log_file" ] || issues+=("$phase log artifact missing: $log_file")
     [ -n "$phase" ] || issues+=("missing phase name for schema check")
 
-    print_array_lines "${issues[@]-}"
+    print_array_lines "${issues[@]+"${issues[@]}"}"
 }
 
 pick_fallback_engine() { [ "${2:-}" = "claude" ] && echo "codex" || echo "claude"; }
@@ -3347,7 +3347,7 @@ build_phase_prompt_with_feedback() {
 
 collect_phase_retry_failures_from_consensus() {
     local -a failures=()
-    [ -n "$LAST_CONSENSUS_DIR" ] || { print_array_lines "${failures[@]-}"; return 0; }
+    [ -n "$LAST_CONSENSUS_DIR" ] || { print_array_lines "${failures[@]+"${failures[@]}"}"; return 0; }
     local reviewer_summary ofile
     for ofile in "$LAST_CONSENSUS_DIR"/*.out; do
         [ -f "$ofile" ] || continue
@@ -3370,7 +3370,7 @@ collect_phase_retry_failures_from_consensus() {
         reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} next=$next_phase reason=$next_phase_reason gaps=$gaps"
         failures+=("consensus review: $reviewer_summary")
     done
-    print_array_lines "${failures[@]-}"
+    print_array_lines "${failures[@]+"${failures[@]}"}"
 }
 
 ensure_constitution_bootstrap() {
@@ -3713,7 +3713,7 @@ main() {
                         fi
                     fi
 
-                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]}")"
+                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]+"${phase_warnings[@]}"}")"
                     write_handoff_validation_prompt \
                         "$phase" \
                         "$phase_attempt" \
@@ -3776,7 +3776,7 @@ main() {
                     if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
                         phase_failures+=("intelligence validation failed after $phase")
                         mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
-                        for issue in "${consensus_failures[@]:-}"; do
+                        for issue in "${consensus_failures[@]+"${consensus_failures[@]}"}"; do
                             phase_failures+=("consensus: $issue")
                         done
                         if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
@@ -3802,8 +3802,8 @@ main() {
                     for issue in "${phase_failures[@]}"; do
                         warn "$issue"
                     done
-                    if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                        for issue in "${phase_warnings[@]:-}"; do
+                    if [ "${#phase_warnings[@]-0}" -gt 0 ]; then
+                        for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                             info "note: $issue"
                         done
                     fi
@@ -3823,8 +3823,8 @@ main() {
                     continue
                 fi
 
-                if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                    for issue in "${phase_warnings[@]:-}"; do
+                if [ "${#phase_warnings[@]-0}" -gt 0 ]; then
+                    for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                         info "note: $issue"
                     done
                 fi
