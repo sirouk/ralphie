@@ -134,7 +134,7 @@ if ! command -v mapfile >/dev/null 2>&1; then
         done
 
         # `-t` should strip trailing newlines. `read -r` already strips them.
-        eval "${var_name}=(\"\${__mapfile_lines[@]}\")"
+        eval "${var_name}=(\"${__mapfile_lines[@]-}\")"
     }
 fi
 
@@ -2130,7 +2130,7 @@ collect_constitution_schema_issues() {
             issues+=("constitution missing required governance sections")
         fi
     fi
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 constitution_schema_is_valid() {
@@ -2336,7 +2336,7 @@ collect_phase_validation_schema_issues() {
     local evidence_block
     local -a issues=()
 
-    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); printf '%s\n' "${issues[@]}"; return 0; }
+    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); printf '%s\n' "${issues[@]-}"; return 0; }
     evidence_block="$(extract_evidence_block "$output_file")"
     if [ -z "$evidence_block" ]; then
         issues+=("phase requires machine-readable <evidence>...</evidence> block")
@@ -2466,7 +2466,7 @@ collect_phase_validation_schema_issues() {
             fi
             ;;
     esac
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 collect_phase_schema_issues() {
@@ -2521,7 +2521,7 @@ collect_phase_schema_issues() {
             ;;
     esac
 
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 collect_build_schema_issues() {
@@ -2541,7 +2541,7 @@ collect_build_schema_issues() {
         issues+=("specs must include acceptance criteria sections")
     fi
     [ -f "$PLAN_FILE" ] || issues+=("IMPLEMENTATION_PLAN.md missing before build")
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 collect_research_schema_issues() {
@@ -2583,7 +2583,7 @@ collect_research_schema_issues() {
         issues+=("research/STACK_SNAPSHOT.md missing ranking table")
     fi
 
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 collect_plan_schema_issues() {
@@ -2604,7 +2604,7 @@ collect_plan_schema_issues() {
         fi
     fi
 
-    printf '%s\n' "${issues[@]}"
+    printf '%s\n' "${issues[@]-}"
 }
 
 plan_is_semantically_actionable() {
