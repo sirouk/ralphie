@@ -1,8 +1,0 @@
-[submodule "subrepos/codex"]
-	path = subrepos/codex
-	url = https://github.com/openai/codex.git
-	branch = main
-[submodule "subrepos/claude-code"]
-	path = subrepos/claude-code
-	url = https://github.com/anthropics/claude-code.git
-	branch = main
