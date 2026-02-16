@@ -250,6 +250,7 @@ Core options:
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
+  --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
   --strict-validation-noop bool           Require worktree mutation for test/lint phases too (true|false)
   --phase-noop-profile strict|balanced|read-only-first|custom
@@ -362,6 +363,14 @@ parse_args() {
                 RUN_AGENT_RETRY_VERBOSE="$(parse_arg_value "--run-agent-retry-verbose" "${2:-}")"
                 if ! is_bool_like "$RUN_AGENT_RETRY_VERBOSE"; then
                     err "Invalid boolean value for --run-agent-retry-verbose: $RUN_AGENT_RETRY_VERBOSE"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --engine-output-to-stdout)
+                ENGINE_OUTPUT_TO_STDOUT="$(parse_arg_value "--engine-output-to-stdout" "${2:-}")"
+                if ! is_bool_like "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    err "Invalid boolean value for --engine-output-to-stdout: $ENGINE_OUTPUT_TO_STDOUT"
                     exit 1
                 fi
                 shift 2
@@ -484,6 +493,7 @@ DEFAULT_STRICT_VALIDATION_NOOP="false"
 DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3 # bounded retries per phase (0 = one attempt)
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
+DEFAULT_ENGINE_OUTPUT_TO_STDOUT="true"
 DEFAULT_PHASE_NOOP_POLICY_PLAN="none"
 DEFAULT_PHASE_NOOP_POLICY_BUILD="hard"
 DEFAULT_PHASE_NOOP_POLICY_TEST="soft"
@@ -517,6 +527,7 @@ AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
 RUN_AGENT_MAX_ATTEMPTS="${RUN_AGENT_MAX_ATTEMPTS:-$DEFAULT_RUN_AGENT_MAX_ATTEMPTS}"
 RUN_AGENT_RETRY_DELAY_SECONDS="${RUN_AGENT_RETRY_DELAY_SECONDS:-$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RUN_AGENT_RETRY_VERBOSE:-$DEFAULT_RUN_AGENT_RETRY_VERBOSE}"
+ENGINE_OUTPUT_TO_STDOUT="${ENGINE_OUTPUT_TO_STDOUT:-$DEFAULT_ENGINE_OUTPUT_TO_STDOUT}"
 STRICT_VALIDATION_NOOP="${STRICT_VALIDATION_NOOP:-$DEFAULT_STRICT_VALIDATION_NOOP}"
 PHASE_COMPLETION_MAX_ATTEMPTS="${PHASE_COMPLETION_MAX_ATTEMPTS:-$DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS}"
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
@@ -544,6 +555,7 @@ CODEX_CMD="${CODEX_ENGINE_CMD:-$DEFAULT_CODEX_CMD}"
 CLAUDE_CMD="${CLAUDE_ENGINE_CMD:-$DEFAULT_CLAUDE_CMD}"
 RESUME_REQUESTED="${RALPHIE_RESUME_REQUESTED:-$DEFAULT_RESUME_REQUESTED}"
 REBOOTSTRAP_REQUESTED="${RALPHIE_REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}"
+ENGINE_OUTPUT_TO_STDOUT="${RALPHIE_ENGINE_OUTPUT_TO_STDOUT:-$ENGINE_OUTPUT_TO_STDOUT}"
 YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
