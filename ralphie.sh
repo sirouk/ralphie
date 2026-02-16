@@ -95,6 +95,32 @@ path_for_display() {
     echo "${p#./}"
 }
 
+redact_endpoint_for_log() {
+    local endpoint="${1:-}"
+    if [ -z "$endpoint" ]; then
+        echo "<default>"
+        return 0
+    fi
+
+    # Keep logs safe: show protocol + host[:port] only, strip userinfo/path/query.
+    if [[ "$endpoint" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+        local scheme rest host
+        scheme="${endpoint%%://*}://"
+        rest="${endpoint#*://}"
+        rest="${rest#*@}"
+        rest="${rest%%/*}"
+        rest="${rest%%\?*}"
+        rest="${rest%%\#*}"
+        host="$rest"
+        if [ -n "$host" ]; then
+            echo "${scheme}${host}"
+            return 0
+        fi
+    fi
+
+    echo "<custom-set>"
+}
+
 # Boolean helper
 is_true() {
     case "${1:-}" in
@@ -239,6 +265,54 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+load_config_file_safe() {
+    local file="$1"
+    local file_display
+    local line
+    local key
+    local raw_value
+    local value
+    local line_no=0
+
+    [ -f "$file" ] || return 0
+    file_display="$(path_for_display "$file")"
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line_no=$((line_no + 1))
+        line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+
+        if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            warn "Skipping invalid config line $line_no in $file_display: $line"
+            continue
+        fi
+
+        key="${BASH_REMATCH[1]}"
+        raw_value="${BASH_REMATCH[2]}"
+        raw_value="$(printf '%s' "$raw_value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+        # For unquoted values, allow trailing comments using '#'.
+        if [[ ! "$raw_value" =~ ^\".*\"$ ]] && [[ ! "$raw_value" =~ ^\'.*\'$ ]]; then
+            # Strip inline comments only when '#' is preceded by whitespace,
+            # preserving literal '#' in tokens (for example API keys/URLs).
+            raw_value="$(printf '%s' "$raw_value" | sed 's/[[:space:]]#.*$//; s/[[:space:]]*$//')"
+        fi
+
+        value="$raw_value"
+        if [[ "$value" =~ ^\".*\"$ ]] && [ "${#value}" -ge 2 ]; then
+            value="${value:1:${#value}-2}"
+            value="${value//\\\"/\"}"
+            value="${value//\\\\/\\}"
+        elif [[ "$value" =~ ^\'.*\'$ ]] && [ "${#value}" -ge 2 ]; then
+            value="${value:1:${#value}-2}"
+        fi
+
+        # Literal assignment (no command or parameter expansion).
+        printf -v "$key" '%s' "$value"
+    done < "$file"
+}
+
 normalize_phase_noop_profile() {
     local profile="${1:-balanced}"
     case "$profile" in
@@ -357,6 +431,7 @@ Core options:
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
+  --auto-engine-preference codex|claude   Preferred AUTO engine selection order
   --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
   --strict-validation-noop bool           Require worktree mutation for test/lint phases too (true|false)
@@ -370,6 +445,15 @@ Core options:
   --help, -h                             Show this help and exit
 
 All options may also be set through config.env (eg. SESSION_TOKEN_BUDGET, MAX_SESSION_CYCLES, etc).
+
+Additional runtime engine env knobs:
+  RALPHIE_CODEX_ENDPOINT                 Optional OPENAI_BASE_URL override for codex calls
+  RALPHIE_CODEX_USE_RESPONSES_SCHEMA     Whether to pass codex --output-schema (true|false)
+  RALPHIE_CODEX_RESPONSES_SCHEMA_FILE    JSON schema file path for codex --output-schema
+  RALPHIE_CODEX_THINKING_OVERRIDE        Codex reasoning override: none|minimal|low|medium|high|xhigh
+  RALPHIE_CLAUDE_ENDPOINT                Optional ANTHROPIC_BASE_URL override for claude calls
+  RALPHIE_CLAUDE_THINKING_OVERRIDE       Claude thinking override: none|off|low|medium|high|xhigh
+  RALPHIE_STARTUP_OPERATIONAL_PROBE      Run startup operational self-checks (true|false)
 EOF
 }
 
@@ -479,6 +563,17 @@ parse_args() {
                 fi
                 shift 2
                 ;;
+            --auto-engine-preference)
+                AUTO_ENGINE_PREFERENCE="$(to_lower "$(parse_arg_value "--auto-engine-preference" "${2:-}")")"
+                case "$AUTO_ENGINE_PREFERENCE" in
+                    codex|claude) ;;
+                    *)
+                        err "Invalid value for --auto-engine-preference: $AUTO_ENGINE_PREFERENCE (expected codex|claude)"
+                        exit 1
+                        ;;
+                esac
+                shift 2
+                ;;
             --engine-output-to-stdout)
                 ENGINE_OUTPUT_TO_STDOUT="$(parse_arg_value "--engine-output-to-stdout" "${2:-}")"
                 if ! is_bool_like "$ENGINE_OUTPUT_TO_STDOUT"; then
@@ -513,7 +608,6 @@ parse_args() {
                     exit 1
                 fi
                 PHASE_NOOP_PROFILE="$(normalize_phase_noop_profile "$profile_candidate")"
-                PHASE_NOOP_PROFILE_EXPLICIT=true
                 shift 2
                 ;;
             --phase-noop-policy-plan)
@@ -593,6 +687,13 @@ MARKDOWN_ARTIFACTS_CLEANED_LIST=""
 DEFAULT_ENGINE="auto"
 DEFAULT_CODEX_CMD="codex"
 DEFAULT_CLAUDE_CMD="claude"
+DEFAULT_AUTO_ENGINE_PREFERENCE="codex"        # codex|claude (AUTO mode selection priority)
+DEFAULT_CODEX_ENDPOINT=""                     # empty = do not override OPENAI_BASE_URL
+DEFAULT_CODEX_USE_RESPONSES_SCHEMA="false"    # false = skip codex --output-schema
+DEFAULT_CODEX_RESPONSES_SCHEMA_FILE=""        # path passed to codex --output-schema when enabled
+DEFAULT_CODEX_THINKING_OVERRIDE="high"        # none|minimal|low|medium|high|xhigh
+DEFAULT_CLAUDE_ENDPOINT=""                    # empty = do not override ANTHROPIC_BASE_URL
+DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
 DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="true"
 DEFAULT_COMMAND_TIMEOUT_SECONDS=0 # 0 means disabled
@@ -619,7 +720,6 @@ DEFAULT_PHASE_NOOP_POLICY_REFACTOR="hard"
 DEFAULT_PHASE_NOOP_POLICY_LINT="soft"
 DEFAULT_PHASE_NOOP_POLICY_DOCUMENT="hard"
 DEFAULT_PHASE_NOOP_PROFILE="balanced"
-PHASE_NOOP_PROFILE_EXPLICIT=false
 PHASE_NOOP_POLICY_PLAN_EXPLICIT=false
 PHASE_NOOP_POLICY_BUILD_EXPLICIT=false
 PHASE_NOOP_POLICY_TEST_EXPLICIT=false
@@ -634,6 +734,8 @@ DEFAULT_SWARM_CONSENSUS_TIMEOUT=600             # max seconds for all reviewers 
 DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=3             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
+DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT=15               # seconds to wait for smoke-test canary response
+DEFAULT_STARTUP_OPERATIONAL_PROBE="true"          # run startup self-checks for runtime confidence
 
 # Load configuration from environment or file.
 COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-$DEFAULT_COMMAND_TIMEOUT_SECONDS}"
@@ -646,6 +748,13 @@ SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
 CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
 CONFIDENCE_STAGNATION_LIMIT="${CONFIDENCE_STAGNATION_LIMIT:-3}"
 AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
+AUTO_ENGINE_PREFERENCE="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
+CODEX_ENDPOINT="${CODEX_ENDPOINT:-$DEFAULT_CODEX_ENDPOINT}"
+CODEX_USE_RESPONSES_SCHEMA="${CODEX_USE_RESPONSES_SCHEMA:-$DEFAULT_CODEX_USE_RESPONSES_SCHEMA}"
+CODEX_RESPONSES_SCHEMA_FILE="${CODEX_RESPONSES_SCHEMA_FILE:-$DEFAULT_CODEX_RESPONSES_SCHEMA_FILE}"
+CODEX_THINKING_OVERRIDE="${CODEX_THINKING_OVERRIDE:-$DEFAULT_CODEX_THINKING_OVERRIDE}"
+CLAUDE_ENDPOINT="${CLAUDE_ENDPOINT:-$DEFAULT_CLAUDE_ENDPOINT}"
+CLAUDE_THINKING_OVERRIDE="${CLAUDE_THINKING_OVERRIDE:-$DEFAULT_CLAUDE_THINKING_OVERRIDE}"
 RUN_AGENT_MAX_ATTEMPTS="${RUN_AGENT_MAX_ATTEMPTS:-$DEFAULT_RUN_AGENT_MAX_ATTEMPTS}"
 RUN_AGENT_RETRY_DELAY_SECONDS="${RUN_AGENT_RETRY_DELAY_SECONDS:-$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RUN_AGENT_RETRY_VERBOSE:-$DEFAULT_RUN_AGENT_RETRY_VERBOSE}"
@@ -670,17 +779,11 @@ SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIM
 ENGINE_HEALTH_MAX_ATTEMPTS="${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
 ENGINE_HEALTH_RETRY_VERBOSE="${ENGINE_HEALTH_RETRY_VERBOSE:-$DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE}"
+ENGINE_SMOKE_TEST_TIMEOUT="${ENGINE_SMOKE_TEST_TIMEOUT:-$DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT}"
+STARTUP_OPERATIONAL_PROBE="${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
 
 if [ -f "$CONFIG_FILE" ]; then
-    # Validate config file contains only safe KEY=VALUE lines before sourcing
-    # POSIX env var names: start with letter or underscore, contain alphanumerics and underscores
-    if grep -qvE '^[[:space:]]*(#|$|[A-Za-z_][A-Za-z0-9_]*=)' "$CONFIG_FILE" 2>/dev/null; then
-        warn "config.env contains suspicious lines — skipping source for safety."
-        warn "Only KEY=VALUE lines and comments are allowed."
-    else
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-    fi
+    load_config_file_safe "$CONFIG_FILE"
 fi
 
 # Override with environment variables if present.
@@ -694,29 +797,83 @@ YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
+AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
+CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
+CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
+CODEX_RESPONSES_SCHEMA_FILE="${RALPHIE_CODEX_RESPONSES_SCHEMA_FILE:-$CODEX_RESPONSES_SCHEMA_FILE}"
+CODEX_THINKING_OVERRIDE="${RALPHIE_CODEX_THINKING_OVERRIDE:-$CODEX_THINKING_OVERRIDE}"
+CLAUDE_ENDPOINT="${RALPHIE_CLAUDE_ENDPOINT:-$CLAUDE_ENDPOINT}"
+CLAUDE_THINKING_OVERRIDE="${RALPHIE_CLAUDE_THINKING_OVERRIDE:-$CLAUDE_THINKING_OVERRIDE}"
+STARTUP_OPERATIONAL_PROBE="${RALPHIE_STARTUP_OPERATIONAL_PROBE:-$STARTUP_OPERATIONAL_PROBE}"
 
 # Validate engine selection
-case "$(to_lower "$ACTIVE_ENGINE")" in
-    claude|codex|auto) ACTIVE_ENGINE="$(to_lower "$ACTIVE_ENGINE")" ;;
+ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
+case "$ENGINE_SELECTION_REQUESTED" in
+    claude|codex|auto) ;;
     *)
-        warn "Unrecognized engine '$ACTIVE_ENGINE'. Falling back to '$DEFAULT_ENGINE'."
-        ACTIVE_ENGINE="$DEFAULT_ENGINE"
+        warn "Unrecognized engine '$ENGINE_SELECTION_REQUESTED'. Falling back to '$DEFAULT_ENGINE'."
+        ENGINE_SELECTION_REQUESTED="$DEFAULT_ENGINE"
+        ;;
+esac
+AUTO_ENGINE_PREFERENCE="$(to_lower "$AUTO_ENGINE_PREFERENCE")"
+case "$AUTO_ENGINE_PREFERENCE" in
+    codex|claude) ;;
+    *)
+        warn "Invalid AUTO_ENGINE_PREFERENCE '$AUTO_ENGINE_PREFERENCE'. Falling back to '$DEFAULT_AUTO_ENGINE_PREFERENCE'."
+        AUTO_ENGINE_PREFERENCE="$DEFAULT_AUTO_ENGINE_PREFERENCE"
         ;;
 esac
 
-if [ "$ACTIVE_ENGINE" = "codex" ]; then
-    ACTIVE_CMD="$CODEX_CMD"
-else
-    ACTIVE_CMD="$CLAUDE_CMD"
+CODEX_USE_RESPONSES_SCHEMA="$(to_lower "$CODEX_USE_RESPONSES_SCHEMA")"
+if ! is_bool_like "$CODEX_USE_RESPONSES_SCHEMA"; then
+    warn "Invalid CODEX_USE_RESPONSES_SCHEMA '$CODEX_USE_RESPONSES_SCHEMA'. Falling back to '$DEFAULT_CODEX_USE_RESPONSES_SCHEMA'."
+    CODEX_USE_RESPONSES_SCHEMA="$DEFAULT_CODEX_USE_RESPONSES_SCHEMA"
 fi
 
-if [ "$ACTIVE_ENGINE" = "auto" ]; then
-    if command -v "$CODEX_CMD" >/dev/null 2>&1; then
-        ACTIVE_ENGINE="codex"
-        ACTIVE_CMD="$CODEX_CMD"
-    elif command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
-        ACTIVE_ENGINE="claude"
-        ACTIVE_CMD="$CLAUDE_CMD"
+CODEX_THINKING_OVERRIDE="$(to_lower "$CODEX_THINKING_OVERRIDE")"
+case "$CODEX_THINKING_OVERRIDE" in
+    none|minimal|low|medium|high|xhigh|"") ;;
+    *)
+        warn "Invalid CODEX_THINKING_OVERRIDE '$CODEX_THINKING_OVERRIDE'. Falling back to '$DEFAULT_CODEX_THINKING_OVERRIDE'."
+        CODEX_THINKING_OVERRIDE="$DEFAULT_CODEX_THINKING_OVERRIDE"
+        ;;
+esac
+
+CLAUDE_THINKING_OVERRIDE="$(to_lower "$CLAUDE_THINKING_OVERRIDE")"
+case "$CLAUDE_THINKING_OVERRIDE" in
+    none|off|low|medium|high|xhigh|"") ;;
+    *)
+        warn "Invalid CLAUDE_THINKING_OVERRIDE '$CLAUDE_THINKING_OVERRIDE'. Falling back to '$DEFAULT_CLAUDE_THINKING_OVERRIDE'."
+        CLAUDE_THINKING_OVERRIDE="$DEFAULT_CLAUDE_THINKING_OVERRIDE"
+        ;;
+esac
+
+if [ "$ENGINE_SELECTION_REQUESTED" = "codex" ]; then
+    ACTIVE_ENGINE="codex"
+    ACTIVE_CMD="$CODEX_CMD"
+elif [ "$ENGINE_SELECTION_REQUESTED" = "claude" ]; then
+    ACTIVE_ENGINE="claude"
+    ACTIVE_CMD="$CLAUDE_CMD"
+else
+    # Keep auto as the requested mode; resolve_active_engine will select the
+    # active runtime engine each loop based on health/capabilities.
+    ACTIVE_ENGINE="auto"
+    if [ "$AUTO_ENGINE_PREFERENCE" = "claude" ]; then
+        if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+            ACTIVE_CMD="$CLAUDE_CMD"
+        elif command -v "$CODEX_CMD" >/dev/null 2>&1; then
+            ACTIVE_CMD="$CODEX_CMD"
+        else
+            ACTIVE_CMD="$CLAUDE_CMD"
+        fi
+    else
+        if command -v "$CODEX_CMD" >/dev/null 2>&1; then
+            ACTIVE_CMD="$CODEX_CMD"
+        elif command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+            ACTIVE_CMD="$CLAUDE_CMD"
+        else
+            ACTIVE_CMD="$CODEX_CMD"
+        fi
     fi
 fi
 
@@ -724,7 +881,7 @@ fi
 CURRENT_PHASE="plan"
 CURRENT_PHASE_INDEX=0
 ITERATION_COUNT=0
-SESSION_ID="$(date +%Y%m%d_%H%M%S)"
+SESSION_ID="$(date +%Y%m%d_%H%M%S)_$$"
 SESSION_ATTEMPT_COUNT=0
 SESSION_TOKEN_COUNT=0
 SESSION_COST_CENTS=0
@@ -751,7 +908,8 @@ CODEX_CAP_NOTE=""
 CLAUDE_CAP_NOTE=""
 CODEX_HEALTHY="false"
 CLAUDE_HEALTHY="false"
-ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
+CODEX_SMOKE_PASS="false"
+CLAUDE_SMOKE_PASS="false"
 LAST_ENGINE_SELECTION_BLOCK_REASON=""
 
 # Resilience Dial implementation
@@ -1181,6 +1339,186 @@ build_is_preapproved() {
     [ "$consent" = "true" ]
 }
 
+run_command_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    if ! is_number "$timeout_seconds" || [ "$timeout_seconds" -lt 1 ]; then
+        timeout_seconds=15
+    fi
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_seconds" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$timeout_seconds" "$@"
+        return $?
+    fi
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" "$@"
+        return $?
+    fi
+
+    # Portable watchdog fallback if timeout/gtimeout/perl are unavailable.
+    local timeout_marker cmd_pid watchdog_pid cmd_exit
+    timeout_marker="$(mktemp "${TMPDIR:-/tmp}/ralphie_timeout.XXXXXX")" || return 1
+    rm -f "$timeout_marker"
+
+    "$@" &
+    cmd_pid=$!
+    (
+        sleep "$timeout_seconds"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            : > "$timeout_marker"
+            kill -TERM "$cmd_pid" 2>/dev/null || true
+            sleep 1
+            kill -KILL "$cmd_pid" 2>/dev/null || true
+        fi
+    ) &
+    watchdog_pid=$!
+
+    if wait "$cmd_pid"; then
+        cmd_exit=0
+    else
+        cmd_exit=$?
+    fi
+
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    if [ -f "$timeout_marker" ]; then
+        rm -f "$timeout_marker"
+        return 124
+    fi
+    rm -f "$timeout_marker"
+    return "$cmd_exit"
+}
+
+run_startup_operational_probe() {
+    local -a failures=()
+    local cmd
+    local probe_file=""
+    local timeout_probe_exit=0
+
+    for cmd in sh sleep mktemp sed awk grep find sort date; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            failures+=("missing required command: $cmd")
+        fi
+    done
+
+    if ! mkdir -p "$CONFIG_DIR" 2>/dev/null; then
+        failures+=("unable to create config dir: $(path_for_display "$CONFIG_DIR")")
+    else
+        probe_file="$(mktemp "$CONFIG_DIR/operational-probe.XXXXXX" 2>/dev/null || true)"
+        if [ -z "$probe_file" ]; then
+            failures+=("unable to write probe file under $(path_for_display "$CONFIG_DIR")")
+        else
+            rm -f "$probe_file"
+        fi
+    fi
+
+    if run_command_with_timeout 1 sh -c 'sleep 2' >/dev/null 2>&1; then
+        timeout_probe_exit=0
+    else
+        timeout_probe_exit=$?
+    fi
+    if [ "$timeout_probe_exit" -ne 124 ] && [ "$timeout_probe_exit" -ne 142 ] && [ "$timeout_probe_exit" -ne 143 ] && [ "$timeout_probe_exit" -ne 137 ]; then
+        failures+=("timeout wrapper probe failed (expected timeout-like exit, got $timeout_probe_exit)")
+    fi
+
+    if [ "${#failures[@]}" -gt 0 ]; then
+        warn "Startup operational probe failed:"
+        for cmd in "${failures[@]}"; do
+            warn "  - $cmd"
+        done
+        log_reason_code "RB_STARTUP_OPERATIONAL_PROBE_FAILED" "$(summarize_blocks_for_log "${failures[@]}")"
+        return 1
+    fi
+
+    if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+        info "Startup operational probe passed."
+    fi
+    return 0
+}
+
+# Engine Smoke Test — verify an engine can actually respond to a prompt
+smoke_test_engine() {
+    local engine_cmd="$1"
+    local engine_name="$2"
+    local timeout_seconds="${ENGINE_SMOKE_TEST_TIMEOUT:-15}"
+    local -a smoke_prefix=()
+    local -a smoke_args=()
+
+    [ -n "$engine_cmd" ] || return 1
+    command -v "$engine_cmd" >/dev/null 2>&1 || return 1
+
+    local canary_token
+    canary_token="ralphie_smoke_$(date +%s)_${RANDOM:-0}"
+    local prompt_file output_file
+    prompt_file="$(mktemp "${TMPDIR:-/tmp}/ralphie_smoke_prompt.XXXXXX")" || return 1
+    output_file="$(mktemp "${TMPDIR:-/tmp}/ralphie_smoke_output.XXXXXX")" || { rm -f "$prompt_file"; return 1; }
+
+    printf 'Reply with ONLY this exact token on a single line, nothing else: %s\n' "$canary_token" > "$prompt_file"
+
+    local smoke_exit=1
+    local smoke_start smoke_elapsed
+    smoke_start="$(date +%s)"
+
+    if [ "$engine_name" = "codex" ]; then
+        if [ -n "$CODEX_ENDPOINT" ]; then
+            smoke_prefix=("env" "OPENAI_BASE_URL=$CODEX_ENDPOINT")
+        fi
+        smoke_args=("$engine_cmd" "exec")
+        [ -n "${CODEX_MODEL:-}" ] && smoke_args+=("--model" "$CODEX_MODEL")
+        if [ -n "$CODEX_THINKING_OVERRIDE" ]; then
+            smoke_args+=("-c" "model_reasoning_effort=\"$CODEX_THINKING_OVERRIDE\"")
+        fi
+        run_command_with_timeout "$timeout_seconds" "${smoke_prefix[@]+"${smoke_prefix[@]}"}" "${smoke_args[@]}" \
+            --output-last-message "$output_file" \
+            - < "$prompt_file" >/dev/null 2>&1 && smoke_exit=0 || smoke_exit=$?
+    elif [ "$engine_name" = "claude" ]; then
+        if [ -n "$CLAUDE_ENDPOINT" ]; then
+            smoke_prefix=("env" "ANTHROPIC_BASE_URL=$CLAUDE_ENDPOINT")
+        fi
+        smoke_args=("$engine_cmd" "-p")
+        [ -n "${CLAUDE_MODEL:-}" ] && smoke_args+=("--model" "$CLAUDE_MODEL")
+        case "$CLAUDE_THINKING_OVERRIDE" in
+            high|xhigh)
+                smoke_args+=("--settings" '{"alwaysThinkingEnabled":true}')
+                ;;
+            none|off|low)
+                smoke_args+=("--settings" '{"alwaysThinkingEnabled":false}')
+                ;;
+            medium|"")
+                :
+                ;;
+            *)
+                :
+                ;;
+        esac
+        run_command_with_timeout "$timeout_seconds" "${smoke_prefix[@]+"${smoke_prefix[@]}"}" "${smoke_args[@]}" \
+            < "$prompt_file" > "$output_file" 2>/dev/null && smoke_exit=0 || smoke_exit=$?
+    fi
+
+    smoke_elapsed=$(( $(date +%s) - smoke_start ))
+    local result=1
+    if [ "$smoke_exit" -eq 0 ] && [ -f "$output_file" ] && grep -qF "$canary_token" "$output_file" 2>/dev/null; then
+        result=0
+    fi
+
+    if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+        if [ "$result" -eq 0 ]; then
+            info "Smoke test $engine_name: PASS (${smoke_elapsed}s)"
+        else
+            warn "Smoke test $engine_name: FAIL (exit=$smoke_exit, ${smoke_elapsed}s, token ${canary_token:0:16}...)"
+        fi
+    fi
+
+    rm -f "$prompt_file" "$output_file"
+    return "$result"
+}
+
 # Multi-Agent Capability Detection
 probe_engine_capabilities() {
     local force_reprobe="${1:-false}"
@@ -1197,6 +1535,8 @@ probe_engine_capabilities() {
     CLAUDE_CAP_YOLO_FLAG=""
     CODEX_HEALTHY="false"
     CLAUDE_HEALTHY="false"
+    CODEX_SMOKE_PASS="false"
+    CLAUDE_SMOKE_PASS="false"
 
     # Probing Claude Code
     if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
@@ -1213,8 +1553,19 @@ probe_engine_capabilities() {
         fi
 
         if ! echo "$claude_help" | grep -qiE "read|write|tool|file|edit|command"; then
-            [ -n "$CLAUDE_CAP_NOTE" ] && CLAUDE_CAP_NOTE="${CLAUDE_CAP_NOTE}; "
-            CLAUDE_CAP_NOTE="${CLAUDE_CAP_NOTE}read/write/tool capability hint not present in help output"
+            if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+                warn "Claude help output lacks read/write/tool hints; relying on functional smoke test."
+            fi
+        fi
+
+        # Functional smoke test: verify engine actually responds
+        if [ -z "$CLAUDE_CAP_NOTE" ]; then
+            if smoke_test_engine "$CLAUDE_CMD" "claude"; then
+                CLAUDE_SMOKE_PASS="true"
+            else
+                CLAUDE_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
+                CLAUDE_SMOKE_PASS="false"
+            fi
         fi
 
         [ -z "$CLAUDE_CAP_NOTE" ] && CLAUDE_HEALTHY="true"
@@ -1237,8 +1588,19 @@ probe_engine_capabilities() {
         fi
 
         if ! echo "$codex_help" | grep -qiE "read|write|tool|file|edit|command|exec"; then
-            [ -n "$CODEX_CAP_NOTE" ] && CODEX_CAP_NOTE="${CODEX_CAP_NOTE}; "
-            CODEX_CAP_NOTE="${CODEX_CAP_NOTE}read/write/tool capability hint not present in help output"
+            if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+                warn "Codex help output lacks read/write/tool hints; relying on functional smoke test."
+            fi
+        fi
+
+        # Functional smoke test: verify engine actually responds
+        if [ -z "$CODEX_CAP_NOTE" ]; then
+            if smoke_test_engine "$CODEX_CMD" "codex"; then
+                CODEX_SMOKE_PASS="true"
+            else
+                CODEX_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
+                CODEX_SMOKE_PASS="false"
+            fi
         fi
 
         [ -z "$CODEX_CAP_NOTE" ] && CODEX_HEALTHY="true"
@@ -1253,97 +1615,89 @@ log_engine_health_summary() {
     local codex_line
     local claude_line
     if [ "$CODEX_HEALTHY" = "true" ]; then
-        codex_line="codex: available"
+        codex_line="codex: healthy (smoke=${CODEX_SMOKE_PASS})"
     else
-        codex_line="codex: unavailable (${CODEX_CAP_NOTE})"
+        codex_line="codex: unhealthy (${CODEX_CAP_NOTE:-unknown})"
     fi
     if [ "$CLAUDE_HEALTHY" = "true" ]; then
-        claude_line="claude: available"
+        claude_line="claude: healthy (smoke=${CLAUDE_SMOKE_PASS})"
     else
-        claude_line="claude: unavailable (${CLAUDE_CAP_NOTE})"
+        claude_line="claude: unhealthy (${CLAUDE_CAP_NOTE:-unknown})"
     fi
-    info "Engine health check: $codex_line; $claude_line"
+    info "Engine health: $codex_line | $claude_line"
 }
 
 resolve_active_engine() {
     local requested_engine="$1"
-    local allow_auto_fallback="${2:-true}"
     LAST_ENGINE_SELECTION_BLOCK_REASON=""
+    local preferred_auto_engine="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
+    local fallback_auto_engine="claude"
+    preferred_auto_engine="$(to_lower "$preferred_auto_engine")"
+    case "$preferred_auto_engine" in
+        codex|claude) ;;
+        *) preferred_auto_engine="$DEFAULT_AUTO_ENGINE_PREFERENCE" ;;
+    esac
+    if [ "$preferred_auto_engine" = "claude" ]; then
+        fallback_auto_engine="codex"
+    fi
+
+    # Upfront visibility: warn about any unavailable engine before selection
+    if [ "$CODEX_HEALTHY" != "true" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+        warn "Both engines unavailable: codex (${CODEX_CAP_NOTE:-unknown}), claude (${CLAUDE_CAP_NOTE:-unknown})."
+    elif [ "$CODEX_HEALTHY" != "true" ]; then
+        warn "codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
+    elif [ "$CLAUDE_HEALTHY" != "true" ]; then
+        warn "claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
+    fi
 
     case "$requested_engine" in
         auto)
-            if [ "$CODEX_HEALTHY" = "true" ]; then
+            # Auto: prefer configured engine, fall back to the other silently.
+            if [ "$preferred_auto_engine" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ]; then
                 ACTIVE_ENGINE="codex"
                 ACTIVE_CMD="$CODEX_CMD"
-                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
                 return 0
             fi
-            if [ "$CLAUDE_HEALTHY" = "true" ]; then
-                if is_true "$allow_auto_fallback"; then
-                    if is_tty_input_available; then
-                        if ! prompt_yes_no "AUTO mode preferred codex, but codex is unavailable (${CODEX_CAP_NOTE}). Proceed with CLAUDE instead?" "y"; then
-                            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO mode skipped Claude fallback after user decline."
-                            return 1
-                        fi
-                    else
-                        LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO mode preferred codex, but codex is unavailable (${CODEX_CAP_NOTE}) and this is non-interactive."
-                        return 1
-                    fi
-                fi
+            if [ "$preferred_auto_engine" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ]; then
                 ACTIVE_ENGINE="claude"
                 ACTIVE_CMD="$CLAUDE_CMD"
-                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
                 return 0
             fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO requested but neither codex nor claude appears capable."
+            if [ "$fallback_auto_engine" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ]; then
+                warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with codex."
+                ACTIVE_ENGINE="codex"
+                ACTIVE_CMD="$CODEX_CMD"
+                return 0
+            fi
+            if [ "$fallback_auto_engine" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ]; then
+                warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with claude."
+                ACTIVE_ENGINE="claude"
+                ACTIVE_CMD="$CLAUDE_CMD"
+                return 0
+            fi
+            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO requested but neither codex nor claude is healthy."
             return 1
             ;;
         codex)
+            # Explicit codex: use it or fail. No silent switch.
             if [ "$CODEX_HEALTHY" = "true" ]; then
                 ACTIVE_ENGINE="codex"
                 ACTIVE_CMD="$CODEX_CMD"
-                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
                 return 0
             fi
-            if [ "$CLAUDE_HEALTHY" = "true" ]; then
-                if is_tty_input_available; then
-                    if prompt_yes_no "Configured engine is codex, but codex is unavailable (${CODEX_CAP_NOTE}). Switch to CLAUDE and continue?" "y"; then
-                        ACTIVE_ENGINE="claude"
-                        ACTIVE_CMD="$CLAUDE_CMD"
-                        ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
-                        return 0
-                    fi
-                    LAST_ENGINE_SELECTION_BLOCK_REASON="User declined codex fallback to claude."
-                    return 1
-                fi
-                LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is codex, but codex is unavailable (${CODEX_CAP_NOTE}) in non-interactive mode."
-                return 1
-            fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is codex and no fallback is healthy."
+            LAST_ENGINE_SELECTION_BLOCK_REASON="RALPHIE_ENGINE=codex but codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
+            err "$LAST_ENGINE_SELECTION_BLOCK_REASON"
             return 1
             ;;
         claude)
+            # Explicit claude: use it or fail. No silent switch.
             if [ "$CLAUDE_HEALTHY" = "true" ]; then
                 ACTIVE_ENGINE="claude"
                 ACTIVE_CMD="$CLAUDE_CMD"
-                ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
                 return 0
             fi
-            if [ "$CODEX_HEALTHY" = "true" ]; then
-                if is_tty_input_available; then
-                    if prompt_yes_no "Configured engine is claude, but claude is unavailable (${CLAUDE_CAP_NOTE}). Switch to CODEX and continue?" "y"; then
-                        ACTIVE_ENGINE="codex"
-                        ACTIVE_CMD="$CODEX_CMD"
-                        ENGINE_SELECTION_REQUESTED="$ACTIVE_ENGINE"
-                        return 0
-                    fi
-                    LAST_ENGINE_SELECTION_BLOCK_REASON="User declined claude fallback to codex."
-                    return 1
-                fi
-                LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is claude, but claude is unavailable (${CLAUDE_CAP_NOTE}) in non-interactive mode."
-                return 1
-            fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="Configured engine is claude and no fallback is healthy."
+            LAST_ENGINE_SELECTION_BLOCK_REASON="RALPHIE_ENGINE=claude but claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
+            err "$LAST_ENGINE_SELECTION_BLOCK_REASON"
             return 1
             ;;
         *)
@@ -1367,6 +1721,10 @@ ensure_engines_ready() {
     fi
 
     while [ "$attempt" -le "$max_attempts" ]; do
+        if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+            info "Engine readiness check attempt $attempt/$max_attempts..."
+        fi
+
         probe_engine_capabilities "true"
         ENGINE_CAPABILITIES_PROBED=true
 
@@ -1374,7 +1732,10 @@ ensure_engines_ready() {
             log_engine_health_summary
         fi
 
-        if resolve_active_engine "$requested_engine" "true"; then
+        if resolve_active_engine "$requested_engine"; then
+            if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+                info "Engine ready: $ACTIVE_ENGINE selected (codex=$CODEX_HEALTHY, claude=$CLAUDE_HEALTHY)"
+            fi
             return 0
         fi
 
@@ -1523,7 +1884,7 @@ handle_interrupt() {
 cleanup() {
     info "Received interrupt. Cleaning up..."
     cleanup_resources
-    exit 0
+    exit 143
 }
 trap handle_interrupt SIGINT
 trap cleanup SIGTERM
@@ -1543,6 +1904,7 @@ run_agent_with_prompt() {
     local timeout_cmd=""
     local exit_code=0
     local -a engine_args=()
+    local -a codex_prefix=()
     local -a yolo_prefix=()
 
     if [ ! -f "$prompt_file" ]; then
@@ -1574,8 +1936,22 @@ run_agent_with_prompt() {
             return 2
         fi
 
+        if [ -n "$CODEX_ENDPOINT" ]; then
+            codex_prefix=("env" "OPENAI_BASE_URL=$CODEX_ENDPOINT")
+        fi
+
         engine_args=("$ACTIVE_CMD" "exec")
         [ -n "${CODEX_MODEL:-}" ] && engine_args+=("--model" "$CODEX_MODEL")
+        if [ -n "$CODEX_THINKING_OVERRIDE" ]; then
+            engine_args+=("-c" "model_reasoning_effort=\"$CODEX_THINKING_OVERRIDE\"")
+        fi
+        if is_true "$CODEX_USE_RESPONSES_SCHEMA"; then
+            if [ -n "$CODEX_RESPONSES_SCHEMA_FILE" ] && [ -f "$CODEX_RESPONSES_SCHEMA_FILE" ]; then
+                engine_args+=("--output-schema" "$CODEX_RESPONSES_SCHEMA_FILE")
+            else
+                warn "CODEX_USE_RESPONSES_SCHEMA is enabled but CODEX_RESPONSES_SCHEMA_FILE is missing; continuing without --output-schema."
+            fi
+        fi
         
         if is_true "$yolo_effective" && is_true "$CODEX_CAP_YOLO_FLAG"; then
             engine_args+=("--dangerously-bypass-approvals-and-sandbox")
@@ -1588,10 +1964,31 @@ run_agent_with_prompt() {
 
         engine_args=("$ACTIVE_CMD" "-p")
         [ -n "${CLAUDE_MODEL:-}" ] && engine_args+=("--model" "$CLAUDE_MODEL")
+        case "$CLAUDE_THINKING_OVERRIDE" in
+            high|xhigh)
+                engine_args+=("--settings" '{"alwaysThinkingEnabled":true}')
+                ;;
+            none|off|low)
+                engine_args+=("--settings" '{"alwaysThinkingEnabled":false}')
+                ;;
+            medium|"")
+                :
+                ;;
+            *)
+                :
+                ;;
+        esac
+        if [ -n "$CLAUDE_ENDPOINT" ]; then
+            yolo_prefix=("env" "ANTHROPIC_BASE_URL=$CLAUDE_ENDPOINT")
+        fi
         
         if is_true "$yolo_effective"; then
             [ -n "$CLAUDE_CAP_YOLO_FLAG" ] && engine_args+=("$CLAUDE_CAP_YOLO_FLAG")
-            yolo_prefix=("env" "IS_SANDBOX=1")
+            if [ "${#yolo_prefix[@]}" -eq 0 ]; then
+                yolo_prefix=("env" "IS_SANDBOX=1")
+            else
+                yolo_prefix+=("IS_SANDBOX=1")
+            fi
         fi
     fi
 
@@ -1610,13 +2007,13 @@ run_agent_with_prompt() {
         if [ "$ACTIVE_ENGINE" = "codex" ]; then
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
+                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
+                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1624,13 +2021,13 @@ run_agent_with_prompt() {
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
+                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
+                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1694,6 +2091,24 @@ run_agent_with_prompt() {
             else
                 # Default: treat unknown non-zero exits as transient (agent crash, OOM, etc.)
                 hiccup_detected=true
+            fi
+        fi
+
+        # If the engine command itself disappeared, mark unhealthy so the next
+        # ensure_engines_ready call at the loop boundary can detect and switch.
+        if ! is_true "$permanent_failure" && is_true "$hiccup_detected"; then
+            if ! command -v "$ACTIVE_CMD" >/dev/null 2>&1; then
+                warn "Engine command '$ACTIVE_CMD' no longer available; marking $ACTIVE_ENGINE unhealthy."
+                if [ "$ACTIVE_ENGINE" = "codex" ]; then
+                    CODEX_HEALTHY="false"
+                    CODEX_CAP_NOTE="command disappeared mid-session"
+                    CODEX_SMOKE_PASS="false"
+                else
+                    CLAUDE_HEALTHY="false"
+                    CLAUDE_CAP_NOTE="command disappeared mid-session"
+                    CLAUDE_SMOKE_PASS="false"
+                fi
+                ENGINE_CAPABILITIES_PROBED=false
             fi
         fi
 
@@ -1778,10 +2193,15 @@ run_swarm_reviewer() {
         fi
         command -v "$attempt_cmd" >/dev/null 2>&1 || continue
 
-        if [[ "$attempt_cmd" == *"codex"* ]]; then
+        if [ "$attempt_cmd" = "$CODEX_CMD" ]; then
             ACTIVE_ENGINE="codex"
-        else
+        elif [ "$attempt_cmd" = "$CLAUDE_CMD" ]; then
             ACTIVE_ENGINE="claude"
+        else
+            # Guard against custom command aliases unexpectedly routing to the
+            # wrong engine mode.
+            warn "Reviewer command '$attempt_cmd' did not match configured engines; skipping."
+            continue
         fi
         ACTIVE_CMD="$attempt_cmd"
         used_cmd="$attempt_cmd"
@@ -1810,8 +2230,10 @@ run_swarm_reviewer() {
 run_swarm_consensus() {
     local stage="$1"
     local history_context="${2:-}"
-    local count="$(get_reviewer_count)"
-    local parallel="$(get_parallel_reviewer_count)"
+    local count
+    local parallel
+    count="$(get_reviewer_count)"
+    parallel="$(get_parallel_reviewer_count)"
     local base_stage="${stage%-gate}"
     local default_next_phase
     local next_phase_vote_plan=0
@@ -1957,6 +2379,9 @@ run_swarm_consensus() {
     wait 2>/dev/null || true
     # Clean PID registry to prevent stale accumulation
     RALPHIE_BG_PIDS=()
+    if [ "$swarm_timed_out" = true ]; then
+        log_reason_code "RB_SWARM_TIMEOUT" "consensus reviewers exceeded timeout (${swarm_timeout}s) for stage $stage"
+    fi
 
     local total_score=0
     local go_votes=0
@@ -2028,7 +2453,7 @@ run_swarm_consensus() {
             fi
         fi
 
-        [ "$verdict" = "GO" ] && go_votes=$((go_votes + 1))
+        [ "$status" = "success" ] && [ "$verdict" = "GO" ] && go_votes=$((go_votes + 1))
         summary_lines+=("reviewer_$((idx + 1)):engine=$engine status=$status score=$score verdict=$verdict next=$next_phase reason=$next_phase_reason gaps=$verdict_gaps")
         idx=$((idx + 1))
     done
@@ -2038,40 +2463,53 @@ run_swarm_consensus() {
     fi
 
     if [ "$total_next_votes" -gt 0 ]; then
-        candidate_votes="$next_phase_vote_plan"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="plan"
-        fi
-        candidate_votes="$next_phase_vote_build"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="build"
-        fi
-        candidate_votes="$next_phase_vote_test"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="test"
-        fi
-        candidate_votes="$next_phase_vote_refactor"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="refactor"
-        fi
-        candidate_votes="$next_phase_vote_lint"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="lint"
-        fi
-        candidate_votes="$next_phase_vote_document"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="document"
-        fi
-        candidate_votes="$next_phase_vote_done"
-        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
-            highest_next_votes="$candidate_votes"
-            recommended_next="done"
+        local -a vote_phases=("plan" "build" "test" "refactor" "lint" "document" "done")
+        local -a vote_counts=(
+            "$next_phase_vote_plan"
+            "$next_phase_vote_build"
+            "$next_phase_vote_test"
+            "$next_phase_vote_refactor"
+            "$next_phase_vote_lint"
+            "$next_phase_vote_document"
+            "$next_phase_vote_done"
+        )
+        local -a tied_phases=()
+        local vote_index=0
+        local tie_summary=""
+        local tie_phase=""
+        local tie_count=0
+
+        highest_next_votes=0
+        for vote_index in "${!vote_counts[@]}"; do
+            candidate_votes="${vote_counts[$vote_index]}"
+            if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+                highest_next_votes="$candidate_votes"
+            fi
+        done
+
+        for vote_index in "${!vote_counts[@]}"; do
+            candidate_votes="${vote_counts[$vote_index]}"
+            if [ "$candidate_votes" -eq "$highest_next_votes" ] && [ "$candidate_votes" -gt 0 ]; then
+                tied_phases+=("${vote_phases[$vote_index]}")
+            fi
+        done
+
+        tie_count="${#tied_phases[@]}"
+        if [ "$tie_count" -eq 1 ]; then
+            recommended_next="${tied_phases[0]}"
+        elif [ "$tie_count" -gt 1 ]; then
+            recommended_next="$default_next_phase"
+            for tie_phase in "${tied_phases[@]}"; do
+                tie_summary="${tie_summary}${tie_summary:+, }$tie_phase"
+            done
+            if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
+                warn "Consensus next-phase vote tie ($tie_summary at ${highest_next_votes} votes); defaulting to $default_next_phase."
+            fi
+            if [ -n "$next_phase_vote_reason" ]; then
+                next_phase_vote_reason="$next_phase_vote_reason (tie: $tie_summary -> default $default_next_phase)"
+            else
+                next_phase_vote_reason="tie on next_phase votes ($tie_summary) -> defaulted to $default_next_phase"
+            fi
         fi
     fi
 
@@ -2125,7 +2563,9 @@ write_handoff_validation_prompt() {
         echo "Manifest after: $(path_for_display "$manifest_after_file")"
         echo "Delta preview:"
         if [ -n "$delta_preview" ]; then
-            echo "$delta_preview" | sed 's/^/- /'
+            while IFS= read -r delta_line; do
+                echo "- $delta_line"
+            done <<< "$delta_preview"
         else
             echo "- no visible delta preview"
         fi
@@ -2675,7 +3115,7 @@ run_stack_discovery() {
     local node_score=0 python_score=0 go_score=0
     local rust_score=0 java_score=0 dotnet_score=0 unknown_score=0
 
-    local ts_count go_count java_count cs_count py_count rb_count rs_count js_count
+    local ts_count go_count java_count cs_count rb_count rs_count js_count
     pyproject_hits="$(find "$PROJECT_DIR" -maxdepth 2 -type f \( -name "*.py" -o -name "*.pyi" -o -name "requirements*.txt" \) 2>/dev/null | wc -l | tr -d ' ')"
     ts_count="$(find "$PROJECT_DIR" -maxdepth 3 -type f -name "*.ts" 2>/dev/null | wc -l | tr -d ' ')"
     go_count="$(find "$PROJECT_DIR" -maxdepth 3 -type f -name "*.go" 2>/dev/null | wc -l | tr -d ' ')"
@@ -2729,14 +3169,16 @@ run_stack_discovery() {
 
     local ranking_file
     ranking_file="$(mktemp "$CONFIG_DIR/stack-ranking.XXXXXX")"
-    printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas "${node_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas "${python_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas "${go_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas "${rust_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas "${java_signal[@]}")" >> "$ranking_file"
-    printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas "${dotnet_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas "${unknown_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Unknown|-\n" "$unknown_score" >> "$ranking_file"
+    {
+        printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas "${node_signal[@]}")"
+        printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas "${python_signal[@]}")"
+        printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas "${go_signal[@]}")"
+        printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas "${rust_signal[@]}")"
+        printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas "${java_signal[@]}")"
+        printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas "${dotnet_signal[@]}")"
+        printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas "${unknown_signal[@]}")"
+        printf "%03d|Unknown|-\n" "$unknown_score"
+    } > "$ranking_file"
 
     local -a ranked_candidates=()
     while IFS='|' read -r candidate_score candidate_stack candidate_signal; do
@@ -2745,12 +3187,11 @@ run_stack_discovery() {
 
     rm -f "$ranking_file"
 
-    local primary_candidate primary_score primary_signal
+    local primary_candidate primary_score
     primary_candidate="Unknown"
     primary_score=0
-    primary_signal="-"
     if [ "${#ranked_candidates[@]}" -gt 0 ]; then
-        IFS='|' read -r primary_score primary_candidate primary_signal <<< "${ranked_candidates[0]}"
+        IFS='|' read -r primary_score primary_candidate _ <<< "${ranked_candidates[0]}"
     fi
 
     local primary_confidence
@@ -3418,6 +3859,8 @@ plan_prompt_for_iteration() { echo "$1"; }
 run_idle_plan_refresh() { return 0; }
 print_session_config_banner() {
     info "=== Ralphie Session Budget & Retry Configuration ==="
+    info "script_version: ${SCRIPT_VERSION}"
+    info "auto_update_url: ${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
     info "max_session_cycles: ${MAX_SESSION_CYCLES:-0} (0=unlimited)"
     info "session_token_budget: ${SESSION_TOKEN_BUDGET:-0} (0=unlimited)"
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
@@ -3429,12 +3872,30 @@ print_session_config_banner() {
     info "run_agent_max_attempts: ${RUN_AGENT_MAX_ATTEMPTS:-0}"
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
+    info "auto_engine_preference: ${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
+    info "codex_endpoint: $(redact_endpoint_for_log "$CODEX_ENDPOINT")"
+    info "codex_model: ${CODEX_MODEL:-<default>}"
+    info "codex_use_responses_schema: ${CODEX_USE_RESPONSES_SCHEMA:-false}"
+    info "codex_responses_schema_file: ${CODEX_RESPONSES_SCHEMA_FILE:-<unset>}"
+    info "codex_thinking_override: ${CODEX_THINKING_OVERRIDE:-<unset>}"
+    info "claude_endpoint: $(redact_endpoint_for_log "$CLAUDE_ENDPOINT")"
+    info "claude_model: ${CLAUDE_MODEL:-<default>}"
+    info "claude_thinking_override: ${CLAUDE_THINKING_OVERRIDE:-<unset>}"
+    info "engine_selection_requested: ${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
+    info "active_engine_bootstrap: ${ACTIVE_ENGINE:-unknown} (${ACTIVE_CMD:-unset})"
+    info "startup_operational_probe: ${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
     info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
     info "phase noop policies: plan=${PHASE_NOOP_POLICY_PLAN}, build=${PHASE_NOOP_POLICY_BUILD}, test=${PHASE_NOOP_POLICY_TEST}, refactor=${PHASE_NOOP_POLICY_REFACTOR}, lint=${PHASE_NOOP_POLICY_LINT}, document=${PHASE_NOOP_POLICY_DOCUMENT}"
+    info "maps_dir: $(path_for_display "$MAPS_DIR")"
+    info "subrepos_dir: $(path_for_display "$SUBREPOS_DIR")"
+    info "agent_source_map: $(path_for_display "$AGENT_SOURCE_MAP_FILE")"
+    info "binary_steering_map: $(path_for_display "$BINARY_STEERING_MAP_FILE")"
+    info "self_improvement_log: $(path_for_display "$SELF_IMPROVEMENT_LOG_FILE")"
+    info "setup_subrepos_script: $(path_for_display "$SETUP_SUBREPOS_SCRIPT")"
 }
 
 emit_phase_transition_banner() {
@@ -3464,6 +3925,8 @@ main() {
     finalize_phase_noop_profile_config
     REBOOTSTRAP_REQUESTED="$(to_lower "${REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}")"
     is_bool_like "$REBOOTSTRAP_REQUESTED" || REBOOTSTRAP_REQUESTED="$DEFAULT_REBOOTSTRAP_REQUESTED"
+    STARTUP_OPERATIONAL_PROBE="$(to_lower "${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}")"
+    is_bool_like "$STARTUP_OPERATIONAL_PROBE" || STARTUP_OPERATIONAL_PROBE="$DEFAULT_STARTUP_OPERATIONAL_PROBE"
 
     acquire_lock || exit 1
 
@@ -3503,6 +3966,12 @@ main() {
     fi
 
     print_session_config_banner
+    if is_true "$STARTUP_OPERATIONAL_PROBE"; then
+        if ! run_startup_operational_probe; then
+            release_lock
+            exit 1
+        fi
+    fi
     ensure_core_artifacts
     setup_phase_prompts
     ensure_gitignore_guardrails
@@ -3540,6 +4009,7 @@ main() {
 
     local consensus_route_count=0
     while true; do
+        ENGINE_CAPABILITIES_PROBED=false  # force fresh probe (including smoke test) each iteration
         if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
             should_exit="true"
             log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
@@ -3553,7 +4023,8 @@ main() {
             ITERATION_COUNT=$((ITERATION_COUNT + 1))
             save_state
 
-            local pfile="$(prompt_file_for_mode "$phase")"
+            local pfile
+            pfile="$(prompt_file_for_mode "$phase")"
             mkdir -p "$LOG_DIR" "$COMPLETION_LOG_DIR"
             if ! enforce_session_budget "session loop"; then
                 should_exit="true"
@@ -3592,6 +4063,7 @@ main() {
                 local active_prompt="$pfile"
                 local -a phase_failures=()
                 local -a phase_warnings=()
+                local consensus_evaluated="false"
                 local attempt_feedback_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.prompt.md"
                 local bootstrap_prompt_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.bootstrap.prompt.md"
                 local previous_attempt_output_hash=""
@@ -3773,8 +4245,10 @@ main() {
                         phase_failures+=("handoff review: verdict=$LAST_HANDOFF_VERDICT score=$LAST_HANDOFF_SCORE gaps=$LAST_HANDOFF_GAPS")
                     fi
 
+                    consensus_evaluated="true"
                     if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
                         phase_failures+=("intelligence validation failed after $phase")
+                        phase_failures+=("consensus score/verdict: score=${LAST_CONSENSUS_SCORE} pass=${LAST_CONSENSUS_PASS}")
                         mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
                         for issue in "${consensus_failures[@]+"${consensus_failures[@]}"}"; do
                             phase_failures+=("consensus: $issue")
@@ -3791,7 +4265,7 @@ main() {
 
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
                     cumulative_phase_failures=("${phase_failures[@]}")
-                    if [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
+                    if [ "$consensus_evaluated" = "true" ] && [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
                         phase_next_target="$LAST_CONSENSUS_NEXT_PHASE"
                         phase_route="true"
                         phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
@@ -3831,11 +4305,13 @@ main() {
 
                 phase_next_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                 [ -n "$phase_next_target" ] || phase_next_target="$(phase_default_next "$phase")"
-                phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
                 if is_phase_or_done "$phase_next_target" && [ "$phase_next_target" != "$phase" ]; then
                     phase_route="true"
                     phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                elif [ -z "$phase_route_reason" ]; then
+                    phase_route_reason="no explicit phase-routing rationale"
                 fi
+                phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
 
                 success "Phase $phase completed."
                 break
@@ -3864,6 +4340,11 @@ main() {
                 fi
             fi
         done
+        # If the phase loop naturally reached the end without an explicit reroute,
+        # mark terminal completion so the outer loop exits deterministically.
+        if ! is_true "$should_exit" && [ "$phase_index" -ge "${#phases[@]}" ] && [ "$start_phase_index" -lt "${#phases[@]}" ]; then
+            start_phase_index="${#phases[@]}"
+        fi
         if is_true "$should_exit"; then
             break
         fi

@@ -119,6 +119,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--run-agent-max-attempts N`  
 - `--run-agent-retry-delay-seconds N`  
 - `--run-agent-retry-verbose true|false`  
+- `--auto-engine-preference codex|claude`
 - `--auto-repair-markdown-artifacts true|false`  
 - `--strict-validation-noop true|false`  
 - `--engine-output-to-stdout true|false`  
@@ -137,6 +138,11 @@ Equivalent environment variables in `.ralphie/config.env`:
 `PHASE_COMPLETION_RETRY_VERBOSE`, `MAX_CONSENSUS_ROUTING_ATTEMPTS`, `RUN_AGENT_MAX_ATTEMPTS`,
 `RUN_AGENT_RETRY_DELAY_SECONDS`, `RUN_AGENT_RETRY_VERBOSE`, `SWARM_CONSENSUS_TIMEOUT`,
 `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
+`RALPHIE_STARTUP_OPERATIONAL_PROBE`,
+`RALPHIE_AUTO_ENGINE_PREFERENCE`,
+`RALPHIE_CODEX_ENDPOINT`, `RALPHIE_CODEX_USE_RESPONSES_SCHEMA`, `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE`,
+`RALPHIE_CODEX_THINKING_OVERRIDE`, `RALPHIE_CLAUDE_ENDPOINT`, `RALPHIE_CLAUDE_THINKING_OVERRIDE`,
+`CODEX_MODEL`, `CLAUDE_MODEL`,
 `PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
 `PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
 `PHASE_NOOP_PROFILE`,
@@ -148,6 +154,53 @@ Equivalent environment variables in `.ralphie/config.env`:
 `PHASE_NOOP_PROFILE` can be supplied via `.ralphie/config.env` as `RALPHIE_PHASE_NOOP_PROFILE=balanced|strict|read-only-first|custom`.
 
 Phase no-op profile precedence: `--phase-noop-profile` / `RALPHIE_PHASE_NOOP_PROFILE` set the profile, and any explicitly passed `--phase-noop-policy-*` flags override profile defaults for that phase.
+
+### Engine, Inference, Model, and Thinking Controls (Optional)
+
+All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` uses built-in defaults.
+
+- `RALPHIE_ENGINE=auto` selects engine automatically.
+- `RALPHIE_AUTO_ENGINE_PREFERENCE=codex|claude` controls which engine AUTO prefers first.
+- `CODEX_MODEL` and `CLAUDE_MODEL` are optional. Leave empty to use each binary's configured/default model.
+- `RALPHIE_CODEX_ENDPOINT` is optional. Leave empty to avoid overriding `OPENAI_BASE_URL`.
+- `RALPHIE_CLAUDE_ENDPOINT` is optional. Leave empty to avoid overriding `ANTHROPIC_BASE_URL`.
+- `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=true|false` controls codex `--output-schema` usage.
+- `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE` is only used when schema mode is enabled.
+- `RALPHIE_CODEX_THINKING_OVERRIDE=none|minimal|low|medium|high|xhigh` controls codex reasoning effort.
+- `RALPHIE_CLAUDE_THINKING_OVERRIDE=none|off|low|medium|high|xhigh` controls claude thinking behavior.
+- `RALPHIE_STARTUP_OPERATIONAL_PROBE=true|false` controls startup operational self-checks.
+
+Current defaults are:
+
+- `RALPHIE_ENGINE=auto`
+- `RALPHIE_AUTO_ENGINE_PREFERENCE=codex`
+- `RALPHIE_CODEX_ENDPOINT=""`
+- `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false`
+- `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=""`
+- `CODEX_MODEL=""`
+- `RALPHIE_CODEX_THINKING_OVERRIDE=high`
+- `RALPHIE_CLAUDE_ENDPOINT=""`
+- `CLAUDE_MODEL=""`
+- `RALPHIE_CLAUDE_THINKING_OVERRIDE=high`
+- `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`
+
+Example `.ralphie/config.env`:
+
+```bash
+RALPHIE_ENGINE=auto
+RALPHIE_AUTO_ENGINE_PREFERENCE=codex
+
+RALPHIE_CODEX_ENDPOINT=
+RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false
+RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=
+CODEX_MODEL=
+RALPHIE_CODEX_THINKING_OVERRIDE=high
+
+RALPHIE_CLAUDE_ENDPOINT=
+CLAUDE_MODEL=
+RALPHIE_CLAUDE_THINKING_OVERRIDE=high
+RALPHIE_STARTUP_OPERATIONAL_PROBE=true
+```
 
 Supported no-op profiles:
 - `balanced` (default): plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`.
