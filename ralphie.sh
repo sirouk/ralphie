@@ -3473,7 +3473,7 @@ main() {
                         fi
                     fi
 
-                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]}")"
+                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]+"${phase_warnings[@]}"}")"
                     write_handoff_validation_prompt \
                         "$phase" \
                         "$phase_attempt" \
@@ -3538,7 +3538,7 @@ main() {
                         warn "$issue"
                     done
                     if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                        for issue in "${phase_warnings[@]}"; do
+                        for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                             info "note: $issue"
                         done
                     fi
@@ -3559,7 +3559,7 @@ main() {
                 fi
 
                 if [ "${#phase_warnings[@]}" -gt 0 ]; then
-                    for issue in "${phase_warnings[@]}"; do
+                    for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                         info "note: $issue"
                     done
                 fi
