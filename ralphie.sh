@@ -878,7 +878,11 @@ ensure_project_bootstrap() {
     interactive_source="false"
 
     mkdir -p "$(dirname "$PROJECT_BOOTSTRAP_FILE")"
-    local existing_project_type existing_objective existing_build_consent existing_interactive_prompted needs_prompt="false"
+    local existing_project_type=""
+    local existing_objective=""
+    local existing_build_consent=""
+    local existing_interactive_prompted=""
+    local needs_prompt="false"
 
     if [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
         existing_project_type="$(bootstrap_prompt_value "project_type" 2>/dev/null || true)"
