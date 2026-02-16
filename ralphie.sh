@@ -630,8 +630,39 @@ get_reviewer_max_retries() {
 }
 
 # State Management with Integrity Checks
+# Returns the highest-preferred available command for SHA-256 checksums.
+sha256sum_command() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        echo "sha256sum"
+        return 0
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        echo "shasum"
+        return 0
+    fi
+    return 1
+}
+
+sha256_file_sum() {
+    local file="$1"
+    local checksum_cmd
+
+    checksum_cmd="$(sha256sum_command)" || {
+        warn "No SHA-256 command available for file checksum calculation."
+        return 1
+    }
+
+    if [ "$checksum_cmd" = "sha256sum" ]; then
+        "$checksum_cmd" "$file" | cut -d' ' -f1
+    else
+        "$checksum_cmd" -a 256 "$file" | cut -d' ' -f1
+    fi
+}
+
 save_state() {
     mkdir -p "$(dirname "$STATE_FILE")"
+    local checksum
+
     cat <<EOF > "$STATE_FILE"
 CURRENT_PHASE="$CURRENT_PHASE"
 CURRENT_PHASE_INDEX="$CURRENT_PHASE_INDEX"
@@ -644,38 +675,66 @@ LAST_RUN_TOKEN_COUNT="$LAST_RUN_TOKEN_COUNT"
 ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT"
 EOF
     # Append SHA-256 checksum to the end
-    local checksum
-    checksum="$(shasum -a 256 "$STATE_FILE" | cut -d' ' -f1)"
-    echo "STATE_CHECKSUM=\"$checksum\"" >> "$STATE_FILE"
+    if checksum="$(sha256_file_sum "$STATE_FILE")"; then
+        echo "STATE_CHECKSUM=\"$checksum\"" >> "$STATE_FILE"
+    else
+        warn "Could not calculate state checksum; continuing without integrity metadata."
+    fi
 }
 
 load_state() {
     if [ ! -f "$STATE_FILE" ]; then return 1; fi
+
+    CURRENT_PHASE="plan"
+    CURRENT_PHASE_INDEX=0
+    ITERATION_COUNT=0
+    SESSION_ID=""
+    SESSION_ATTEMPT_COUNT=0
+    SESSION_TOKEN_COUNT=0
+    SESSION_COST_CENTS=0
+    LAST_RUN_TOKEN_COUNT=0
+    ENGINE_OUTPUT_TO_STDOUT="$DEFAULT_ENGINE_OUTPUT_TO_STDOUT"
     
     # Verify checksum if present
     if grep -q "STATE_CHECKSUM=" "$STATE_FILE"; then
-        local expected
-        expected="$(grep "STATE_CHECKSUM=" "$STATE_FILE" | cut -d'"' -f2)"
-        local actual
-        actual="$(grep -v "STATE_CHECKSUM=" "$STATE_FILE" | shasum -a 256 | cut -d' ' -f1)"
-        if [ "$expected" != "$actual" ]; then
-            warn "State file checksum mismatch! Corruption detected. Forcing clean state."
-            log_reason_code "RB_STATE_CORRUPTION" "checksum mismatch in state file"
-            return 1
+        local expected actual state_body_file
+        expected="$(grep "STATE_CHECKSUM=" "$STATE_FILE" | head -n 1 | cut -d'"' -f2)"
+        state_body_file="$(mktemp "$CONFIG_DIR/state-body.XXXXXX")"
+        if grep -v "^STATE_CHECKSUM=" "$STATE_FILE" > "$state_body_file" 2>/dev/null && actual="$(sha256_file_sum "$state_body_file")"; then
+            if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+                warn "State file checksum mismatch! Corruption detected. Forcing clean state."
+                log_reason_code "RB_STATE_CORRUPTION" "checksum mismatch in state file"
+                rm -f "$state_body_file"
+                return 1
+            fi
+        else
+            warn "Unable to validate state checksum. Proceeding without enforcing integrity."
         fi
+        rm -f "$state_body_file"
     fi
 
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-    CURRENT_PHASE_INDEX="${CURRENT_PHASE_INDEX:-0}"
+    while IFS='=' read -r key value; do
+        [ -z "$key" ] && continue
+        value="${value%\"}"
+        value="${value#\"}"
+        case "$key" in
+            CURRENT_PHASE) CURRENT_PHASE="$value" ;;
+            CURRENT_PHASE_INDEX) is_number "$value" && CURRENT_PHASE_INDEX="$value" ;;
+            ITERATION_COUNT) is_number "$value" && ITERATION_COUNT="$value" ;;
+            SESSION_ID) SESSION_ID="$value" ;;
+            SESSION_ATTEMPT_COUNT) is_number "$value" && SESSION_ATTEMPT_COUNT="$value" ;;
+            SESSION_TOKEN_COUNT) is_number "$value" && SESSION_TOKEN_COUNT="$value" ;;
+            SESSION_COST_CENTS) is_number "$value" && SESSION_COST_CENTS="$value" ;;
+            LAST_RUN_TOKEN_COUNT) is_number "$value" && LAST_RUN_TOKEN_COUNT="$value" ;;
+            ENGINE_OUTPUT_TO_STDOUT) [ -n "$value" ] && ENGINE_OUTPUT_TO_STDOUT="$value" ;;
+            STATE_CHECKSUM=*) ;;
+            *) ;;
+        esac
+    done < "$STATE_FILE"
+
     if ! is_number "$CURRENT_PHASE_INDEX"; then
         CURRENT_PHASE_INDEX=0
     fi
-    SESSION_ATTEMPT_COUNT="${SESSION_ATTEMPT_COUNT:-0}"
-    SESSION_TOKEN_COUNT="${SESSION_TOKEN_COUNT:-0}"
-    SESSION_COST_CENTS="${SESSION_COST_CENTS:-0}"
-    LAST_RUN_TOKEN_COUNT="${LAST_RUN_TOKEN_COUNT:-0}"
-    ENGINE_OUTPUT_TO_STDOUT="${ENGINE_OUTPUT_TO_STDOUT:-$DEFAULT_ENGINE_OUTPUT_TO_STDOUT}"
     return 0
 }
 
@@ -701,8 +760,13 @@ estimate_run_tokens() {
     local output_file="$3"
 
     local tokens
-    tokens="$(estimate_file_token_count "$prompt_file")"
-    tokens="$(( tokens + estimate_file_token_count "$log_file" + estimate_file_token_count "$output_file" ))"
+    local prompt_tokens
+    local log_tokens
+    local output_tokens
+    prompt_tokens="$(estimate_file_token_count "$prompt_file")"
+    log_tokens="$(estimate_file_token_count "$log_file")"
+    output_tokens="$(estimate_file_token_count "$output_file")"
+    tokens="$(( prompt_tokens + log_tokens + output_tokens ))"
     echo "$tokens"
 }
 
@@ -1218,13 +1282,13 @@ run_agent_with_prompt() {
         if [ "$ACTIVE_ENGINE" = "codex" ]; then
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1232,13 +1296,13 @@ run_agent_with_prompt() {
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if cat "$prompt_file" | "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
+                    if "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if cat "$prompt_file" | "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1; then
+                    if "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1248,13 +1312,13 @@ run_agent_with_prompt() {
         else
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file"; then
+                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1262,13 +1326,13 @@ run_agent_with_prompt() {
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if cat "$prompt_file" | ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                    if ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
                         exit_code=0
                     else
                         exit_code=$?
                     fi
                 else
-                    if cat "$prompt_file" | ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file"; then
+                    if ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
                         exit_code=0
                     else
                         exit_code=$?
@@ -1313,40 +1377,130 @@ run_agent_with_prompt() {
     return "$exit_code"
 }
 
+run_swarm_reviewer() {
+    local reviewer_index="$1"
+    local prompt_file="$2"
+    local log_file="$3"
+    local output_file="$4"
+    local status_file="$5"
+    local primary_cmd="$6"
+    local fallback_cmd="$7"
+
+    local -a candidate_cmds=("$primary_cmd")
+    [ -n "$fallback_cmd" ] && [ "$fallback_cmd" != "$primary_cmd" ] && candidate_cmds+=("$fallback_cmd")
+
+    rm -f "$status_file"
+    local attempt_cmd
+    local attempt_exit=1
+    local used_cmd="${primary_cmd}"
+    ACTIVE_ENGINE="unknown"
+    ACTIVE_CMD=""
+
+    for attempt_cmd in "${candidate_cmds[@]}"; do
+        [ -n "$attempt_cmd" ] || continue
+        command -v "$attempt_cmd" >/dev/null 2>&1 || continue
+
+        if [[ "$attempt_cmd" == *"codex"* ]]; then
+            ACTIVE_ENGINE="codex"
+        else
+            ACTIVE_ENGINE="claude"
+        fi
+        ACTIVE_CMD="$attempt_cmd"
+        used_cmd="$attempt_cmd"
+
+        if run_agent_with_prompt "$prompt_file" "$log_file" "$output_file" "false" "$reviewer_index"; then
+            attempt_exit=0
+            break
+        fi
+    done
+
+    {
+        echo "reviewer_index=$reviewer_index"
+        echo "engine=${ACTIVE_ENGINE:-unknown}"
+        echo "command=$used_cmd"
+        if [ "$attempt_exit" -eq 0 ]; then
+            echo "status=success"
+            echo "exit_code=0"
+        else
+            echo "status=failure"
+            echo "exit_code=1"
+        fi
+    } > "$status_file"
+    return "$attempt_exit"
+}
+
 run_swarm_consensus() {
     local stage="$1"
     local count="$(get_reviewer_count)"
     local parallel="$(get_parallel_reviewer_count)"
     local base_stage="${stage%-gate}"
-    
+
     info "Running deep consensus swarm for '$stage'..."
     local consensus_dir="$CONSENSUS_DIR/$stage/$SESSION_ID"
     LAST_CONSENSUS_DIR="$consensus_dir"
     LAST_CONSENSUS_SUMMARY=""
     mkdir -p "$consensus_dir"
 
-    local -a prompts=() logs=() outputs=() cmds=()
-    local -a summary_lines=()
+    local -a prompts=() logs=() outputs=() status_files=()
+    local -a primary_cmds=() fallback_cmds=() summary_lines=()
+    local claude_available=false
+    local codex_available=false
+    if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+        claude_available=true
+    fi
+    if command -v "$CODEX_CMD" >/dev/null 2>&1; then
+        codex_available=true
+    fi
+    if [ "$claude_available" = false ] && [ "$codex_available" = false ]; then
+        warn "No reviewer engines available for consensus."
+        LAST_CONSENSUS_SCORE=0
+        LAST_CONSENSUS_PASS=false
+        return 1
+    fi
+
+    local i
     for i in $(seq 1 "$count"); do
+        local primary_cmd="$CLAUDE_CMD"
+        local fallback_cmd=""
+
+        if [ "$claude_available" = false ] && [ "$codex_available" = true ]; then
+            primary_cmd="$CODEX_CMD"
+        elif [ "$codex_available" = true ] && [ $((i % 2)) -eq 1 ]; then
+            primary_cmd="$CODEX_CMD"
+        fi
+
+        if [ "$primary_cmd" = "$CODEX_CMD" ] && [ "$claude_available" = true ]; then
+            fallback_cmd="$CLAUDE_CMD"
+        fi
+        if [ "$primary_cmd" = "$CLAUDE_CMD" ] && [ "$codex_available" = true ]; then
+            fallback_cmd="$CODEX_CMD"
+        fi
+
         prompts+=("$consensus_dir/reviewer_${i}_prompt.md")
         logs+=("$consensus_dir/reviewer_${i}.log")
         outputs+=("$consensus_dir/reviewer_${i}.out")
-        local rcmd="$CLAUDE_CMD"
-        [ $((i % 2)) -eq 1 ] && command -v "$CODEX_CMD" >/dev/null 2>&1 && rcmd="$CODEX_CMD"
-        cmds+=("$rcmd")
+        status_files+=("$consensus_dir/reviewer_${i}.status")
+        primary_cmds+=("$primary_cmd")
+        fallback_cmds+=("$fallback_cmd")
+
         {
             echo "# Consensus Review: $stage"
             echo ""
             consensus_prompt_for_stage "$base_stage"
-        } > "${prompts[$((i-1))]}"
+        } > "${prompts[$((i - 1))]}"
     done
 
     local active=0
     for i in $(seq 0 $((count - 1))); do
         (
-            ACTIVE_CMD="${cmds[$i]}"
-            ACTIVE_ENGINE="$( [[ "${cmds[$i]}" == *"codex"* ]] && echo "codex" || echo "claude" )"
-            run_agent_with_prompt "${prompts[$i]}" "${logs[$i]}" "${outputs[$i]}" "false"
+            run_swarm_reviewer \
+                "$((i + 1))" \
+                "${prompts[$i]}" \
+                "${logs[$i]}" \
+                "${outputs[$i]}" \
+                "${status_files[$i]}" \
+                "${primary_cmds[$i]}" \
+                "${fallback_cmds[$i]}"
         ) &
         RALPHIE_BG_PIDS+=($!)
         active=$((active + 1))
@@ -1357,45 +1511,67 @@ run_swarm_consensus() {
     done
     wait
 
-    local total_score=0 go_votes=0
-    local reviewer_idx=1
+    local total_score=0
+    local go_votes=0
+    local responded_votes=0
+    local required_votes=$((count / 2 + 1))
+    local avg_score=0
+
+    local idx=0
+    local status_file status engine verdict score verdict_gaps
     for ofile in "${outputs[@]}"; do
-        local s
-        local d
-        local g
-        local reviewer_summary
-        s="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
-        is_number "$s" || s="0"
-        if grep -qE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null; then
-            d="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" | tail -n 1 | sed -E 's/<\/?verdict>//g' )"
-        elif grep -qE "<decision>(GO|HOLD)</decision>" "$ofile" 2>/dev/null; then
-            d="$(grep -oE "<decision>(GO|HOLD)</decision>" "$ofile" | tail -n 1 | sed -E 's/<\/?decision>//g' )"
-        else
-            d="HOLD"
+        status="failure"
+        engine="unknown"
+        verdict="HOLD"
+        score="0"
+        verdict_gaps="no explicit gaps"
+
+        status_file="${status_files[$idx]}"
+        if [ -f "$status_file" ]; then
+            status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+            engine="$(grep -E "^engine=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+            [ "$status" = "success" ] || status="failure"
         fi
-        if grep -q "<gaps>" "$ofile" 2>/dev/null; then
-            g="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
+
+        if [ -f "$ofile" ]; then
+            score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
+            is_number "$score" || score="0"
+            if grep -qE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null; then
+                verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" | tail -n 1 | sed -E 's/<\/?verdict>//g' )"
+            elif grep -qE "<decision>(GO|HOLD)</decision>" "$ofile" 2>/dev/null; then
+                verdict="$(grep -oE "<decision>(GO|HOLD)</decision>" "$ofile" | tail -n 1 | sed -E 's/<\/?decision>//g' )"
+            else
+                verdict="HOLD"
+            fi
+
+            if grep -q "<gaps>" "$ofile" 2>/dev/null; then
+                verdict_gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
+            fi
+            verdict_gaps="$(echo "$verdict_gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
         else
-            g="no explicit gaps"
+            verdict_gaps="no output artifact"
         fi
-        g="$(echo "$g" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
-        reviewer_summary="reviewer_${reviewer_idx}:score=$s verdict=$d gaps=${g}"
-        summary_lines+=("$reviewer_summary")
-        reviewer_idx=$((reviewer_idx + 1))
-        total_score=$((total_score + s))
-        [ "$d" = "GO" ] && go_votes=$((go_votes + 1))
+
+        [ "$status" = "success" ] && responded_votes=$((responded_votes + 1))
+        [ "$status" = "success" ] && total_score=$((total_score + score))
+
+        [ "$verdict" = "GO" ] && go_votes=$((go_votes + 1))
+        summary_lines+=("reviewer_$((idx + 1)):engine=$engine status=$status score=$score verdict=$verdict gaps=$verdict_gaps")
+        idx=$((idx + 1))
     done
 
-    local avg_score=$((total_score / count))
+    if [ "$responded_votes" -gt 0 ]; then
+        avg_score=$((total_score / responded_votes))
+    fi
+
     LAST_CONSENSUS_SCORE="$avg_score"
     LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
-    if [ "$go_votes" -gt $((count / 2)) ] && [ "$avg_score" -ge 70 ]; then
+    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge 70 ]; then
         LAST_CONSENSUS_PASS=true
         return 0
-    else
-        LAST_CONSENSUS_PASS=false
-        return 1
     fi
+    LAST_CONSENSUS_PASS=false
+    return 1
 }
 
 detect_completion_signal() {
@@ -2539,8 +2715,11 @@ enforce_build_gate() {
     return 0
 }
 
-pick_fallback_engine() { [ "$2" = "claude" ] && echo "codex" || echo "claude"; }
-effective_lock_wait_seconds() { echo $((LOCK_WAIT_SECONDS + 7)); }
+pick_fallback_engine() { [ "${2:-}" = "claude" ] && echo "codex" || echo "claude"; }
+effective_lock_wait_seconds() {
+    local wait_seconds="${LOCK_WAIT_SECONDS:-0}"
+    echo $(( wait_seconds + 7 ))
+}
 ensure_prompt_file() {
     local phase="$1"
     local file="$2"
@@ -2948,7 +3127,7 @@ build_phase_prompt_with_feedback() {
             done
         fi
         echo "- Preserve existing work; only generate missing/repairable artifacts and rerun this phase."
-        echo "- Conclude with `<promise>DONE</promise>` when completion is complete."
+        echo "- Conclude with <promise>DONE</promise> when completion is complete."
     } >> "$target_prompt"
 }
 
