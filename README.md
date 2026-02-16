@@ -117,6 +117,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--run-agent-retry-verbose true|false`  
 - `--auto-repair-markdown-artifacts true|false`  
 - `--strict-validation-noop true|false`  
+- `--engine-output-to-stdout true|false`  
 - `--phase-noop-profile strict|balanced|read-only-first|custom`
 - `--phase-noop-policy-plan hard|soft|none`
 - `--phase-noop-policy-build hard|soft|none`
@@ -130,7 +131,7 @@ Equivalent environment variables in `.ralphie/config.env`:
 `MAX_SESSION_CYCLES`, `SESSION_TOKEN_BUDGET`, `SESSION_TOKEN_RATE_CENTS_PER_MILLION`,
 `SESSION_COST_BUDGET_CENTS`, `PHASE_COMPLETION_MAX_ATTEMPTS`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS`,
 `PHASE_COMPLETION_RETRY_VERBOSE`, `RUN_AGENT_MAX_ATTEMPTS`, `RUN_AGENT_RETRY_DELAY_SECONDS`,
-`RUN_AGENT_RETRY_VERBOSE`, `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`,
+`RUN_AGENT_RETRY_VERBOSE`, `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
 `PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
 `PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
 `PHASE_NOOP_PROFILE`,
@@ -155,8 +156,21 @@ Defaults:
 - `session cost budget`: `0` (unlimited)
 - `max-phase-completion-attempts`: `3`
 - `run-agent-max-attempts`: `3`
+- `engine-output-to-stdout`: `true`
 - `phase-noop default policy`: plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`
 - `resume`: enabled by default (`--resume`)
+
+## Interrupt Controls
+
+In interactive mode, pressing `Ctrl+C` opens a control menu:
+
+- `r` resume immediately (default)
+- `l` toggle live engine output on/off
+- `p` persist state and pause
+- `q` immediate stop
+- `h` help
+
+The current `engine-output-to-stdout` mode is preserved in session state and reused on resume.
 
 ## Deterministic Stack Discovery
 

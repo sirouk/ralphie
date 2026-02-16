@@ -373,6 +373,8 @@ parse_args() {
                     err "Invalid boolean value for --engine-output-to-stdout: $ENGINE_OUTPUT_TO_STDOUT"
                     exit 1
                 fi
+                ENGINE_OUTPUT_TO_STDOUT_EXPLICIT="true"
+                ENGINE_OUTPUT_TO_STDOUT_OVERRIDE="$ENGINE_OUTPUT_TO_STDOUT"
                 shift 2
                 ;;
             --auto-repair-markdown-artifacts)
@@ -472,6 +474,7 @@ parse_args() {
 
 # Global Registry for Background Processes (for atomic cleanup)
 declare -a RALPHIE_BG_PIDS=()
+INTERRUPT_MENU_ACTIVE="false"
 MARKDOWN_ARTIFACTS_CLEANED_LIST=""
 
 # Configuration defaults
@@ -494,6 +497,8 @@ DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3 # bounded retries per phase (0 = one att
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
 DEFAULT_ENGINE_OUTPUT_TO_STDOUT="true"
+ENGINE_OUTPUT_TO_STDOUT_EXPLICIT="false"
+ENGINE_OUTPUT_TO_STDOUT_OVERRIDE=""
 DEFAULT_PHASE_NOOP_POLICY_PLAN="none"
 DEFAULT_PHASE_NOOP_POLICY_BUILD="hard"
 DEFAULT_PHASE_NOOP_POLICY_TEST="soft"
@@ -636,6 +641,7 @@ SESSION_ATTEMPT_COUNT="$SESSION_ATTEMPT_COUNT"
 SESSION_TOKEN_COUNT="$SESSION_TOKEN_COUNT"
 SESSION_COST_CENTS="$SESSION_COST_CENTS"
 LAST_RUN_TOKEN_COUNT="$LAST_RUN_TOKEN_COUNT"
+ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT"
 EOF
     # Append SHA-256 checksum to the end
     local checksum
@@ -669,6 +675,7 @@ load_state() {
     SESSION_TOKEN_COUNT="${SESSION_TOKEN_COUNT:-0}"
     SESSION_COST_CENTS="${SESSION_COST_CENTS:-0}"
     LAST_RUN_TOKEN_COUNT="${LAST_RUN_TOKEN_COUNT:-0}"
+    ENGINE_OUTPUT_TO_STDOUT="${ENGINE_OUTPUT_TO_STDOUT:-$DEFAULT_ENGINE_OUTPUT_TO_STDOUT}"
     return 0
 }
 
@@ -1048,21 +1055,94 @@ release_lock() {
 }
 
 # Interrupt handling
-cleanup_resources() {
+cleanup_managed_processes() {
     for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
         if kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
         fi
     done
+}
+
+cleanup_resources() {
+    cleanup_managed_processes
     release_lock
 }
 
+show_interrupt_menu() {
+    local choice
+    local output_state
+
+    while true; do
+        output_state="$(is_true "$ENGINE_OUTPUT_TO_STDOUT" && echo "on" || echo "off")"
+        echo
+        warn "Ctrl+C received."
+        warn "Live engine output: ${output_state}"
+        warn "Actions:"
+        warn "  [r] resume (default)"
+        warn "  [l] toggle live engine output"
+        warn "  [p] persist state and pause"
+        warn "  [q] immediate stop"
+        warn "  [h] help"
+        choice="$(prompt_read_line "Action [r/l/p/q/h]: " "r")"
+        case "$(to_lower "$choice")" in
+            r|"")
+                info "Resuming..."
+                return 0
+                ;;
+            l)
+                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    ENGINE_OUTPUT_TO_STDOUT="false"
+                else
+                    ENGINE_OUTPUT_TO_STDOUT="true"
+                fi
+                info "Live engine output is now $(is_true "$ENGINE_OUTPUT_TO_STDOUT" && echo enabled || echo suppressed)."
+                save_state
+                ;;
+            p)
+                info "Persisted state and paused."
+                save_state
+                cleanup_resources
+                exit 0
+                ;;
+            q)
+                warn "Immediate stop requested."
+                cleanup_resources
+                exit 130
+                ;;
+            h)
+                warn "Live logs can be toggled here without restarting. Use 'p' to exit cleanly and resume later."
+                ;;
+            *)
+                warn "Unknown option: $choice"
+                ;;
+        esac
+    done
+}
+
+handle_interrupt() {
+    if [ "$INTERRUPT_MENU_ACTIVE" = "true" ]; then
+        warn "Second interrupt received. Exiting immediately."
+        cleanup_resources
+        exit 130
+    fi
+    INTERRUPT_MENU_ACTIVE="true"
+    if ! is_tty_input_available; then
+        warn "Interrupt received in non-interactive context."
+        cleanup_resources
+        exit 130
+    fi
+    cleanup_managed_processes
+    show_interrupt_menu
+    INTERRUPT_MENU_ACTIVE="false"
+}
+
 cleanup() {
-    info "Received interrupt. Cleaning up background processes..."
+    info "Received interrupt. Cleaning up..."
     cleanup_resources
     exit 0
 }
-trap cleanup SIGINT SIGTERM
+trap handle_interrupt SIGINT
+trap cleanup SIGTERM
 trap cleanup_resources EXIT
 
 # Unified Agent Run Function with Exponential Backoff Retries
@@ -1137,30 +1217,62 @@ run_agent_with_prompt() {
         info "Dispatching ${ACTIVE_ENGINE} for attempt ${attempt}/${max_run_attempts} (phase attempt ${attempt_no}) with prompt $(path_for_display "$prompt_file")."
         if [ "$ACTIVE_ENGINE" = "codex" ]; then
             if [ -n "$timeout_cmd" ]; then
-                if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
-                    exit_code=0
+                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 else
-                    exit_code=$?
+                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 fi
             else
-                if cat "$prompt_file" | "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
-                    exit_code=0
+                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    if cat "$prompt_file" | "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 | tee "$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 else
-                    exit_code=$?
+                    if cat "$prompt_file" | "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 fi
             fi
         else
             if [ -n "$timeout_cmd" ]; then
-                if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
-                    exit_code=0
+                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 else
-                    exit_code=$?
+                    if cat "$prompt_file" | "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 fi
             else
-                if cat "$prompt_file" | ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
-                    exit_code=0
+                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    if cat "$prompt_file" | ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - 2>>"$log_file" | tee "$output_file" >> "$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 else
-                    exit_code=$?
+                    if cat "$prompt_file" | ${yolo_prefix[@]+"${yolo_prefix[@]}"} "${engine_args[@]}" - > "$output_file" 2>>"$log_file"; then
+                        exit_code=0
+                    else
+                        exit_code=$?
+                    fi
                 fi
             fi
         fi
@@ -2916,6 +3028,7 @@ print_session_config_banner() {
     info "run_agent_max_attempts: ${RUN_AGENT_MAX_ATTEMPTS:-0}"
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
+    info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
@@ -2956,6 +3069,9 @@ main() {
         success "Resuming mission..."
     else
         save_state
+    fi
+    if is_true "$ENGINE_OUTPUT_TO_STDOUT_EXPLICIT"; then
+        ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT_OVERRIDE"
     fi
 
     if ! is_number "$MAX_SESSION_CYCLES" || [ "$MAX_SESSION_CYCLES" -lt 0 ]; then
