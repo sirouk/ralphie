@@ -13,7 +13,7 @@ Ralphie operates on a "Thinking before Doing" doctrine. The system is designed a
 -   **Autonomous YOLO Mode:** Enabled by default, granting agents the authority to execute shell commands and modify files.
 -   **Self-Healing State:** SHA-256 checksum-validated state snapshots that detect artifact drift and allow for robust recovery via `--resume`.
 -   **Atomic Lifecycle Management:** Global process tracking ensures that orphaned agent processes are terminated on failure or interrupt.
--   **Auto-Update Mechanism:** Best-effort synchronization with upstream versions to ensure the orchestrator always utilizes the latest safety and capability improvements.
+-   **Self-Contained Runtime:** Runtime behavior is version-stable and local to the checked-out orchestrator script; no runtime auto-update is performed.
 
 ## Operational Phases & Governance
 
@@ -45,13 +45,10 @@ Ralphie transitions through structured phases governed by strict validation gate
 -   **Logic:** Synchronization of READMEs and module docs with the new executable reality.
 -   **Gate:** Final documentation-quality check before loop closure.
 
-## Auto-Update Mechanism
+## Runtime Management
 
-Ralphie includes a best-effort auto-update routine at launch ([`ralphie.sh:3760`](ralphie.sh:3760)). 
-1.  **Detection:** Checks `AUTO_UPDATE_ENABLED` and fetches the latest script from `AUTO_UPDATE_URL`.
-2.  **Validation:** Verifies the download has a valid shebang and Ralphie header to prevent accidental execution of malformed content.
-3.  **Atomic Swap:** Backs up the current version to `.ralphie/ready-archives/` before performing an atomic `mv`.
-4.  **Re-exec:** The script immediately re-executes itself with the new version, preserving all CLI arguments and current environment state.
+`ralphie.sh` does not auto-update itself at runtime. Release drift is handled intentionally through normal checkout/version control workflows.
+To upgrade behavior, update the checked-out `ralphie.sh` script (or repository) and rerun with the same command.
 
 ## Security & Sandboxing (Claude Code)
 
@@ -66,11 +63,98 @@ When operating in autonomous YOLO mode, Ralphie enforces high-security standards
 curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh | bash
 ```
 
+`ralphie.sh` will self-bootstrap missing control artifacts before the first run:
+
+- `.specify/memory/constitution.md`
+- placeholder research artifacts under `research/`
+- placeholder implementation scaffolding under `IMPLEMENTATION_PLAN.md`
+
 ### Autonomous Resumption
-If a run is interrupted by a timeout or crash, Ralphie will automatically detect the previous state at launch and prompt you to resume. You can also bypass the prompt and force a resumption via:
+If a run is interrupted by a timeout or crash, Ralphie automatically resumes from the previous state by default. You can force a fresh start with:
 ```bash
-./ralphie.sh --resume
+./ralphie.sh --no-resume
 ```
+
+### Reference Sources
+
+- `engines/setup-agent-subrepos.sh` is retained for comparative engine behavior research only.
+- It is **not** required for a standard `ralphie.sh` run on a user project.
+
+## Runtime Configuration (CLI + `config.env`)
+
+`ralphie.sh` supports explicit session/retry budgets plus optional cost accounting.
+
+### CLI Flags
+
+- `--resume`  
+- `--no-resume`  
+- `--max-session-cycles N`  
+- `--session-token-budget N`  
+- `--session-token-rate-cents-per-million N`  
+- `--session-cost-budget-cents N`  
+- `--max-phase-completion-attempts N`  
+- `--phase-completion-retry-delay-seconds N`  
+- `--phase-completion-retry-verbose true|false`  
+- `--run-agent-max-attempts N`  
+- `--run-agent-retry-delay-seconds N`  
+- `--run-agent-retry-verbose true|false`  
+- `--auto-repair-markdown-artifacts true|false`  
+- `--strict-validation-noop true|false`  
+- `--phase-noop-profile strict|balanced|read-only-first|custom`
+- `--phase-noop-policy-plan hard|soft|none`
+- `--phase-noop-policy-build hard|soft|none`
+- `--phase-noop-policy-test hard|soft|none`
+- `--phase-noop-policy-refactor hard|soft|none`
+- `--phase-noop-policy-lint hard|soft|none`
+- `--phase-noop-policy-document hard|soft|none`
+- `--max-iterations N`
+
+Equivalent environment variables in `.ralphie/config.env`:
+`MAX_SESSION_CYCLES`, `SESSION_TOKEN_BUDGET`, `SESSION_TOKEN_RATE_CENTS_PER_MILLION`,
+`SESSION_COST_BUDGET_CENTS`, `PHASE_COMPLETION_MAX_ATTEMPTS`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS`,
+`PHASE_COMPLETION_RETRY_VERBOSE`, `RUN_AGENT_MAX_ATTEMPTS`, `RUN_AGENT_RETRY_DELAY_SECONDS`,
+`RUN_AGENT_RETRY_VERBOSE`, `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`,
+`PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
+`PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
+`PHASE_NOOP_PROFILE`,
+`MAX_ITERATIONS`.
+
+`RESUME_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_RESUME_REQUESTED=true|false` (default: true).
+
+`PHASE_NOOP_PROFILE` can be supplied via `.ralphie/config.env` as `RALPHIE_PHASE_NOOP_PROFILE=balanced|strict|read-only-first|custom`.
+
+Phase no-op profile precedence: `--phase-noop-profile` / `RALPHIE_PHASE_NOOP_PROFILE` set the profile, and any explicitly passed `--phase-noop-policy-*` flags override profile defaults for that phase.
+
+Supported no-op profiles:
+- `balanced` (default): plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`.
+- `strict`: all phases (`plan`, `build`, `test`, `refactor`, `lint`, `document`) `hard`.
+- `read-only-first`: plan=`none`, build=`hard`, test=`soft`, refactor=`none`, lint=`soft`, document=`none`.
+- `custom`: only explicit per-phase flags apply.
+
+Defaults:
+- `max-session-cycles`: `0` (unlimited)
+- `session token budget`: `0` (unlimited)
+- `session cost budget`: `0` (unlimited)
+- `max-phase-completion-attempts`: `3`
+- `run-agent-max-attempts`: `3`
+- `phase-noop default policy`: plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`
+- `resume`: enabled by default (`--resume`)
+
+## Deterministic Stack Discovery
+
+Before each planning run, `ralphie.sh` writes `research/STACK_SNAPSHOT.md` with:
+
+- ranked stack candidates,
+- deterministic evidence signals,
+- and a ranked alternatives list.
+
+Build transitions require the snapshot and clean artifact checks to pass.
+
+## Restart behavior
+
+- Resume is enabled by default. On restart, `ralphie.sh` restores the latest persisted phase and iteration state.
+- If resume lands on a phase with broken prerequisites (for example missing artifacts, bad markdown hygiene, or non-actionable plan), it automatically falls back to `plan` and records the reason in `last_gate_feedback`.
+- This prevents silent stalls while avoiding unnecessary recomputation.
 
 ## Credits
 
