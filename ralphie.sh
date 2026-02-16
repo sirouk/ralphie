@@ -2520,7 +2520,7 @@ collect_research_schema_issues() {
 
     if ! [ -f "$RESEARCH_SUMMARY_FILE" ]; then
         issues+=("RESEARCH_SUMMARY.md missing")
-    elif ! grep -qE '<confidence>[0-9]{1,3}</confidence>' "$RESEARCH_SUMMARY_FILE" 2>/dev/null; then
+    elif ! grep -qE '<confidence>[0-9]+(\.[0-9]+)?</confidence>' "$RESEARCH_SUMMARY_FILE" 2>/dev/null; then
         issues+=("RESEARCH_SUMMARY.md missing <confidence> tag")
     fi
 
@@ -2685,7 +2685,7 @@ collect_build_prerequisites_issues() {
     fi
 
     local gitignore_missing_lines
-    local -a gitignore_missing
+    local -a gitignore_missing=()
     gitignore_missing_lines="$(gitignore_missing_required_entries || true)"
     while IFS= read -r missing_entry; do
         [ -n "$missing_entry" ] && gitignore_missing+=("$missing_entry")
@@ -2941,9 +2941,25 @@ ensure_core_artifacts() {
 ## Goal
 - Bring project into an executable, measurable development plan.
 
+## Research Discovery
+- Inspect repository structure and runtime stack for training, OOF, optimization, and live execution surfaces.
+- Map execution boundaries between scripts, orchestration, and live service components.
+
+## Stack
+- Confirm Python is the canonical workflow runtime and keep dashboard tooling isolated to observability.
+- Track deterministic entrypoint ownership for train, OOF, optimization, and parity checks.
+
 ## Validation Criteria
 - `<confidence>` score present in `research/RESEARCH_SUMMARY.md`.
 - Research and specs artifacts updated with acceptance criteria.
+
+## Readiness
+- Plan artifacts and build prerequisites remain stable between phase transitions.
+- Required artifacts are present and schema-valid before build/test gates.
+
+## Risk
+- Config drift and checkpoint/model-contract mismatch between train→OOF→optimize→live are high-priority risks.
+- Missing manifest/schema validation at phase handoff may cause parity failures.
 
 ## Actionable Tasks
 - [ ] Inspect repository structure and stack dependencies.
