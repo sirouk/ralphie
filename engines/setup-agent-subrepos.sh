@@ -20,7 +20,7 @@ usage() {
 Setup Codex + Claude Code subrepos and emit a heuristic source map.
 
 Usage:
-  ./scripts/setup-agent-subrepos.sh [options]
+  ./engines/setup-agent-subrepos.sh [options]
 
 Options:
   --mode submodule|clone      Default: submodule
@@ -29,8 +29,8 @@ Options:
   --help, -h                  Show this help
 
 Examples:
-  ./scripts/setup-agent-subrepos.sh
-  ./scripts/setup-agent-subrepos.sh --mode clone
+  ./engines/setup-agent-subrepos.sh
+  ./engines/setup-agent-subrepos.sh --mode clone
 USAGE
 }
 
