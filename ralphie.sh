@@ -115,9 +115,13 @@ is_number() {
 }
 
 print_array_lines() {
-    local array_name="${1:-}"
-    [ -z "$array_name" ] && return 0
-    eval "printf '%s\\n' \"\\${${array_name}[@]-}\""
+    local -a lines=("$@")
+    local line
+
+    [ "${#lines[@]}" -eq 0 ] && return 0
+    for line in "${lines[@]}"; do
+        printf '%s\n' "$line"
+    done
 }
 
 # Compatibility layer for environments that still run Bash 3.x (for example, macOS
@@ -133,18 +137,15 @@ if ! command -v mapfile >/dev/null 2>&1; then
             return 1
         fi
 
-        local -a __mapfile_lines=()
+        local __mapfile_entry
         local __mapfile_line
+        eval "${var_name}=()"
+
         while IFS= read -r __mapfile_line || [ -n "$__mapfile_line" ]; do
-            __mapfile_lines+=("$__mapfile_line")
+            __mapfile_entry="$(printf '%q' "$__mapfile_line")"
+            eval "${var_name}+=( ${__mapfile_entry} )"
         done
 
-        # `-t` should strip trailing newlines. `read -r` already strips them.
-        eval "${var_name}=()"
-        local __mapfile_value
-        for __mapfile_value in "${__mapfile_lines[@]}"; do
-            eval "${var_name}+=(\"\$__mapfile_value\")"
-        done
         return 0
     }
 fi
@@ -1775,7 +1776,7 @@ collect_phase_resume_blockers() {
             ;;
     esac
 
-    print_array_lines blockers
+    print_array_lines "${blockers[@]-}"
 }
 
 summarize_blocks_for_log() {
@@ -2061,13 +2062,13 @@ run_stack_discovery() {
 
     local ranking_file
     ranking_file="$(mktemp "$CONFIG_DIR/stack-ranking.XXXXXX")"
-    printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas "${node_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas "${python_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas "${go_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas "${rust_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas "${java_signal[@]}")" >> "$ranking_file"
-    printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas "${dotnet_signal[@]}")" >> "$ranking_file"
-    printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas "${unknown_signal[@]}")" >> "$ranking_file"
+    printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas ${node_signal[@]+"${node_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas ${python_signal[@]+"${python_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas ${go_signal[@]+"${go_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas ${rust_signal[@]+"${rust_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas ${java_signal[@]+"${java_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas ${dotnet_signal[@]+"${dotnet_signal[@]}"})" >> "$ranking_file"
+    printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas ${unknown_signal[@]+"${unknown_signal[@]}"})" >> "$ranking_file"
     printf "%03d|Unknown|-\n" "$unknown_score" >> "$ranking_file"
 
     local -a ranked_candidates=()
@@ -2141,7 +2142,7 @@ collect_constitution_schema_issues() {
             issues+=("constitution missing required governance sections")
         fi
     fi
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 constitution_schema_is_valid() {
@@ -2347,7 +2348,7 @@ collect_phase_validation_schema_issues() {
     local evidence_block
     local -a issues=()
 
-    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); print_array_lines issues; return 0; }
+    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); print_array_lines "${issues[@]-}"; return 0; }
     evidence_block="$(extract_evidence_block "$output_file")"
     if [ -z "$evidence_block" ]; then
         issues+=("phase requires machine-readable <evidence>...</evidence> block")
@@ -2477,7 +2478,7 @@ collect_phase_validation_schema_issues() {
             fi
             ;;
     esac
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 collect_phase_schema_issues() {
@@ -2532,7 +2533,7 @@ collect_phase_schema_issues() {
             ;;
     esac
 
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 collect_build_schema_issues() {
@@ -2552,7 +2553,7 @@ collect_build_schema_issues() {
         issues+=("specs must include acceptance criteria sections")
     fi
     [ -f "$PLAN_FILE" ] || issues+=("IMPLEMENTATION_PLAN.md missing before build")
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 collect_research_schema_issues() {
@@ -2594,7 +2595,7 @@ collect_research_schema_issues() {
         issues+=("research/STACK_SNAPSHOT.md missing ranking table")
     fi
 
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 collect_plan_schema_issues() {
@@ -2615,7 +2616,7 @@ collect_plan_schema_issues() {
         fi
     fi
 
-    print_array_lines issues
+    print_array_lines "${issues[@]-}"
 }
 
 plan_is_semantically_actionable() {
@@ -2746,7 +2747,7 @@ collect_build_prerequisites_issues() {
         done
     fi
 
-    print_array_lines missing
+    print_array_lines "${missing[@]-}"
 }
 
 enforce_build_gate() {
@@ -3248,7 +3249,7 @@ build_phase_prompt_with_feedback() {
 
 collect_phase_retry_failures_from_consensus() {
     local -a failures=()
-    [ -n "$LAST_CONSENSUS_DIR" ] || { print_array_lines failures; return 0; }
+    [ -n "$LAST_CONSENSUS_DIR" ] || { print_array_lines "${failures[@]-}"; return 0; }
     local reviewer_summary ofile
     for ofile in "$LAST_CONSENSUS_DIR"/*.out; do
         [ -f "$ofile" ] || continue
@@ -3268,7 +3269,7 @@ collect_phase_retry_failures_from_consensus() {
         reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} gaps=${gaps}"
         failures+=("consensus review: $reviewer_summary")
     done
-    print_array_lines failures
+    print_array_lines "${failures[@]-}"
 }
 
 ensure_constitution_bootstrap() {
