@@ -1,5 +1,7 @@
 # Ralphie
 
+Version: `2.0.0`
+
 Ralphie is a high-fidelity autonomous development framework for Codex and Claude Code. It orchestrates a multi-phase engineering lifecycle—merging recursive planning, evidence-based implementation, and deep consensus swarms into a single, self-healing recursive loop.
 
 ## Design Philosophy: Correct-by-Construction
@@ -14,6 +16,7 @@ Ralphie operates on a "Thinking before Doing" doctrine. The system is designed a
 -   **Self-Healing State:** SHA-256 checksum-validated state snapshots that detect artifact drift and allow for robust recovery via `--resume`.
 -   **Atomic Lifecycle Management:** Global process tracking ensures that orphaned agent processes are terminated on failure or interrupt.
 -   **Self-Contained Runtime:** Runtime behavior is version-stable and local to the checked-out orchestrator script; no runtime auto-update is performed.
+-   **Resilient Consensus Orchestration:** Adaptive phase routing includes bounded retries and hard timeouts for reviewer swarms.
 
 ## Operational Phases & Governance
 
@@ -21,17 +24,17 @@ Ralphie transitions through structured phases governed by strict validation gate
 
 ### 1. Plan (Research + Spec + Implementation Plan)
 -   **Logic:** Recursive mapping of codebase surfaces, external dependency research, and creation of testable specs.
--   **Gate:** Requires a `<promise>DONE</promise>` signal followed by a **Plan-Gate Consensus Swarm** with a score $\ge$ `MIN_CONSENSUS_SCORE`.
+-   **Gate:** Requires consensus review approval from the phase swarm with a strong signal from agent outputs, then transitions by consensus score/verdict.
 -   **State:** Persists plan checksums to prevent out-of-band drift during implementation.
 
 ### 2. Build
 -   **Logic:** Targeted implementation of items from the validated `IMPLEMENTATION_PLAN.md`.
--   **Gate:** Verification of spec-status updates and line-by-line acceptance criteria validation.
+-   **Gate:** Requires successful phase completion validation by execution + consensus reviewers.
 -   **Transition:** Auto-switches to `Plan` mode for backfill if the work queue becomes empty.
 
 ### 3. Test
 -   **Logic:** Test-Driven Development (TDD) cycle. High-risk behavior surfaces are identified and verified with adversarial unit/integration tests.
--   **Gate:** Requires green test suites; failed verification triggers a rewind to the `Build` phase.
+-   **Gate:** Requires successful verification and review consensus that tests/coverage intent is satisfied.
 
 ### 4. Refactor
 -   **Logic:** Behavior-preserving simplification. Focuses on reducing incidental complexity and technical debt.
@@ -112,6 +115,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--max-phase-completion-attempts N`  
 - `--phase-completion-retry-delay-seconds N`  
 - `--phase-completion-retry-verbose true|false`  
+- `--max-consensus-routing-attempts N`  
 - `--run-agent-max-attempts N`  
 - `--run-agent-retry-delay-seconds N`  
 - `--run-agent-retry-verbose true|false`  
@@ -130,8 +134,9 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 Equivalent environment variables in `.ralphie/config.env`:
 `MAX_SESSION_CYCLES`, `SESSION_TOKEN_BUDGET`, `SESSION_TOKEN_RATE_CENTS_PER_MILLION`,
 `SESSION_COST_BUDGET_CENTS`, `PHASE_COMPLETION_MAX_ATTEMPTS`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS`,
-`PHASE_COMPLETION_RETRY_VERBOSE`, `RUN_AGENT_MAX_ATTEMPTS`, `RUN_AGENT_RETRY_DELAY_SECONDS`,
-`RUN_AGENT_RETRY_VERBOSE`, `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
+`PHASE_COMPLETION_RETRY_VERBOSE`, `MAX_CONSENSUS_ROUTING_ATTEMPTS`, `RUN_AGENT_MAX_ATTEMPTS`,
+`RUN_AGENT_RETRY_DELAY_SECONDS`, `RUN_AGENT_RETRY_VERBOSE`, `SWARM_CONSENSUS_TIMEOUT`,
+`AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
 `PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
 `PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
 `PHASE_NOOP_PROFILE`,
@@ -155,8 +160,10 @@ Defaults:
 - `session token budget`: `0` (unlimited)
 - `session cost budget`: `0` (unlimited)
 - `max-phase-completion-attempts`: `3`
+- `max-consensus-routing-attempts`: `2`
 - `run-agent-max-attempts`: `3`
 - `engine-output-to-stdout`: `true`
+- `SWARM_CONSENSUS_TIMEOUT`: `600`
 - `phase-noop default policy`: plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`
 - `resume`: enabled by default (`--resume`)
 

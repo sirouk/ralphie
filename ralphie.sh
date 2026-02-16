@@ -31,7 +31,7 @@ fi
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="2.0.0"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
@@ -114,11 +114,76 @@ is_number() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+extract_xml_value() {
+    local file="$1"
+    local tag="$2"
+    local default="${3:-}"
+    local value=""
+
+    [ -f "$file" ] || { echo "$default"; return 0; }
+
+    value="$(grep -oE "<${tag}>[^<]*</${tag}>" "$file" 2>/dev/null | tail -n 1 | sed -E "s#</?${tag}>##g")"
+    value="$(printf '%s' "$value" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    if [ -z "$value" ]; then
+        echo "$default"
+        return 0
+    fi
+    echo "$value"
+}
+
+is_phase_or_done() {
+    case "$1" in
+        plan|build|test|refactor|lint|document|done) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_phase_name() {
+    local phase="${1:-}"
+    phase="$(to_lower "$phase")"
+    case "$phase" in
+        plan) phase="plan" ;;
+        build) phase="build" ;;
+        test) phase="test" ;;
+        refactor) phase="refactor" ;;
+        lint) phase="lint" ;;
+        document) phase="document" ;;
+        done) phase="done" ;;
+        *)
+            warn "Unrecognized phase name '$phase', defaulting to 'plan'"
+            phase="plan"
+            ;;
+    esac
+    echo "$phase"
+}
+
+normalize_next_phase_recommendation() {
+    local candidate="${1:-}"
+    local current_phase="${2:-}"
+    local fallback="${3:-done}"
+
+    candidate="$(to_lower "$candidate")"
+    current_phase="$(normalize_phase_name "$current_phase")"
+
+    case "$candidate" in
+        plan|build|test|refactor|lint|document|done) echo "$candidate" ; return 0 ;;
+        next|forward|proceed|continue) echo "$fallback" ; return 0 ;;
+        same|retry|retry_current|hold|stay) echo "$current_phase" ; return 0 ;;
+        complete|completed|finished|finish|success|goal) echo "done" ; return 0 ;;
+        stop|abort|halt) echo "done" ; return 0 ;;
+        *)
+            echo "$fallback"
+            return 1
+            ;;
+    esac
+}
+
 print_array_lines() {
     local -a lines=("$@")
     local line
 
     [ "${#lines[@]}" -eq 0 ] && return 0
+    [ "${#lines[@]}" -eq 1 ] && [ -z "${lines[0]}" ] && return 0
     for line in "${lines[@]}"; do
         printf '%s\n' "$line"
     done
@@ -132,18 +197,23 @@ if ! command -v mapfile >/dev/null 2>&1; then
             shift
         fi
 
-        local var_name="${1:-}"
+        local var_name="${1:-MAPFILE}"
         if [ -z "$var_name" ]; then
             return 1
         fi
 
-        local __mapfile_entry
+        # Safer alternative to eval: use nameref if available (Bash 4.3+),
+        # otherwise fall back to a temp file approach
+        local __mapfile_idx=0
         local __mapfile_line
+        # Reset the target array
         eval "${var_name}=()"
 
         while IFS= read -r __mapfile_line || [ -n "$__mapfile_line" ]; do
-            __mapfile_entry="$(printf '%q' "$__mapfile_line")"
-            eval "${var_name}+=( ${__mapfile_entry} )"
+            # Use printf %q for safe escaping of arbitrary content
+            printf -v __mapfile_escaped '%q' "$__mapfile_line" 2>/dev/null || __mapfile_escaped="$__mapfile_line"
+            eval "${var_name}[${__mapfile_idx}]=${__mapfile_escaped}"
+            __mapfile_idx=$((__mapfile_idx + 1))
         done
 
         return 0
@@ -283,6 +353,7 @@ Core options:
   --max-phase-completion-attempts N       Max completion-signal retries per phase
   --phase-completion-retry-delay-seconds N Delay in seconds between completion retries
   --phase-completion-retry-verbose bool   Verbose phase completion retry logging (true|false)
+  --max-consensus-routing-attempts N      Max adaptive consensus reroutes per run (0=unlimited)
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
@@ -383,6 +454,11 @@ parse_args() {
                     err "Invalid boolean value for --phase-completion-retry-verbose: $PHASE_COMPLETION_RETRY_VERBOSE"
                     exit 1
                 fi
+                shift 2
+                ;;
+            --max-consensus-routing-attempts)
+                MAX_CONSENSUS_ROUTING_ATTEMPTS="$(parse_arg_value "--max-consensus-routing-attempts" "${2:-}")"
+                require_non_negative_int "MAX_CONSENSUS_ROUTING_ATTEMPTS" "$MAX_CONSENSUS_ROUTING_ATTEMPTS"
                 shift 2
                 ;;
             --run-agent-max-attempts)
@@ -532,6 +608,7 @@ DEFAULT_STRICT_VALIDATION_NOOP="false"
 DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3 # bounded retries per phase (0 = one attempt)
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
+DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=2
 DEFAULT_ENGINE_OUTPUT_TO_STDOUT="true"
 ENGINE_OUTPUT_TO_STDOUT_EXPLICIT="false"
 ENGINE_OUTPUT_TO_STDOUT_OVERRIDE=""
@@ -553,6 +630,7 @@ DEFAULT_SESSION_TOKEN_BUDGET=0               # 0 means unlimited
 DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
 DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
+DEFAULT_SWARM_CONSENSUS_TIMEOUT=600             # max seconds for all reviewers in a consensus round
 
 # Load configuration from environment or file.
 COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-$DEFAULT_COMMAND_TIMEOUT_SECONDS}"
@@ -573,6 +651,7 @@ STRICT_VALIDATION_NOOP="${STRICT_VALIDATION_NOOP:-$DEFAULT_STRICT_VALIDATION_NOO
 PHASE_COMPLETION_MAX_ATTEMPTS="${PHASE_COMPLETION_MAX_ATTEMPTS:-$DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS}"
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${PHASE_COMPLETION_RETRY_VERBOSE:-$DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE}"
+MAX_CONSENSUS_ROUTING_ATTEMPTS="${MAX_CONSENSUS_ROUTING_ATTEMPTS:-$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS}"
 PHASE_NOOP_POLICY_PLAN="${PHASE_NOOP_POLICY_PLAN:-$DEFAULT_PHASE_NOOP_POLICY_PLAN}"
 PHASE_NOOP_POLICY_BUILD="${PHASE_NOOP_POLICY_BUILD:-$DEFAULT_PHASE_NOOP_POLICY_BUILD}"
 PHASE_NOOP_POLICY_TEST="${PHASE_NOOP_POLICY_TEST:-$DEFAULT_PHASE_NOOP_POLICY_TEST}"
@@ -584,10 +663,18 @@ SESSION_TOKEN_BUDGET="${SESSION_TOKEN_BUDGET:-$DEFAULT_SESSION_TOKEN_BUDGET}"
 SESSION_TOKEN_RATE_CENTS_PER_MILLION="${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-$DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION}"
 SESSION_COST_BUDGET_CENTS="${SESSION_COST_BUDGET_CENTS:-$DEFAULT_SESSION_COST_BUDGET_CENTS}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
+SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
 
 if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    # Validate config file contains only safe KEY=VALUE lines before sourcing
+    # POSIX env var names: start with letter or underscore, contain alphanumerics and underscores
+    if grep -qvE '^[[:space:]]*(#|$|[A-Za-z_][A-Za-z0-9_]*=)' "$CONFIG_FILE" 2>/dev/null; then
+        warn "config.env contains suspicious lines — skipping source for safety."
+        warn "Only KEY=VALUE lines and comments are allowed."
+    else
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+    fi
 fi
 
 # Override with environment variables if present.
@@ -601,6 +688,16 @@ YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
+
+# Validate engine selection
+case "$(to_lower "$ACTIVE_ENGINE")" in
+    claude|codex|auto) ACTIVE_ENGINE="$(to_lower "$ACTIVE_ENGINE")" ;;
+    *)
+        warn "Unrecognized engine '$ACTIVE_ENGINE'. Falling back to 'claude'."
+        ACTIVE_ENGINE="claude"
+        ;;
+esac
+
 if [ "$ACTIVE_ENGINE" = "codex" ]; then
     ACTIVE_CMD="$CODEX_CMD"
 else
@@ -630,12 +727,20 @@ LAST_CONSENSUS_SCORE=0
 LAST_CONSENSUS_PASS=false
 LAST_CONSENSUS_DIR=""
 LAST_CONSENSUS_SUMMARY=""
+LAST_CONSENSUS_NEXT_PHASE="done"
+LAST_CONSENSUS_NEXT_PHASE_REASON="no consensus recommendation"
+LAST_CONSENSUS_RESPONDED_VOTES=0
+LAST_HANDOFF_SCORE=0
+LAST_HANDOFF_VERDICT="HOLD"
+LAST_HANDOFF_GAPS="no explicit gaps"
+PHASE_TRANSITION_HISTORY=()
 
 # Capability Probing results (populated by probe_engine_capabilities)
 CLAUDE_CAP_PRINT=0
 CLAUDE_CAP_YOLO_FLAG=""
 CODEX_CAP_OUTPUT_LAST_MESSAGE=0
 CODEX_CAP_YOLO_FLAG=0
+ENGINE_CAPABILITIES_PROBED=false
 
 # Resilience Dial implementation
 get_reviewer_count() {
@@ -763,7 +868,7 @@ load_state() {
             SESSION_COST_CENTS) is_number "$value" && SESSION_COST_CENTS="$value" ;;
             LAST_RUN_TOKEN_COUNT) is_number "$value" && LAST_RUN_TOKEN_COUNT="$value" ;;
             ENGINE_OUTPUT_TO_STDOUT) [ -n "$value" ] && ENGINE_OUTPUT_TO_STDOUT="$value" ;;
-            STATE_CHECKSUM=*) ;;
+            STATE_CHECKSUM) ;;
             *) ;;
         esac
     done < "$STATE_FILE"
@@ -838,43 +943,6 @@ enforce_session_budget() {
         return 1
     fi
     return 0
-}
-
-# Tag Extraction Helpers
-extract_tag_value() {
-    local tag="$1"
-    local output_file="$2"
-    local log_file="$3"
-    local value=""
-    
-    if [ -f "$output_file" ]; then
-        value="$(grep -oE "<$tag>.*</$tag>" "$output_file" | sed -E "s/<\/?$tag>//g" | tail -n1)"
-    fi
-    if [ -z "$value" ] && [ -f "$log_file" ]; then
-        value="$(grep -oE "<$tag>.*</$tag>" "$log_file" | sed -E "s/<\/?$tag>//g" | tail -n1)"
-    fi
-    echo "$value"
-}
-
-extract_confidence_value() {
-    local val
-    val="$(extract_tag_value "confidence" "$1" "$2")"
-    if ! is_number "$val"; then echo "0"; return; fi
-    if [ "$val" -gt 100 ]; then echo "100"; else echo "$val"; fi
-}
-
-extract_needs_human_flag() {
-    extract_tag_value "needs_human" "$1" "$2"
-}
-
-extract_human_question() {
-    extract_tag_value "human_question" "$1" "$2"
-}
-
-output_has_plan_status_tags() {
-    local output_file="$1"
-    [ -f "$output_file" ] || return 1
-    grep -q "<confidence>" "$output_file" && grep -q "<needs_human>" "$output_file" && grep -q "<human_question>" "$output_file"
 }
 
 # Interactive Questions
@@ -1106,6 +1174,9 @@ build_is_preapproved() {
 
 # Multi-Agent Capability Detection
 probe_engine_capabilities() {
+    if is_true "$ENGINE_CAPABILITIES_PROBED"; then
+        return 0
+    fi
     # Probing Claude Code
     if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
         local claude_help
@@ -1129,29 +1200,47 @@ probe_engine_capabilities() {
             CODEX_CAP_YOLO_FLAG=1
         fi
     fi
+    ENGINE_CAPABILITIES_PROBED=true
 }
 
-# Lock Management
+# Lock Management (atomic via mkdir)
 acquire_lock() {
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    # Use a lock directory for atomic acquisition (mkdir is atomic on POSIX)
+    local lock_dir="${LOCK_FILE}.d"
+    if mkdir "$lock_dir" 2>/dev/null; then
+        echo "$$" > "$LOCK_FILE"
+        date '+%Y-%m-%d %H:%M:%S' >> "$LOCK_FILE"
+        return 0
+    fi
+    # Lock dir exists — check if holder is still alive
     if [ -f "$LOCK_FILE" ]; then
         local holder_pid
-        holder_pid="$(cat "$LOCK_FILE" | head -n1)"
+        holder_pid="$(head -n1 "$LOCK_FILE" 2>/dev/null || echo "")"
         if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
             err "Orchestrator already running with PID $holder_pid."
             log_reason_code "RB_LOCK_ALREADY_HELD" "pid $holder_pid active"
             return 1
         else
-            warn "Stale lock file found. Reclaiming."
+            warn "Stale lock file found (PID $holder_pid no longer running). Reclaiming."
         fi
+    else
+        warn "Stale lock directory found without PID file. Reclaiming."
     fi
-    mkdir -p "$(dirname "$LOCK_FILE")"
-    echo "$$" > "$LOCK_FILE"
-    date '+%Y-%m-%d %H:%M:%S' >> "$LOCK_FILE"
-    return 0
+    # Reclaim stale lock
+    rm -rf "$lock_dir"
+    if mkdir "$lock_dir" 2>/dev/null; then
+        echo "$$" > "$LOCK_FILE"
+        date '+%Y-%m-%d %H:%M:%S' >> "$LOCK_FILE"
+        return 0
+    fi
+    err "Failed to acquire lock after stale reclaim attempt."
+    return 1
 }
 
 release_lock() {
     rm -f "$LOCK_FILE"
+    rm -rf "${LOCK_FILE}.d" 2>/dev/null || true
 }
 
 # Interrupt handling
@@ -1164,6 +1253,7 @@ cleanup_managed_processes() {
 }
 
 cleanup_resources() {
+    save_state 2>/dev/null || true
     cleanup_managed_processes
     release_lock
 }
@@ -1389,17 +1479,40 @@ run_agent_with_prompt() {
         fi
         
         local hiccup_detected=false
-        if grep -qiE "backend error|token error|timeout|connection refused|overloaded" "$log_file" 2>/dev/null; then
+        local permanent_failure=false
+        if grep -qiE "backend error|token error|timeout|connection refused|overloaded|rate.?limit|503|502|429|ECONNRESET|ETIMEDOUT" "$log_file" 2>/dev/null; then
             hiccup_detected=true
-        elif [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+        elif [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ] || [ "$exit_code" -eq 143 ]; then
+            # 124=timeout, 137=SIGKILL, 143=SIGTERM
             hiccup_detected=true
+        elif [ "$exit_code" -ne 0 ]; then
+            # Check for permanent failures that should NOT be retried
+            if grep -qiE "invalid.*api.?key|authentication.*failed|permission.*denied|model.*not.*found|insufficient.*quota" "$log_file" 2>/dev/null; then
+                permanent_failure=true
+            else
+                # Default: treat unknown non-zero exits as transient (agent crash, OOM, etc.)
+                hiccup_detected=true
+            fi
+        fi
+
+        if is_true "$permanent_failure"; then
+            warn "Permanent failure detected on attempt $attempt/$max_run_attempts. Not retrying."
+            break
         fi
 
         if is_true "$hiccup_detected" && [ "$attempt" -lt "$max_run_attempts" ]; then
+            # Exponential backoff with jitter: base_delay * 2^(attempt-1) + random(0..base_delay)
+            local backoff_delay jitter
+            backoff_delay=$((retry_delay * (1 << (attempt - 1))))
+            # Cap at 120 seconds
+            [ "$backoff_delay" -gt 120 ] && backoff_delay=120
+            # Add jitter: 0 to retry_delay seconds (use RANDOM if available, else 0)
+            jitter=$(( ${RANDOM:-0} % (retry_delay + 1) ))
+            backoff_delay=$((backoff_delay + jitter))
             if is_true "$RUN_AGENT_RETRY_VERBOSE"; then
-                warn "Inference hiccup detected on attempt $attempt/$max_run_attempts. Retrying in ${retry_delay}s..."
+                warn "Inference hiccup detected (exit=$exit_code) on attempt $attempt/$max_run_attempts. Retrying in ${backoff_delay}s..."
             fi
-            sleep "$retry_delay"
+            sleep "$backoff_delay"
             attempt=$((attempt + 1))
             continue
         fi
@@ -1467,14 +1580,33 @@ run_swarm_reviewer() {
 
 run_swarm_consensus() {
     local stage="$1"
+    local history_context="${2:-}"
     local count="$(get_reviewer_count)"
     local parallel="$(get_parallel_reviewer_count)"
     local base_stage="${stage%-gate}"
+    local default_next_phase
+    local next_phase_vote_plan=0
+    local next_phase_vote_build=0
+    local next_phase_vote_test=0
+    local next_phase_vote_refactor=0
+    local next_phase_vote_lint=0
+    local next_phase_vote_document=0
+    local next_phase_vote_done=0
+    local total_next_votes=0
 
+    # Preserve global engine state before swarm (reviewers run in subshells
+    # but run_swarm_reviewer also modifies globals in the parent fallback path)
+    local saved_engine="$ACTIVE_ENGINE"
+    local saved_cmd="$ACTIVE_CMD"
+
+    default_next_phase="$(phase_default_next "$base_stage")"
     info "Running deep consensus swarm for '$stage'..."
     local consensus_dir="$CONSENSUS_DIR/$stage/$SESSION_ID"
     LAST_CONSENSUS_DIR="$consensus_dir"
     LAST_CONSENSUS_SUMMARY=""
+    LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
+    LAST_CONSENSUS_NEXT_PHASE_REASON="insufficient consensus responses"
+    LAST_CONSENSUS_RESPONDED_VOTES=0
     mkdir -p "$consensus_dir"
 
     local -a prompts=() logs=() outputs=() status_files=()
@@ -1491,6 +1623,11 @@ run_swarm_consensus() {
         warn "No reviewer engines available for consensus."
         LAST_CONSENSUS_SCORE=0
         LAST_CONSENSUS_PASS=false
+        LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="no reviewer engines available"
+        LAST_CONSENSUS_RESPONDED_VOTES=0
+        ACTIVE_ENGINE="$saved_engine"
+        ACTIVE_CMD="$saved_cmd"
         return 1
     fi
 
@@ -1521,8 +1658,7 @@ run_swarm_consensus() {
 
         {
             echo "# Consensus Review: $stage"
-            echo ""
-            consensus_prompt_for_stage "$base_stage"
+            consensus_prompt_for_stage "$base_stage" "$history_context"
         } > "${prompts[$((i - 1))]}"
     done
 
@@ -1541,26 +1677,78 @@ run_swarm_consensus() {
         RALPHIE_BG_PIDS+=($!)
         active=$((active + 1))
         if [ "$active" -ge "$parallel" ] || [ "$i" -eq $((count - 1)) ]; then
-            wait -n 2>/dev/null || true
+            # wait -n requires Bash 4.3+; use portable fallback
+            if [ "${BASH_VERSINFO[0]:-3}" -gt 4 ] || { [ "${BASH_VERSINFO[0]:-3}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
+                wait -n 2>/dev/null || true
+            else
+                # Portable: poll only swarm PIDs until at least one finishes
+                while true; do
+                    local __alive=0
+                    for __pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
+                        kill -0 "$__pid" 2>/dev/null && __alive=$((__alive + 1))
+                    done
+                    [ "$__alive" -lt "$active" ] && break
+                    sleep 0.2 2>/dev/null || sleep 1
+                done
+            fi
             active=$((active - 1))
         fi
     done
-    wait
+    # Wait for all reviewers with a safety timeout to prevent infinite hangs
+    local swarm_timeout="${SWARM_CONSENSUS_TIMEOUT:-600}"
+    local swarm_start swarm_elapsed
+    swarm_start="$(date +%s)"
+    local swarm_timed_out=false
+    while true; do
+        local running_jobs=0
+        local __active_jobs=()
+        for __pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
+            if kill -0 "$__pid" 2>/dev/null; then
+                __active_jobs+=("$__pid")
+                running_jobs=$((running_jobs + 1))
+            fi
+        done
+        RALPHIE_BG_PIDS=(${__active_jobs[@]+"${__active_jobs[@]}"})
+        [ "${running_jobs:-0}" -eq 0 ] && break
+        swarm_elapsed=$(( $(date +%s) - swarm_start ))
+        if [ "$swarm_elapsed" -ge "$swarm_timeout" ]; then
+            warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
+            swarm_timed_out=true
+            for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
+                kill -TERM "$pid" 2>/dev/null || true
+            done
+            sleep 2
+            for pid in ${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}; do
+                kill -KILL "$pid" 2>/dev/null || true
+            done
+            break
+        fi
+        sleep 1
+    done
+    wait 2>/dev/null || true
+    # Clean PID registry to prevent stale accumulation
+    RALPHIE_BG_PIDS=()
 
     local total_score=0
     local go_votes=0
     local responded_votes=0
     local required_votes=$((count / 2 + 1))
     local avg_score=0
+    local next_phase_vote_reason=""
 
     local idx=0
-    local status_file status engine verdict score verdict_gaps
+    local status_file status engine verdict score verdict_gaps next_phase next_phase_reason
+    local recommended_next="$default_next_phase"
+    local highest_next_votes=0
+    local candidate_votes=0
     for ofile in "${outputs[@]}"; do
         status="failure"
         engine="unknown"
         verdict="HOLD"
         score="0"
         verdict_gaps="no explicit gaps"
+        next_phase="$default_next_phase"
+        next_phase_reason=""
 
         status_file="${status_files[$idx]}"
         if [ -f "$status_file" ]; then
@@ -1580,19 +1768,39 @@ run_swarm_consensus() {
                 verdict="HOLD"
             fi
 
+            next_phase="$(extract_xml_value "$ofile" "next_phase" "$default_next_phase")"
+            next_phase="$(normalize_next_phase_recommendation "$next_phase" "$base_stage" "$default_next_phase")"
+            next_phase_reason="$(extract_xml_value "$ofile" "next_phase_reason" "")"
             if grep -q "<gaps>" "$ofile" 2>/dev/null; then
                 verdict_gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
             fi
             verdict_gaps="$(echo "$verdict_gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
+            [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         else
             verdict_gaps="no output artifact"
+            next_phase_reason="no output artifact"
         fi
 
         [ "$status" = "success" ] && responded_votes=$((responded_votes + 1))
         [ "$status" = "success" ] && total_score=$((total_score + score))
+        if [ "$status" = "success" ] && is_phase_or_done "$next_phase"; then
+            total_next_votes=$((total_next_votes + 1))
+            case "$next_phase" in
+                plan) next_phase_vote_plan=$((next_phase_vote_plan + 1)) ;;
+                build) next_phase_vote_build=$((next_phase_vote_build + 1)) ;;
+                test) next_phase_vote_test=$((next_phase_vote_test + 1)) ;;
+                refactor) next_phase_vote_refactor=$((next_phase_vote_refactor + 1)) ;;
+                lint) next_phase_vote_lint=$((next_phase_vote_lint + 1)) ;;
+                document) next_phase_vote_document=$((next_phase_vote_document + 1)) ;;
+                done) next_phase_vote_done=$((next_phase_vote_done + 1)) ;;
+            esac
+            if [ -z "$next_phase_vote_reason" ] && [ -n "$next_phase_reason" ]; then
+                next_phase_vote_reason="$next_phase_reason"
+            fi
+        fi
 
         [ "$verdict" = "GO" ] && go_votes=$((go_votes + 1))
-        summary_lines+=("reviewer_$((idx + 1)):engine=$engine status=$status score=$score verdict=$verdict gaps=$verdict_gaps")
+        summary_lines+=("reviewer_$((idx + 1)):engine=$engine status=$status score=$score verdict=$verdict next=$next_phase reason=$next_phase_reason gaps=$verdict_gaps")
         idx=$((idx + 1))
     done
 
@@ -1600,25 +1808,211 @@ run_swarm_consensus() {
         avg_score=$((total_score / responded_votes))
     fi
 
+    if [ "$total_next_votes" -gt 0 ]; then
+        candidate_votes="$next_phase_vote_plan"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="plan"
+        fi
+        candidate_votes="$next_phase_vote_build"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="build"
+        fi
+        candidate_votes="$next_phase_vote_test"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="test"
+        fi
+        candidate_votes="$next_phase_vote_refactor"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="refactor"
+        fi
+        candidate_votes="$next_phase_vote_lint"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="lint"
+        fi
+        candidate_votes="$next_phase_vote_document"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="document"
+        fi
+        candidate_votes="$next_phase_vote_done"
+        if [ "$candidate_votes" -gt "$highest_next_votes" ]; then
+            highest_next_votes="$candidate_votes"
+            recommended_next="done"
+        fi
+    fi
+
+    LAST_CONSENSUS_NEXT_PHASE="$recommended_next"
+    [ -n "$next_phase_vote_reason" ] || next_phase_vote_reason="no explicit routing rationale"
+    LAST_CONSENSUS_NEXT_PHASE_REASON="$next_phase_vote_reason"
+    LAST_CONSENSUS_RESPONDED_VOTES="$responded_votes"
     LAST_CONSENSUS_SCORE="$avg_score"
     LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
     if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge 70 ]; then
         LAST_CONSENSUS_PASS=true
+        ACTIVE_ENGINE="$saved_engine"
+        ACTIVE_CMD="$saved_cmd"
         return 0
     fi
     LAST_CONSENSUS_PASS=false
+    ACTIVE_ENGINE="$saved_engine"
+    ACTIVE_CMD="$saved_cmd"
     return 1
 }
 
-detect_completion_signal() {
-    local log_file="$1"
-    local output_file="$2"
-    if grep -qiE "<promise>\s*DONE\s*</promise>" "$output_file" 2>/dev/null; then
-        echo "<promise>DONE</promise>"; return 0
+write_handoff_validation_prompt() {
+    local phase="$1"
+    local attempt="$2"
+    local output_file="$3"
+    local log_file="$4"
+    local prompt_file="$5"
+    local manifest_before_file="$6"
+    local manifest_after_file="$7"
+    local delta_preview="$8"
+    local noop_policy="$9"
+    local warning_text="${10}"
+    local previous_output="${11}"
+
+    local prior_output_display="none"
+    [ -f "$previous_output" ] && prior_output_display="$(path_for_display "$previous_output")"
+
+    {
+        echo "# Handoff Validation Prompt"
+        echo ""
+        echo "You are the on-rail handoff validator."
+        echo "Phase: $phase"
+        echo "Attempt: $attempt"
+        echo "Session: $SESSION_ID"
+        echo "Iteration: $ITERATION_COUNT"
+        echo "Handoff policy: $noop_policy"
+        echo "Execution output: $(path_for_display "$output_file")"
+        echo "Execution log: $(path_for_display "$log_file")"
+        echo "Previous output: $prior_output_display"
+        echo "Manifest before: $(path_for_display "$manifest_before_file")"
+        echo "Manifest after: $(path_for_display "$manifest_after_file")"
+        echo "Delta preview:"
+        if [ -n "$delta_preview" ]; then
+            echo "$delta_preview" | sed 's/^/- /'
+        else
+            echo "- no visible delta preview"
+        fi
+        echo ""
+        echo "Recent warnings:"
+        if [ -n "$warning_text" ]; then
+            printf '%s\n' "$warning_text" | sed 's/^/- /'
+        else
+            echo "- none"
+        fi
+        echo ""
+        echo "Rules:"
+        echo "- Confirm execution output indicates concrete artifact progress for this phase."
+        echo "- Confirm handoff artifacts are coherent and transition intent is explicit."
+        echo "- Confirm no policy blockers are hidden."
+        echo "- Emit machine-readable signal:"
+    echo "  <score>0-100</score>"
+    echo "  <verdict>GO|HOLD</verdict>"
+    echo "  <gaps>comma-separated blockers or none</gaps>"
+
+    if [ -f "$previous_output" ]; then
+        echo "Previous handoff output snippet:"
+        sed -n '1,40p' "$previous_output"
     fi
-    if grep -qiE "<promise>\s*DONE\s*</promise>" "$log_file" 2>/dev/null; then
-        echo "<promise>DONE</promise>"; return 0
+
+    echo "Current execution output snippet:"
+    if [ -f "$output_file" ]; then
+        sed -n '1,80p' "$output_file"
+    else
+        echo "- not available"
     fi
+
+    echo "Current execution log tail:"
+    if [ -f "$log_file" ]; then
+        tail -n 40 "$log_file"
+    else
+        echo "- not available"
+    fi
+    } > "$prompt_file"
+}
+
+read_handoff_review_output() {
+    local output_file="$1"
+    local score=0
+    local verdict="HOLD"
+    local gaps="no explicit gaps"
+
+    LAST_HANDOFF_SCORE=0
+    LAST_HANDOFF_VERDICT="HOLD"
+    LAST_HANDOFF_GAPS="no explicit gaps"
+
+    [ -f "$output_file" ] || return 0
+
+    score="$(grep -oE "<score>[0-9]{1,3}</score>" "$output_file" | sed 's/[^0-9]//g' | tail -n 1)"
+    is_number "$score" || score="0"
+
+    if grep -qE "<verdict>(GO|HOLD)</verdict>" "$output_file" 2>/dev/null; then
+        verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$output_file" | tail -n 1 | sed -E 's/<\/?verdict>//g')"
+    elif grep -qE "<decision>(GO|HOLD)</decision>" "$output_file" 2>/dev/null; then
+        verdict="$(grep -oE "<decision>(GO|HOLD)</decision>" "$output_file" | tail -n 1 | sed -E 's/<\/?decision>//g')"
+    fi
+
+    if grep -q "<gaps>" "$output_file" 2>/dev/null; then
+        gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$output_file" | head -n 1)"
+    fi
+    gaps="$(printf '%s' "$gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
+    [ -z "$gaps" ] && gaps="no explicit gaps"
+
+    LAST_HANDOFF_SCORE="$score"
+    LAST_HANDOFF_VERDICT="$verdict"
+    LAST_HANDOFF_GAPS="$gaps"
+}
+
+run_handoff_validation() {
+    local phase="$1"
+    local prompt_file="$2"
+    local log_file="$3"
+    local output_file="$4"
+    local status_file="$5"
+    local primary_cmd="${6:-}"
+    local fallback_cmd="${7:-}"
+
+    if [ ! -f "$prompt_file" ]; then
+        err "Handoff validation prompt missing: $prompt_file"
+        return 1
+    fi
+
+    # Preserve engine state — run_swarm_reviewer mutates ACTIVE_ENGINE/ACTIVE_CMD
+    local saved_engine="$ACTIVE_ENGINE"
+    local saved_cmd="$ACTIVE_CMD"
+
+    run_swarm_reviewer \
+        "handoff" \
+        "$prompt_file" \
+        "$log_file" \
+        "$output_file" \
+        "$status_file" \
+        "$primary_cmd" \
+        "$fallback_cmd"
+    read_handoff_review_output "$output_file"
+
+    # Restore engine state
+    ACTIVE_ENGINE="$saved_engine"
+    ACTIVE_CMD="$saved_cmd"
+
+    local status="failure"
+    if [ -f "$status_file" ]; then
+        status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+        [ "$status" = "success" ] || status="failure"
+    fi
+
+    if [ "$status" = "success" ] && is_number "$LAST_HANDOFF_SCORE" && [ "$LAST_HANDOFF_SCORE" -ge 70 ] && [ "$LAST_HANDOFF_VERDICT" = "GO" ]; then
+        return 0
+    fi
+
+    log_reason_code "RB_PHASE_HANDOFF_VALIDATOR_HOLD" "Handoff validation failed for $phase (score=${LAST_HANDOFF_SCORE}, verdict=${LAST_HANDOFF_VERDICT})"
     return 1
 }
 
@@ -1651,17 +2045,6 @@ phase_manifest_changed() {
         return 1
     fi
     return 0
-}
-
-phase_requires_mutation() {
-    case "$1" in
-        build|refactor|document|test|lint)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
 }
 
 phase_noop_policy() {
@@ -1741,18 +2124,79 @@ phase_name_from_index() {
     esac
 }
 
+phase_default_next() {
+    local phase="$1"
+    case "$phase" in
+        plan) echo "build" ;;
+        build) echo "test" ;;
+        test) echo "refactor" ;;
+        refactor) echo "lint" ;;
+        lint) echo "document" ;;
+        document) echo "done" ;;
+        *) echo "done" ;;
+    esac
+}
+
+phase_index_or_done() {
+    case "$1" in
+        plan) echo 0; return 0 ;;
+        build) echo 1; return 0 ;;
+        test) echo 2; return 0 ;;
+        refactor) echo 3; return 0 ;;
+        lint) echo 4; return 0 ;;
+        document) echo 5; return 0 ;;
+        done) echo 6; return 0 ;;
+        *) echo -1; return 1 ;;
+    esac
+}
+
+phase_transition_history_append() {
+    local phase="${1:-}"
+    local attempt="${2:-?}"
+    local next_phase="${3:-$phase}"
+    local outcome="${4:-hold}"
+    local reason="${5:-no explicit rationale}"
+    local normalized_reason
+
+    if [ -z "$phase" ]; then
+        return 0
+    fi
+
+    normalized_reason="$(printf '%s' "$reason" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    normalized_reason="${normalized_reason:-no explicit rationale}"
+    PHASE_TRANSITION_HISTORY+=("${phase}(attempt ${attempt})->${next_phase}|${outcome}|${normalized_reason}")
+}
+
+phase_transition_history_recent() {
+    local limit="${1:-8}"
+    local start=0
+    local i
+
+    if [ "${#PHASE_TRANSITION_HISTORY[@]}" -eq 0 ]; then
+        echo "no transitions yet"
+        return 0
+    fi
+
+    if ! is_number "$limit" || [ "$limit" -lt 1 ]; then
+        limit=8
+    fi
+    if [ "${#PHASE_TRANSITION_HISTORY[@]}" -gt "$limit" ]; then
+        start=$(( ${#PHASE_TRANSITION_HISTORY[@]} - limit ))
+    fi
+
+    for (( i = start; i < ${#PHASE_TRANSITION_HISTORY[@]}; i++ )); do
+        echo "${PHASE_TRANSITION_HISTORY[$i]}"
+    done
+}
+
 collect_phase_resume_blockers() {
     local phase="$1"
     local -a blockers=()
-    local -a plan_schema_issues build_schema_issues
     case "$phase" in
         plan)
             ;;
         build)
             mapfile -t blockers < <(collect_build_prerequisites_issues)
-            if ! plan_is_semantically_actionable "$PLAN_FILE"; then
-                blockers+=("build precondition missing: implementation plan not semantically actionable")
-            fi
             ;;
         test|refactor|lint|document)
             if [ ! -f "$PLAN_FILE" ]; then
@@ -1761,13 +2205,7 @@ collect_phase_resume_blockers() {
             if [ ! -f "$STACK_SNAPSHOT_FILE" ]; then
                 blockers+=("test/build prerequisite missing: research/STACK_SNAPSHOT.md")
             fi
-            mapfile -t plan_schema_issues < <(collect_plan_schema_issues)
-            if [ "${#plan_schema_issues[@]}" -gt 0 ]; then
-                for issue in "${plan_schema_issues[@]}"; do
-                    blockers+=("plan schema: $issue")
-                done
-            fi
-            if ! plan_is_semantically_actionable "$PLAN_FILE"; then
+            if [ -f "$PLAN_FILE" ] && ! plan_is_semantically_actionable "$PLAN_FILE"; then
                 blockers+=("plan is not semantically actionable")
             fi
             ;;
@@ -2134,491 +2572,6 @@ run_stack_discovery() {
     info "Stack snapshot complete: primary stack ${primary_candidate} (${primary_score}/100, ${primary_confidence})."
 }
 
-collect_constitution_schema_issues() {
-    local -a issues=()
-    [ -f "$CONSTITUTION_FILE" ] || issues+=("constitution file missing: .specify/memory/constitution.md")
-    if [ -f "$CONSTITUTION_FILE" ]; then
-        if ! grep -qE '^##[[:space:]]*Purpose|^##[[:space:]]*Governance|^##[[:space:]]*Phase Contracts|^##[[:space:]]*Recovery and Retry Policy|^##[[:space:]]*Evidence Requirements|^##[[:space:]]*Environment Scope' "$CONSTITUTION_FILE" 2>/dev/null; then
-            issues+=("constitution missing required governance sections")
-        fi
-    fi
-    print_array_lines "${issues[@]-}"
-}
-
-constitution_schema_is_valid() {
-    [ -f "$CONSTITUTION_FILE" ] || return 1
-    grep -qE '^##[[:space:]]*Purpose|^##[[:space:]]*Governance|^##[[:space:]]*Phase Contracts|^##[[:space:]]*Recovery and Retry Policy|^##[[:space:]]*Evidence Requirements|^##[[:space:]]*Environment Scope' "$CONSTITUTION_FILE" 2>/dev/null
-}
-
-extract_evidence_block() {
-    local file="$1"
-    awk '
-        /<evidence>/ {flag = 1; next}
-        /<\/evidence>/ {flag = 0; exit}
-        flag {print}
-    ' "$file" 2>/dev/null || true
-}
-
-evidence_field_body() {
-    local evidence="$1"
-    local field="$2"
-    awk -v f="$field" '
-        BEGIN {IGNORECASE = 1; in_field = 0}
-        $0 ~ "^[[:space:]]*" f "[[:space:]]*:" {
-            in_field = 1
-            next
-        }
-        in_field {
-            if ($0 ~ "^[[:space:]]*[A-Za-z][A-Za-z0-9_ ]*[[:space:]]*:") {
-                exit
-            }
-            if ($0 ~ /^[[:space:]]*-[[:space:]]+/ || $0 ~ /^[[:space:]]*$/) {
-                print
-                next
-            }
-            print
-        }
-    ' <<< "$evidence" 2>/dev/null
-}
-
-evidence_block_has_content_for_field() {
-    local evidence="$1"
-    local field="$2"
-    local field_value
-    field_value="$(printf "%s\n" "$evidence" | awk -v f="$field" '
-        BEGIN {IGNORECASE = 1}
-        $0 ~ "^[[:space:]]*" f "[[:space:]]*:" {
-            sub("^[[:space:]]*" f "[[:space:]]*:[[:space:]]*", "", $0)
-            if ($0 !~ /^[[:space:]]*$/) { print $0; exit 0 }
-            next
-        }
-        $0 ~ "^[^[:space:]]+[[:space:]]*:" { exit }
-        $0 ~ "^[[:space:]]*-[[:space:]]+[^[:space:]]" { print "1"; exit 0 }
-        $0 ~ "^[[:space:]]+[^[:space:]]" { print "1"; exit 0 }
-    ' || true)"
-    if [ -z "$field_value" ]; then
-        return 1
-    fi
-    if evidence_text_has_placeholders "$field_value"; then
-        return 1
-    fi
-    printf "%s" "$field_value" | grep -qE '<[^/][^>]+>' && return 1
-    return 0
-}
-
-evidence_text_has_placeholders() {
-    grep -qiE 'TODO|TBD|placeholder|fill in|fill out|replace me|not yet|unknown' <<< "$1"
-}
-
-evidence_list_items_have_status_tokens() {
-    local evidence="$1"
-    local field="$2"
-    local body
-    local line
-    local has_items=0
-
-    body="$(evidence_field_body "$evidence" "$field")"
-    [ -z "$body" ] && return 1
-
-    while IFS= read -r line; do
-        if [ -z "$line" ]; then
-            continue
-        fi
-        if ! [[ "$line" =~ ^[[:space:]]*-[[:space:]] ]]; then
-            continue
-        fi
-        has_items=1
-        if ! printf "%s\n" "$line" | grep -qE '[^[:alnum:]_](PASS_WITH_RISKS|PASS|FAIL|BLOCKED|SKIPPED|WARN|OK)([^[:alnum:]_]|$)'; then
-            return 1
-        fi
-    done <<< "$body"
-
-    [ "$has_items" -eq 1 ] || return 1
-    return 0
-}
-
-evidence_list_has_real_file_entries() {
-    local evidence="$1"
-    local field="$2"
-    local body
-    local line
-    local item_count=0
-    local valid_count=0
-
-    body="$(evidence_field_body "$evidence" "$field")"
-    while IFS= read -r line; do
-        if ! [[ "$line" =~ ^[[:space:]]*-[[:space:]] ]]; then
-            continue
-        fi
-        item_count=$((item_count + 1))
-        line="$(printf "%s" "$line" | sed -E 's/^[[:space:]]*-[[:space:]]+//' | sed -E 's/[[:space:]]+$//')"
-        line="$(printf "%s" "$line" | sed -E 's/[[:space:]]*:.*$//')"
-        [ -z "$line" ] && continue
-        if evidence_text_has_placeholders "$line"; then
-            continue
-        fi
-
-        if [ -e "$line" ]; then
-            valid_count=$((valid_count + 1))
-            continue
-        fi
-        if [ -e "$PROJECT_DIR/$line" ]; then
-            valid_count=$((valid_count + 1))
-            continue
-        fi
-    done <<< "$body"
-
-    [ "$item_count" -eq 0 ] && return 1
-    [ "$valid_count" -eq 0 ] && return 1
-    return 0
-}
-
-evidence_field_list_item_count() {
-    local evidence="$1"
-    local field="$2"
-    local body
-    body="$(evidence_field_body "$evidence" "$field")"
-    printf "%s\n" "$body" | sed '/^[[:space:]]*$/d' | grep -cE '^[[:space:]]*-[[:space:]]+' || true
-}
-
-evidence_field_has_list_items() {
-    local evidence="$1"
-    local field="$2"
-    local count
-    count="$(evidence_field_list_item_count "$evidence" "$field")"
-    if is_number "$count" && [ "$count" -ge 1 ]; then
-        return 0
-    fi
-    return 1
-}
-
-evidence_results_are_statusful() {
-    local evidence="$1"
-    local field="$2"
-    local body
-    body="$(evidence_field_body "$evidence" "$field")"
-    [ -z "$body" ] && return 1
-
-    if printf "%s\n" "$body" | grep -qiE 'PASS_WITH_RISKS|PASS|FAIL|BLOCKED|SKIPPED|WARN|OK'; then
-        return 0
-    fi
-    return 1
-}
-
-evidence_enforce_command_result_pattern() {
-    local phase="$1"
-    local evidence="$2"
-
-    local required_command_list_fields=()
-    local required_result_fields=()
-    required_command_list_fields+=("commands")
-
-    case "$phase" in
-        plan|build|test|refactor|lint|document)
-            required_result_fields+=("results")
-            ;;
-    esac
-
-    local field
-    local -a issues=()
-    for field in "${required_command_list_fields[@]}"; do
-        if ! evidence_field_has_list_items "$evidence" "$field"; then
-            return 1
-        fi
-    done
-
-    for field in "${required_result_fields[@]}"; do
-        if ! evidence_field_has_list_items "$evidence" "$field"; then
-            return 1
-        fi
-        if ! evidence_results_are_statusful "$evidence" "$field"; then
-            return 1
-        fi
-        if ! evidence_list_items_have_status_tokens "$evidence" "$field"; then
-            return 1
-        fi
-    done
-    return 0
-}
-
-collect_phase_validation_schema_issues() {
-    local phase="$1"
-    local output_file="${2:-}"
-    local log_file="${3:-}"
-    local evidence_block
-    local -a issues=()
-
-    [ -f "$output_file" ] || { issues+=("phase output artifact missing: $output_file"); print_array_lines "${issues[@]-}"; return 0; }
-    evidence_block="$(extract_evidence_block "$output_file")"
-    if [ -z "$evidence_block" ]; then
-        issues+=("phase requires machine-readable <evidence>...</evidence> block")
-    else
-        if evidence_text_has_placeholders "$evidence_block"; then
-            issues+=("evidence block contains unresolved placeholder content")
-        fi
-        if ! grep -qiE "^phase:[[:space:]]*$phase" <<< "$evidence_block"; then
-            issues+=("evidence block missing: phase: $phase")
-        fi
-        if ! grep -qiE "^status:[[:space:]]*(DONE|PASS|PASS_WITH_RISKS|BLOCKED)" <<< "$evidence_block"; then
-            issues+=("evidence block missing status")
-        fi
-        if ! evidence_block_has_content_for_field "$evidence_block" "outcome"; then
-            issues+=("evidence block missing meaningful 'outcome'")
-        fi
-    fi
-
-    case "$phase" in
-        plan)
-            if ! grep -qE '^##[[:space:]]*Research Discovery|^##[[:space:]]*Stack|^##[[:space:]]*Readiness|^##[[:space:]]*Risk' "$PLAN_FILE" 2>/dev/null; then
-                issues+=("plan should include research/readiness/risk structured sections")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "artifacts"; then
-                issues+=("plan requires evidence field: artifacts")
-            fi
-            if ! evidence_list_has_real_file_entries "$evidence_block" "artifacts"; then
-                issues+=("plan artifacts field requires concrete existing paths")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "commands"; then
-                issues+=("plan requires evidence field: commands")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "results"; then
-                issues+=("plan requires evidence field: results")
-            fi
-            if ! evidence_enforce_command_result_pattern "$phase" "$evidence_block"; then
-                issues+=("plan requires commands and results list items with status tokens")
-            fi
-            ;;
-        build)
-            if ! grep -qiE '^##[[:space:]]*(Acceptance Criteria|Definition of Done|Quality Gates)' "$PLAN_FILE" 2>/dev/null; then
-                issues+=("plan acceptance criteria are mandatory before build")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "scope"; then
-                issues+=("build requires evidence field: scope")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "tasks"; then
-                issues+=("build requires evidence field: tasks")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "files_changed"; then
-                issues+=("build requires evidence field: files_changed")
-            fi
-            if ! evidence_list_has_real_file_entries "$evidence_block" "files_changed"; then
-                issues+=("build requires evidence field: files_changed with existing concrete paths")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "acceptance_checks"; then
-                issues+=("build requires evidence field: acceptance_checks")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "commands"; then
-                issues+=("build requires evidence field: commands")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "results"; then
-                issues+=("build requires evidence field: results")
-            fi
-            if ! evidence_enforce_command_result_pattern "$phase" "$evidence_block"; then
-                issues+=("build requires commands and results list items with status tokens")
-            fi
-            ;;
-        test)
-            if ! evidence_block_has_content_for_field "$evidence_block" "scope"; then
-                issues+=("test requires evidence field: scope")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "commands"; then
-                issues+=("test requires evidence field: commands")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "results"; then
-                issues+=("test requires evidence field: results")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "evidence"; then
-                issues+=("test requires evidence field: evidence")
-            fi
-            if ! evidence_enforce_command_result_pattern "$phase" "$evidence_block"; then
-                issues+=("test requires commands and results list items with status tokens")
-            fi
-            ;;
-        refactor|lint)
-            if ! evidence_block_has_content_for_field "$evidence_block" "scope"; then
-                issues+=("$phase requires evidence field: scope")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "commands"; then
-                issues+=("$phase requires evidence field: commands")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "results"; then
-                issues+=("$phase requires evidence field: results")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "outcome"; then
-                issues+=("$phase requires evidence field: outcome")
-            fi
-            if ! evidence_enforce_command_result_pattern "$phase" "$evidence_block"; then
-                issues+=("$phase requires commands and results list items with status tokens")
-            fi
-            if [ "$phase" = "refactor" ] && ! evidence_block_has_content_for_field "$evidence_block" "risk"; then
-                issues+=("refactor requires evidence field: risk")
-            fi
-            if [ "$phase" = "lint" ] && ! evidence_block_has_content_for_field "$evidence_block" "findings"; then
-                issues+=("lint requires evidence field: findings")
-            fi
-            ;;
-        document)
-            if ! evidence_block_has_content_for_field "$evidence_block" "updated_files"; then
-                issues+=("document requires evidence field: updated_files")
-            fi
-            if ! evidence_list_has_real_file_entries "$evidence_block" "updated_files"; then
-                issues+=("document requires evidence field: updated_files with existing paths")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "scope"; then
-                issues+=("document requires evidence field: scope")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "commands"; then
-                issues+=("document requires evidence field: commands")
-            fi
-            if ! evidence_block_has_content_for_field "$evidence_block" "results"; then
-                issues+=("document requires evidence field: results")
-            fi
-            if ! evidence_enforce_command_result_pattern "$phase" "$evidence_block"; then
-                issues+=("document requires commands and results list items with status tokens")
-            fi
-            ;;
-    esac
-    print_array_lines "${issues[@]-}"
-}
-
-collect_phase_schema_issues() {
-    local phase="$1"
-    local log_file="$2"
-    local output_file="$3"
-    local -a issues=()
-
-    [ -f "$output_file" ] || issues+=("$phase output artifact missing: $output_file")
-    [ -f "$log_file" ] || issues+=("$phase log artifact missing: $log_file")
-    if ! detect_completion_signal "$log_file" "$output_file" >/dev/null; then
-        issues+=("$phase completed without machine-readable completion signal")
-    fi
-    local -a constitution_schema_issues
-    mapfile -t constitution_schema_issues < <(collect_constitution_schema_issues)
-    for issue in "${constitution_schema_issues[@]}"; do
-        issues+=("constitution schema: $issue")
-    done
-
-    local -a phase_validation_issues
-    mapfile -t phase_validation_issues < <(collect_phase_validation_schema_issues "$phase" "$output_file" "$log_file")
-    for issue in "${phase_validation_issues[@]}"; do
-        issues+=("phase schema: $issue")
-    done
-    case "$phase" in
-        plan)
-            local -a plan_schema_issues research_schema_issues
-            mapfile -t research_schema_issues < <(collect_research_schema_issues)
-            mapfile -t plan_schema_issues < <(collect_plan_schema_issues)
-            for issue in "${research_schema_issues[@]}"; do
-                issues+=("research schema: $issue")
-            done
-            for issue in "${plan_schema_issues[@]}"; do
-                issues+=("plan schema: $issue")
-            done
-            [ -f "$STACK_SNAPSHOT_FILE" ] || issues+=("phase plan requires research/STACK_SNAPSHOT.md")
-            ;;
-        build)
-            [ -f "$PLAN_FILE" ] || issues+=("phase build requires IMPLEMENTATION_PLAN.md")
-            local -a build_schema_issues
-            mapfile -t build_schema_issues < <(collect_build_schema_issues)
-            for issue in "${build_schema_issues[@]}"; do
-                issues+=("build schema: $issue")
-            done
-            ;;
-        test|refactor|lint|document)
-            [ -f "$PLAN_FILE" ] || issues+=("$phase requires IMPLEMENTATION_PLAN.md")
-            [ -f "$STACK_SNAPSHOT_FILE" ] || issues+=("$phase requires research/STACK_SNAPSHOT.md")
-            ;;
-        *)
-            :
-            ;;
-    esac
-
-    print_array_lines "${issues[@]-}"
-}
-
-collect_build_schema_issues() {
-    local -a issues=()
-    local has_acceptance=false
-    local spec_file spec_candidates
-    spec_candidates="$(find "$SPECS_DIR" -maxdepth 3 -type f -name "*.md" 2>/dev/null || true)"
-    while IFS= read -r spec_file; do
-        [ -n "$spec_file" ] || continue
-        if grep -qiE 'acceptance criteria|definition of done|quality gates' "$spec_file" 2>/dev/null; then
-            has_acceptance=true
-            break
-        fi
-    done <<< "$spec_candidates"
-
-    if [ "$has_acceptance" = "false" ]; then
-        issues+=("specs must include acceptance criteria sections")
-    fi
-    [ -f "$PLAN_FILE" ] || issues+=("IMPLEMENTATION_PLAN.md missing before build")
-    print_array_lines "${issues[@]-}"
-}
-
-collect_research_schema_issues() {
-    local -a issues=()
-    local primary_stack
-    primary_stack="$(stack_primary_from_snapshot)"
-
-    if ! [ -f "$RESEARCH_SUMMARY_FILE" ]; then
-        issues+=("RESEARCH_SUMMARY.md missing")
-    elif ! grep -qE '<confidence>[0-9]+(\.[0-9]+)?</confidence>' "$RESEARCH_SUMMARY_FILE" 2>/dev/null; then
-        issues+=("RESEARCH_SUMMARY.md missing <confidence> tag")
-    fi
-
-    if ! [ -f "$RESEARCH_DIR/CODEBASE_MAP.md" ]; then
-        issues+=("research/CODEBASE_MAP.md missing")
-    elif ! grep -qiE 'entrypoints?|entry points?|modules?|directory map|architecture' "$RESEARCH_DIR/CODEBASE_MAP.md" 2>/dev/null; then
-        issues+=("research/CODEBASE_MAP.md missing architecture/entrypoint mapping")
-    fi
-
-    if ! [ -f "$RESEARCH_DIR/DEPENDENCY_RESEARCH.md" ]; then
-        issues+=("research/DEPENDENCY_RESEARCH.md missing")
-    elif ! grep -qiE 'alternatives|risk register|dependency' "$RESEARCH_DIR/DEPENDENCY_RESEARCH.md" 2>/dev/null; then
-        issues+=("research/DEPENDENCY_RESEARCH.md missing alternatives/risk evidence")
-    fi
-
-    if [ "$primary_stack" != "Unknown" ] && [ -f "$RESEARCH_DIR/DEPENDENCY_RESEARCH.md" ]; then
-        if ! grep -qiF "$primary_stack" "$RESEARCH_DIR/DEPENDENCY_RESEARCH.md" 2>/dev/null; then
-            issues+=("dependency research should discuss primary stack '$primary_stack'")
-        fi
-    fi
-
-    if ! [ -f "$RESEARCH_DIR/COVERAGE_MATRIX.md" ]; then
-        issues+=("research/COVERAGE_MATRIX.md missing")
-    fi
-
-    if ! [ -f "$STACK_SNAPSHOT_FILE" ]; then
-        issues+=("research/STACK_SNAPSHOT.md missing")
-    elif ! grep -qE '^##[[:space:]]*Project Stack Ranking' "$STACK_SNAPSHOT_FILE" 2>/dev/null; then
-        issues+=("research/STACK_SNAPSHOT.md missing ranking table")
-    fi
-
-    print_array_lines "${issues[@]-}"
-}
-
-collect_plan_schema_issues() {
-    local -a issues=()
-
-    if ! [ -f "$PLAN_FILE" ]; then
-        issues+=("IMPLEMENTATION_PLAN.md missing")
-    else
-        [ -f "$PLAN_FILE" ] || issues+=("IMPLEMENTATION_PLAN.md missing")
-        if ! grep -qE '^##[[:space:]]*Goal' "$PLAN_FILE" 2>/dev/null; then
-            issues+=("IMPLEMENTATION_PLAN.md missing Goal section")
-        fi
-        if ! grep -qiE 'acceptance criteria|definition of done' "$PLAN_FILE" 2>/dev/null; then
-            issues+=("IMPLEMENTATION_PLAN.md missing acceptance criteria")
-        fi
-        if ! grep -qiE '^\s*-[[:space:]]*\[[ xX]\]' "$PLAN_FILE" 2>/dev/null; then
-            issues+=("IMPLEMENTATION_PLAN.md missing actionable checklist tasks")
-        fi
-    fi
-
-    print_array_lines "${issues[@]-}"
-}
-
 plan_is_semantically_actionable() {
     local plan_file="$1"
     [ -f "$plan_file" ] || return 1
@@ -2677,7 +2630,7 @@ write_gate_feedback() {
 }
 
 check_build_prerequisites() {
-    local -a missing
+    local -a missing=()
     mapfile -t missing < <(collect_build_prerequisites_issues)
     if [ "${#missing[@]}" -gt 0 ]; then
         warn "Build prerequisites are incomplete:"
@@ -2695,31 +2648,16 @@ check_build_prerequisites() {
 }
 
 collect_build_prerequisites_issues() {
-    local missing=()
+    local -a missing=()
     if [ ! -d "$SPECS_DIR" ]; then
         missing+=("spec directory missing: specs/")
     fi
     if [ ! -d "$RESEARCH_DIR" ]; then
         missing+=("research directory missing: research/")
     fi
-
-    local -a plan_schema_issues
-    mapfile -t plan_schema_issues < <(collect_plan_schema_issues)
-    if [ "${#plan_schema_issues[@]}" -gt 0 ]; then
-        for issue in "${plan_schema_issues[@]}"; do
-            missing+=("plan schema: $issue")
-        done
-    fi
-
-    local -a build_schema_issues
-    mapfile -t build_schema_issues < <(collect_build_schema_issues)
-    if [ "${#build_schema_issues[@]}" -gt 0 ]; then
-        for issue in "${build_schema_issues[@]}"; do
-            missing+=("build schema: $issue")
-        done
-    fi
-
-    if ! plan_is_semantically_actionable "$PLAN_FILE"; then
+    if [ ! -f "$PLAN_FILE" ]; then
+        missing+=("IMPLEMENTATION_PLAN.md missing before build")
+    elif ! plan_is_semantically_actionable "$PLAN_FILE"; then
         missing+=("plan is not semantically actionable")
     fi
 
@@ -2739,12 +2677,8 @@ collect_build_prerequisites_issues() {
         missing+=(".gitignore must include local/sensitive/runtime guardrails (missing: $missing_joined)")
     fi
 
-    local -a constitution_issues
-    mapfile -t constitution_issues < <(collect_constitution_schema_issues)
-    if [ "${#constitution_issues[@]}" -gt 0 ]; then
-        for issue in "${constitution_issues[@]}"; do
-            missing+=("constitution: $issue")
-        done
+    if [ ! -f "$CONSTITUTION_FILE" ]; then
+        missing+=("constitution file missing: .specify/memory/constitution.md")
     fi
 
     print_array_lines "${missing[@]-}"
@@ -2756,6 +2690,19 @@ enforce_build_gate() {
         return 1
     fi
     return 0
+}
+
+collect_phase_schema_issues() {
+    local phase="$1"
+    local log_file="$2"
+    local output_file="$3"
+    local -a issues=()
+
+    [ -f "$output_file" ] || issues+=("$phase output artifact missing: $output_file")
+    [ -f "$log_file" ] || issues+=("$phase log artifact missing: $log_file")
+    [ -n "$phase" ] || issues+=("missing phase name for schema check")
+
+    print_array_lines "${issues[@]-}"
 }
 
 pick_fallback_engine() { [ "${2:-}" = "claude" ] && echo "codex" || echo "claude"; }
@@ -2793,29 +2740,11 @@ Outputs (required)
 Behavior
 - Compare at least two viable implementation paths when uncertainty exists.
 - Keep markdown artifacts portable: no local machine paths, no tool transcripts, no timing output.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: plan
-status: DONE
-outcome: completed
-scope: plan and discovery
-artifacts:
-- IMPLEMENTATION_PLAN.md
-- research/RESEARCH_SUMMARY.md
-- research/CODEBASE_MAP.md
-- research/DEPENDENCY_RESEARCH.md
-- research/COVERAGE_MATRIX.md
-- research/STACK_SNAPSHOT.md
-commands:
-- inspected repository
-- discovered stack and generated stack snapshot
-- generated research and plan artifacts
-results:
-- plan: PASS
-- research artifacts: PASS
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Respond with concise completion notes:
+  - What artifacts were updated.
+  - What assumptions were made.
+  - Any blockers or risks that remain.
+- Phase is done when this guidance is satisfied and artifacts are genuinely ready for BUILD handoff.
 EOF
             ;;
         build)
@@ -2831,25 +2760,10 @@ Behavior
 - Prefer minimal diffs and avoid unrelated churn.
 - Update implementation and tests to satisfy plan acceptance criteria.
 - When external alternatives exist, record rationale in implementation notes.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: build
-status: DONE
-outcome: implemented
-scope: implementation and tests
-tasks:
-- <task ids completed>
-files_changed:
-- <list changed files>
-acceptance_checks:
-- <acceptance checks executed>
-commands:
-- <commands run>
-results:
-- <validation check>: PASS
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Provide a concise completion summary:
+  - Files changed and why.
+  - Verification actions you ran and outcomes.
+  - Any known risks before declaring BUILD complete.
 EOF
             ;;
         test)
@@ -2864,21 +2778,10 @@ Goal
 Behavior
 - Validate assumptions behind plan items before declaring done.
 - Note any skipped checks with reason.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: test
-status: DONE
-outcome: verified
-scope: changed surfaces
-commands:
-- <command>
-results:
-- <command>: PASS/FAIL
-evidence:
-- <logs/tests/coverage artifacts>
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Return concise test completion findings:
+  - What was tested and what was not tested (with reason).
+  - Whether acceptance checks passed for changed behavior.
+  - Risks introduced, if any.
 EOF
             ;;
         refactor)
@@ -2893,21 +2796,10 @@ Goal
 Behavior
 - Remove duplication where risk is low.
 - Preserve API boundaries and update only what is needed.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: refactor
-status: DONE
-scope: refactor boundaries and complexity reduction
-outcome: completed
-risk:
-- <identified risks>
-commands:
-- <commands run>
-results:
-- <verification summary>: PASS
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Return concise refactor completion notes:
+  - Scope changed and why.
+  - Concrete risks introduced.
+  - Verification checks and outcomes.
 EOF
             ;;
         lint)
@@ -2921,21 +2813,10 @@ Goal
 
 Behavior
 - Focus on deterministic checks and policy consistency.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: lint
-status: DONE
-scope: recent changes and touched modules
-outcome: cleaned
-findings:
-- <policy issues or none>
-commands:
-- <commands run>
-results:
-- <lint check>: PASS
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Return concise lint completion notes:
+  - Key quality risks/observed issues.
+  - Checks run and their outcomes.
+  - Whether code is safe to progress based on observed signal.
 EOF
             ;;
         document)
@@ -2949,21 +2830,10 @@ Goal
 
 Behavior
 - Emphasize assumptions, ownership, and runbook changes.
-- Emit machine-checkable completion evidence in this exact block:
-
-<evidence>
-phase: document
-status: DONE
-scope: docs and runbooks
-updated_files:
-- <list documentation files updated>
-outcome: documented
-commands:
-- <commands run>
-results:
-- <documentation artifact>: PASS
-</evidence>
-- Conclude with `<promise>DONE</promise>`.
+- Return concise documentation completion notes:
+  - Files updated and the rationale.
+  - Open questions or risks introduced.
+  - Whether docs are clear enough to proceed.
 EOF
             ;;
         *)
@@ -3002,11 +2872,11 @@ ensure_core_artifacts() {
 
 ## Readiness
 - Plan artifacts and build prerequisites remain stable between phase transitions.
-- Required artifacts are present and schema-valid before build/test gates.
+- Required artifacts are present and reviewed before build/test gates.
 
 ## Risk
 - Config drift and checkpoint/model-contract mismatch between train→OOF→optimize→live are high-priority risks.
-- Missing manifest/schema validation at phase handoff may cause parity failures.
+- Missing handoff consistency checks at phase handoff may cause parity failures.
 
 ## Actionable Tasks
 - [ ] Inspect repository structure and stack dependencies.
@@ -3070,7 +2940,7 @@ EOF
 ## Coverage Checklist
 - Research coverage for stack and architecture evidence is planned.
 - Spec coverage for acceptance criteria is pending.
-- Plan readiness gate is tracked by schema validation.
+- Plan readiness gate is tracked by consensus review and transition checks.
 EOF
     [ -f "$STACK_SNAPSHOT_FILE" ] || cat > "$STACK_SNAPSHOT_FILE" <<'EOF'
 # Stack Snapshot
@@ -3100,7 +2970,7 @@ EOF
 - Implementation plan includes semantic actionability and measurable outcomes.
 
 ## Quality Gates
-- Build gate requires schema validation and consensus pass.
+- Build gate requires explicit build checks and consensus pass.
 - No blocking build prerequisites remain before phase transition.
 EOF
 
@@ -3117,91 +2987,85 @@ setup_phase_prompts() {
 
 consensus_prompt_for_stage() {
     local stage="${1%-gate}"
+    local loop_context="${2:-}"
+    local next_phase_choices="plan|build|test|refactor|lint|document|done"
+    if [ -n "$loop_context" ] && [ "$loop_context" != "no transitions yet" ]; then
+        echo "Recent phase path context:"
+        echo "$loop_context"
+        echo ""
+    fi
+    echo "Use this transition history to decide whether to continue, backtrack, or stop."
+    echo ""
     case "$stage" in
         plan)
-            cat <<'EOF'
-Analyze the latest prompt outputs, plan, and artifacts.
-Expectations:
-- Validate artifacts are complete, deterministic, and reproducible.
-- Ensure alternatives were considered where major implementation choices exist.
-- Validate `<evidence>` block is present and complete.
-- Required evidence fields: phase, status, outcome, scope, artifacts, commands, results.
-- `commands` and `results` must be explicit list entries.
-- `results` must contain PASS/WARN/FAIL/BLOCKED style status tokens.
+            cat <<EOF
+Review the latest PLAN artifacts and agent output from this cycle.
+Focus on whether the phase intent is complete, traceable, and safe.
+Do not fail on markdown template exactness; judge based on substantive completion.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         build)
-            cat <<'EOF'
-Evaluate implementation correctness and traceability to plan.
-Expectations:
-- Verify changed files align to explicit plan tasks.
-- Confirm no speculative edits and no obvious correctness regressions.
-- Validate `<evidence>` block and required fields.
-- Required evidence fields: phase, status, outcome, scope, tasks, files_changed, acceptance_checks, commands, results.
-- `commands` and `results` must be explicit list entries.
-- `results` must contain PASS/WARN/FAIL/BLOCKED style status tokens.
-- Confirm acceptance criteria are explicit in `IMPLEMENTATION_PLAN.md`.
+            cat <<EOF
+Evaluate implementation completion and traceability to the plan.
+Verify changed behavior and validation intent are coherent.
+Do not require strict evidence-tag formatting; use semantic judgment with the phase outputs.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         test)
-            cat <<'EOF'
-Validate completion signal hygiene and phase-specific quality criteria.
-Expectations:
-- Confirm no placeholders remain where concrete outputs are required.
-- Ensure `<promise>DONE</promise>` quality criteria are met.
-- Validate `<evidence>` block and required fields: phase, status, outcome, scope, commands, results, evidence.
-- Validate explicit commands/results list entries.
-- Results must include status tokens (PASS/WARN/FAIL/BLOCKED).
+            cat <<EOF
+Review test output quality and whether verification intent appears complete.
+Treat concrete behavior changes and rationale as higher priority than exact markers.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         refactor)
-            cat <<'EOF'
-Validate completion signal hygiene and refactor-specific quality criteria.
-Expectations:
-- Confirm no placeholders remain where concrete outputs are required.
-- Ensure `<promise>DONE</promise>` quality criteria are met.
-- Validate `<evidence>` block and required fields: phase, status, scope, outcome, risk, commands, results.
-- Risk and results must contain concrete findings.
-- Validate explicit commands/results list entries and status tokens in results.
+            cat <<EOF
+Review refactor output for risk, stability, and meaningful code improvements.
+Prioritize actual refactor effect and safety over strict markdown structure.
+Do not require strict evidence-tag formatting; use semantic judgment with the phase outputs.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         lint)
-            cat <<'EOF'
-Validate completion signal hygiene and lint-specific quality criteria.
-Expectations:
-- Confirm no placeholders remain where concrete outputs are required.
-- Ensure `<promise>DONE</promise>` quality criteria are met.
-- Validate `<evidence>` block and required fields: phase, status, scope, outcome, findings, commands, results.
-- Findings must be concrete and include any risks or "none".
-- Validate explicit commands/results list entries and status tokens in results.
+            cat <<EOF
+Validate linting and quality review completeness from available evidence.
+Judge whether issues and outcomes are meaningful, not whether they follow exact tag patterns.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         document)
-            cat <<'EOF'
-Validate completion signal hygiene and document-specific quality criteria.
-Expectations:
-- Confirm no placeholders remain where concrete outputs are required.
-- Ensure `<promise>DONE</promise>` quality criteria are met.
-- Validate `<evidence>` block and required fields: phase, status, scope, updated_files, commands, results.
-- Validate explicit commands/results list entries and status tokens in results.
+            cat <<EOF
+Validate documentation updates and decision clarity for this phase.
+Prioritize correctness, completeness, and intent over exact template markers.
 - Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+- Emit <next_phase>${next_phase_choices}</next_phase>.
+- Emit <next_phase_reason>one-sentence rationale for the phase transition.</next_phase_reason>.
 - Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
         *)
-            cat <<'EOF'
+            cat <<EOF
 Run independent quality review.
 Emit <score>(0-100)</score> and <verdict>(GO|HOLD)</verdict>.
+Emit <next_phase>${next_phase_choices}</next_phase> and <next_phase_reason>.
+Include unresolved blockers in <gaps> as a concise comma-separated list.
 EOF
             ;;
     esac
@@ -3243,7 +3107,7 @@ build_phase_prompt_with_feedback() {
             done
         fi
         echo "- Preserve existing work; only generate missing/repairable artifacts and rerun this phase."
-        echo "- Conclude with <promise>DONE</promise> when completion is complete."
+        echo "- Provide a concise completion recap with changed artifacts and residual risks."
     } >> "$target_prompt"
 }
 
@@ -3253,11 +3117,14 @@ collect_phase_retry_failures_from_consensus() {
     local reviewer_summary ofile
     for ofile in "$LAST_CONSENSUS_DIR"/*.out; do
         [ -f "$ofile" ] || continue
-        local score verdict
+        local score verdict next_phase next_phase_reason
         score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
         is_number "$score" || score="0"
         verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null | tail -n 1 | sed -E 's/<\/?verdict>//g')"
         [ "$verdict" = "GO" ] || [ "$verdict" = "HOLD" ] || verdict="HOLD"
+        next_phase="$(extract_xml_value "$ofile" "next_phase" "unknown")"
+        next_phase_reason="$(extract_xml_value "$ofile" "next_phase_reason" "")"
+        [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         local gaps
         if grep -q "<gaps>" "$ofile" 2>/dev/null; then
             gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
@@ -3266,18 +3133,16 @@ collect_phase_retry_failures_from_consensus() {
         else
             gaps="no explicit gaps"
         fi
-        reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} gaps=${gaps}"
+        reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} next=$next_phase reason=$next_phase_reason gaps=$gaps"
         failures+=("consensus review: $reviewer_summary")
     done
     print_array_lines "${failures[@]-}"
 }
 
 ensure_constitution_bootstrap() {
-    if [ -f "$CONSTITUTION_FILE" ] && constitution_schema_is_valid; then
+    if [ -f "$CONSTITUTION_FILE" ]; then
         return 0
     fi
-
-    [ -f "$CONSTITUTION_FILE" ] && warn "constitution missing required sections. Rebuilding to default governance baseline."
 
     mkdir -p "$SPECIFY_DIR"
     cat > "$CONSTITUTION_FILE" <<'EOF'
@@ -3289,25 +3154,25 @@ ensure_constitution_bootstrap() {
 
 ## Governance
 - Keep artifacts machine-readable: avoid local absolute paths, avoid command transcript leakage, and keep logs deterministic.
-- Never skip consensus checks or phase schema checks.
+- Validate phase completion through reviewer-intelligence consensus and execution/build gates; keep semantic checks close to code and outputs.
 - Treat gate failures as actionable signals, not terminal failure if bounded retries remain.
 
 ## Phase Contracts
 - **Plan** produces research artifacts, an explicit implementation plan, and a deterministic stack snapshot.
-- **Build** executes plan tasks against evidence in IMPLEMENTATION_PLAN.md and validates build schema.
-- **Test** verifies behavior changes and records validation evidence.
+- **Build** executes plan tasks against evidence in IMPLEMENTATION_PLAN.md.
+- **Test** verifies behavior changes and documents validation rationale.
 - **Refactor** preserves behavior, reduces complexity, and documents rationale.
 - **Lint** enforces deterministic quality and cleanup policies.
 - **Document** closes the lifecycle with updated user-facing documentation.
 
 ## Recovery and Retry Policy
-- Every phase attempt that fails schema, consensus, or transition checks is retried within
+- Every phase attempt that fails consensus or transition checks is retried within
   `PHASE_COMPLETION_MAX_ATTEMPTS` using feedback from prior blockers.
 - Hard stop occurs only after bounded retries are exhausted and gate feedback is persisted.
 
 ## Evidence Requirements
-- Each phase writes machine-readable completion signal `<promise>DONE</promise>`.
-- Plan/build/test/refactor/lint/document outputs must be reviewed by consensus and schema checks before transition.
+- Phase completion is judged by reviewer-intelligence consensus plus execution/build-time gates.
+- Plan/research artifacts are reviewed for substantive quality but not by rigid template matching.
 
 ## Environment Scope
 - Repository-relative paths and relative markdown links are preferred.
@@ -3331,6 +3196,7 @@ print_session_config_banner() {
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
+    info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
@@ -3385,6 +3251,9 @@ main() {
     if ! is_number "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" || [ "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" -lt 0 ]; then
         PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
     fi
+    if ! is_number "$MAX_CONSENSUS_ROUTING_ATTEMPTS" || [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -lt 0 ]; then
+        MAX_CONSENSUS_ROUTING_ATTEMPTS="$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS"
+    fi
     if ! is_number "$MAX_ITERATIONS" || [ "$MAX_ITERATIONS" -lt 0 ]; then
         MAX_ITERATIONS=0
     fi
@@ -3394,6 +3263,7 @@ main() {
         should_exit="true"
     fi
     if is_true "$should_exit"; then
+        save_state
         release_lock
         exit 1
     fi
@@ -3411,9 +3281,9 @@ main() {
     local -a phase_resume_blockers=()
     if is_true "$RESUME_REQUESTED"; then
         start_phase_index="$CURRENT_PHASE_INDEX"
-        if ! is_number "$start_phase_index" || [ "$start_phase_index" -lt 0 ] || [ "$start_phase_index" -gt "${#phases[@]}" ]; then
+        if ! is_number "$start_phase_index" || [ "$start_phase_index" -lt 0 ] || [ "$start_phase_index" -ge "${#phases[@]}" ]; then
             start_phase_index="$(phase_index_from_name "$CURRENT_PHASE")" || start_phase_index=0
-            if ! is_number "$start_phase_index" || [ "$start_phase_index" -lt 0 ] || [ "$start_phase_index" -gt "${#phases[@]}" ]; then
+            if ! is_number "$start_phase_index" || [ "$start_phase_index" -lt 0 ] || [ "$start_phase_index" -ge "${#phases[@]}" ]; then
                 start_phase_index=0
             fi
         fi
@@ -3434,6 +3304,7 @@ main() {
         fi
     fi
 
+    local consensus_route_count=0
     while true; do
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
@@ -3473,19 +3344,29 @@ main() {
 
             local phase_attempt=1
             local -a cumulative_phase_failures=()
+            local phase_next_target="$phase"
+            local phase_route="false"
+            local phase_route_reason=""
             while [ "$phase_attempt" -le "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; do
                 local lfile="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.log"
                 local ofile="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.out"
                 local active_prompt="$pfile"
                 local -a phase_failures=()
-                [ "${#cumulative_phase_failures[@]-0}" -gt 0 ] && phase_failures=("${cumulative_phase_failures[@]}")
                 local -a phase_warnings=()
                 local attempt_feedback_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.prompt.md"
                 local bootstrap_prompt_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.bootstrap.prompt.md"
                 local previous_attempt_output_hash=""
+                local previous_attempt_output_file=""
                 local phase_noop_mode manifest_before_file manifest_after_file
                 phase_noop_mode="$(phase_noop_policy "$phase")"
                 local phase_delta_preview=""
+                local handoff_validator_prompt="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.prompt.md"
+                local handoff_validator_log="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.log"
+                local handoff_validator_out="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.out"
+                local handoff_validator_status="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.status"
+                local handoff_validator_primary=""
+                local handoff_validator_fallback=""
+                local phase_warnings_text=""
 
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
@@ -3496,7 +3377,8 @@ main() {
                 if [ "$phase_attempt" -gt 1 ]; then
                     local previous_attempt_file="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_$((phase_attempt - 1)).out"
                     if [ -f "$previous_attempt_file" ]; then
-                        previous_attempt_output_hash="$(shasum -a 256 "$previous_attempt_file" | awk '{print $1}')"
+                        previous_attempt_output_hash="$(sha256_file_sum "$previous_attempt_file" 2>/dev/null || echo "")"
+                        previous_attempt_output_file="$previous_attempt_file"
                     fi
                 fi
 
@@ -3510,8 +3392,8 @@ main() {
                     active_prompt="$attempt_feedback_file"
                 fi
 
-                if [ "$phase" = "build" ] && ! enforce_build_gate "$YOLO"; then
-                    local -a gate_issues
+                if [ "$phase" = "build" ] && ! enforce_build_gate; then
+                    local -a gate_issues=()
                     mapfile -t gate_issues < <(collect_build_prerequisites_issues)
                     local repair_summary=""
                     if is_true "$AUTO_REPAIR_MARKDOWN_ARTIFACTS" && ! markdown_artifacts_are_clean; then
@@ -3521,7 +3403,7 @@ main() {
                                 phase_warnings+=("pre-build markdown remediation: ${repair_summary//$'\\n'/; }")
                             fi
                         fi
-                        if [ -n "$repair_summary" ] && enforce_build_gate "$YOLO"; then
+                        if [ -n "$repair_summary" ] && enforce_build_gate; then
                             gate_issues=()
                             phase_warnings+=("build gate passed after markdown artifact remediation")
                         fi
@@ -3536,76 +3418,105 @@ main() {
                 fi
 
                 if [ "${#phase_failures[@]}" -eq 0 ] && run_agent_with_prompt "$active_prompt" "$lfile" "$ofile" "$YOLO" "$phase_attempt"; then
-                    if detect_completion_signal "$lfile" "$ofile" >/dev/null; then
-                        if [ -n "$previous_attempt_output_hash" ]; then
-                            local phase_output_hash
-                            phase_output_hash="$(shasum -a 256 "$ofile" | awk '{print $1}')"
-                            if [ "$previous_attempt_output_hash" = "$phase_output_hash" ]; then
-                                phase_failures+=("phase output did not materially change from prior attempt")
+                    # Verify agent produced meaningful output
+                    if [ ! -f "$ofile" ] || [ ! -s "$ofile" ]; then
+                        phase_failures+=("agent completed with exit 0 but produced no output artifact")
+                    fi
+
+                    if [ -n "$previous_attempt_output_hash" ] && [ "${#phase_failures[@]}" -eq 0 ]; then
+                        local phase_output_hash
+                        phase_output_hash="$(sha256_file_sum "$ofile" 2>/dev/null || echo "")"
+                        if [ -n "$previous_attempt_output_hash" ] && [ -n "$phase_output_hash" ] && [ "$previous_attempt_output_hash" = "$phase_output_hash" ]; then
+                            phase_failures+=("phase output did not materially change from prior attempt")
+                        fi
+                    fi
+
+                    if [ "$phase" = "plan" ] && ! enforce_build_gate; then
+                        local -a post_plan_gate_issues=()
+                        mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
+                        local post_plan_repair_summary=""
+                        if is_true "$AUTO_REPAIR_MARKDOWN_ARTIFACTS" && ! markdown_artifacts_are_clean; then
+                            if sanitize_markdown_artifacts; then
+                                post_plan_repair_summary="$(markdown_artifact_cleanup_summary)"
+                                mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
+                                [ "${#post_plan_gate_issues[@]}" -eq 0 ] && info "Build gate passed after post-plan markdown remediation."
+                                [ -n "$post_plan_repair_summary" ] && phase_warnings+=("post-plan markdown remediation: ${post_plan_repair_summary//$'\\n'/; }")
                             fi
                         fi
-
-                        if [ "$phase" = "plan" ] && ! enforce_build_gate "$YOLO"; then
-                            local -a post_plan_gate_issues
-                            mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
-                            local post_plan_repair_summary=""
-                            if is_true "$AUTO_REPAIR_MARKDOWN_ARTIFACTS" && ! markdown_artifacts_are_clean; then
-                                if sanitize_markdown_artifacts; then
-                                    post_plan_repair_summary="$(markdown_artifact_cleanup_summary)"
-                                    mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
-                                    [ "${#post_plan_gate_issues[@]}" -eq 0 ] && info "Build gate passed after post-plan markdown remediation."
-                                    [ -n "$post_plan_repair_summary" ] && phase_warnings+=("post-plan markdown remediation: ${post_plan_repair_summary//$'\\n'/; }")
-                                fi
-                            fi
-                            if [ "${#post_plan_gate_issues[@]}" -gt 0 ]; then
-                                phase_failures+=("build gate failed after plan->build transition")
-                                [ -n "$post_plan_repair_summary" ] && phase_failures+=("post-plan markdown remediation summary: ${post_plan_repair_summary//$'\\n'/; }")
-                                for issue in "${post_plan_gate_issues[@]}"; do
-                                    phase_failures+=("build gate: $issue")
-                                done
-                            fi
+                        if [ "${#post_plan_gate_issues[@]}" -gt 0 ]; then
+                            phase_failures+=("build gate failed after plan->build transition")
+                            [ -n "$post_plan_repair_summary" ] && phase_failures+=("post-plan markdown remediation summary: ${post_plan_repair_summary//$'\\n'/; }")
+                            for issue in "${post_plan_gate_issues[@]}"; do
+                                phase_failures+=("build gate: $issue")
+                            done
                         fi
+                    fi
 
-                        if [ "$phase_noop_mode" != "none" ]; then
-                            phase_capture_worktree_manifest "$manifest_after_file" || true
-                            if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
-                                if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
-                                    phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
-                                    if [ -n "$phase_delta_preview" ]; then
-                                        phase_delta_preview="$(printf '%s' "$phase_delta_preview" | tr '\n' '; ')"
-                                        phase_warnings+=("manifest delta preview: $phase_delta_preview")
-                                    fi
-                                else
-                                    if [ "$phase_noop_mode" = "hard" ]; then
-                                        phase_failures+=("$phase completed with no worktree mutation for phase '$phase'")
-                                    else
-                                        phase_warnings+=("soft no-op signal: $phase completed without visible worktree mutation; acceptable for validation-only phases when run outputs are present")
-                                    fi
+                    if [ "$phase_noop_mode" != "none" ]; then
+                        phase_capture_worktree_manifest "$manifest_after_file" || true
+                        if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
+                            if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
+                                phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
+                                if [ -n "$phase_delta_preview" ]; then
+                                    phase_delta_preview="$(printf '%s' "$phase_delta_preview" | tr '\n' '; ')"
+                                    phase_warnings+=("manifest delta preview: $phase_delta_preview")
                                 fi
                             else
-                                phase_warnings+=("phase no-op check skipped: could not capture a reliable manifest snapshot for this attempt")
+                                if [ "$phase_noop_mode" = "hard" ]; then
+                                    phase_failures+=("$phase completed with no worktree mutation for phase '$phase'")
+                                else
+                                    phase_warnings+=("soft no-op signal: $phase completed without visible worktree mutation; acceptable for validation-only phases when run outputs are present")
+                                fi
                             fi
+                        else
+                            phase_warnings+=("phase no-op check skipped: could not capture a reliable manifest snapshot for this attempt")
                         fi
+                    fi
 
-                        local -a phase_schema_issues
-                        mapfile -t phase_schema_issues < <(collect_phase_schema_issues "$phase" "$lfile" "$ofile")
-                        for issue in "${phase_schema_issues[@]}"; do
-                            phase_failures+=("schema: $issue")
-                        done
+                    phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]}")"
+                    write_handoff_validation_prompt \
+                        "$phase" \
+                        "$phase_attempt" \
+                        "$ofile" \
+                        "$lfile" \
+                        "$handoff_validator_prompt" \
+                        "$manifest_before_file" \
+                        "$manifest_after_file" \
+                        "$phase_delta_preview" \
+                        "$phase_noop_mode" \
+                        "$phase_warnings_text" \
+                        "$previous_attempt_output_file"
 
-                        if [ "${#phase_schema_issues[@]}" -eq 0 ] && ! run_swarm_consensus "$phase-gate"; then
-                            local -a consensus_failures
-                            phase_failures+=("consensus failed after $phase")
-                            mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
-                            for issue in "${consensus_failures[@]}"; do
-                                phase_failures+=("consensus: $issue")
-                            done
-                            if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
-                                phase_failures+=("consensus summary: $LAST_CONSENSUS_SUMMARY")
-                            fi
-                        fi
+                    if [ "${ACTIVE_ENGINE}" = "codex" ]; then
+                        handoff_validator_primary="$CLAUDE_CMD"
+                        handoff_validator_fallback="$CODEX_CMD"
                     else
-                        phase_failures+=("missing machine-readable completion signal")
+                        handoff_validator_primary="$CODEX_CMD"
+                        handoff_validator_fallback="$CLAUDE_CMD"
+                    fi
+
+                    if ! run_handoff_validation \
+                        "$phase" \
+                        "$handoff_validator_prompt" \
+                        "$handoff_validator_log" \
+                        "$handoff_validator_out" \
+                        "$handoff_validator_status" \
+                        "$handoff_validator_primary" \
+                        "$handoff_validator_fallback"; then
+                        phase_failures+=("handoff validation failed after $phase")
+                        phase_failures+=("handoff review: verdict=$LAST_HANDOFF_VERDICT score=$LAST_HANDOFF_SCORE gaps=$LAST_HANDOFF_GAPS")
+                    fi
+
+                    if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
+                        local -a consensus_failures=()
+                        phase_failures+=("intelligence validation failed after $phase")
+                        mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
+                        for issue in "${consensus_failures[@]}"; do
+                            phase_failures+=("consensus: $issue")
+                        done
+                        if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
+                            phase_failures+=("consensus summary: $LAST_CONSENSUS_SUMMARY")
+                        fi
                     fi
                 else
                     if [ "${#phase_failures[@]}" -eq 0 ]; then
@@ -3615,6 +3526,13 @@ main() {
 
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
                     cumulative_phase_failures=("${phase_failures[@]}")
+                    if [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
+                        phase_next_target="$LAST_CONSENSUS_NEXT_PHASE"
+                        phase_route="true"
+                        phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                        phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                        break
+                    fi
                     write_gate_feedback "$phase" "${phase_failures[@]}"
                     for issue in "${phase_failures[@]}"; do
                         warn "$issue"
@@ -3645,11 +3563,49 @@ main() {
                         info "note: $issue"
                     done
                 fi
+
+                phase_next_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
+                [ -n "$phase_next_target" ] || phase_next_target="$(phase_default_next "$phase")"
+                phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
+                if is_phase_or_done "$phase_next_target" && [ "$phase_next_target" != "$phase" ]; then
+                    phase_route="true"
+                    phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                fi
+
                 success "Phase $phase completed."
                 break
             done
+            if [ "$phase_route" = "true" ] && is_phase_or_done "$phase_next_target"; then
+                local route_index
+                route_index="$(phase_index_or_done "$phase_next_target")"
+                if [ "$route_index" = "-1" ] || [ -z "$route_index" ]; then
+                    route_index="$((phase_index + 1))"
+                fi
+                if [ "$route_index" -lt "$phase_index" ]; then
+                    consensus_route_count=$((consensus_route_count + 1))
+                    if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
+                        warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
+                        should_exit="true"
+                        break 2
+                    fi
+                fi
+                if [ "$phase_next_target" = "done" ] || [ "$route_index" -ge "${#phases[@]}" ]; then
+                    start_phase_index="${#phases[@]}"
+                    phase_index="${#phases[@]}"
+                else
+                    warn "Adaptive phase routing: $phase -> $phase_next_target (${phase_route_reason:-no explicit rationale})."
+                    start_phase_index="$route_index"
+                    phase_index=$((route_index - 1))
+                fi
+            fi
         done
         if is_true "$should_exit"; then
+            break
+        fi
+        # If start_phase_index is past all phases (consensus routed to "done"
+        # or natural completion of all phases), exit the outer loop
+        if [ "$start_phase_index" -ge "${#phases[@]}" ]; then
+            info "All phases completed. Session done."
             break
         fi
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then
@@ -3658,6 +3614,7 @@ main() {
         fi
     done
 
+    save_state
     release_lock
 }
 
