@@ -17,8 +17,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/.ralphie/config.env"
+REPO_GIT_AVAILABLE=false
+REPO_TRACKED_STATUS_BASELINE=""
 
 MODE="all"               # all|telegram|discord
 MESSAGE=""
@@ -46,6 +48,33 @@ err() { echo -e "\033[1;31m$*\033[0m" >&2; }
 warn() { echo -e "\033[1;33m$*\033[0m" >&2; }
 info() { echo -e "\033[0;34m$*\033[0m"; }
 success() { echo -e "\033[0;32m$*\033[0m"; }
+
+capture_repo_tracked_status_baseline() {
+    if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        REPO_GIT_AVAILABLE=true
+        REPO_TRACKED_STATUS_BASELINE="$(git -C "$PROJECT_DIR" status --porcelain=v1 --untracked-files=no --ignore-submodules=all || true)"
+    else
+        REPO_GIT_AVAILABLE=false
+        REPO_TRACKED_STATUS_BASELINE=""
+    fi
+}
+
+assert_repo_tracked_status_unchanged() {
+    local current_status=""
+    [ "$REPO_GIT_AVAILABLE" = true ] || return 0
+    current_status="$(git -C "$PROJECT_DIR" status --porcelain=v1 --untracked-files=no --ignore-submodules=all || true)"
+    [ "$current_status" = "$REPO_TRACKED_STATUS_BASELINE" ]
+}
+
+repo_integrity_exit_guard() {
+    local rc=$?
+    trap - EXIT
+    if ! assert_repo_tracked_status_unchanged; then
+        err "Tracked repository files changed during notify smoke; refusing pass because repo isolation was violated."
+        rc=1
+    fi
+    exit "$rc"
+}
 
 to_lower() {
     printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
@@ -734,6 +763,9 @@ parse_args() {
 }
 
 main() {
+    capture_repo_tracked_status_baseline
+    trap repo_integrity_exit_guard EXIT
+
     parse_args "$@"
 
     if ! command -v curl >/dev/null 2>&1; then

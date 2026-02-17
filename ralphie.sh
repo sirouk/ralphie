@@ -161,6 +161,26 @@ is_number() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+sanitize_text_for_log() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177')"
+    value="$(printf '%s' "$value" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    printf '%s' "$value"
+}
+
+sanitize_review_score() {
+    local score="${1:-}"
+    if ! is_number "$score"; then
+        echo 0
+        return 0
+    fi
+    if [ "$score" -gt 100 ]; then
+        echo 0
+        return 0
+    fi
+    echo "$score"
+}
+
 is_decimal_number() {
     [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
@@ -174,7 +194,7 @@ extract_xml_value() {
     [ -f "$file" ] || { echo "$default"; return 0; }
 
     value="$(grep -oE "<${tag}>[^<]*</${tag}>" "$file" 2>/dev/null | tail -n 1 | sed -E "s#</?${tag}>##g")"
-    value="$(printf '%s' "$value" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    value="$(sanitize_text_for_log "$value")"
     if [ -z "$value" ]; then
         echo "$default"
         return 0
@@ -252,11 +272,15 @@ if ! command -v mapfile >/dev/null 2>&1; then
         if [ -z "$var_name" ]; then
             return 1
         fi
+        if [[ ! "$var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            return 1
+        fi
 
         # Safer alternative to eval: use nameref if available (Bash 4.3+),
         # otherwise fall back to a temp file approach
         local __mapfile_idx=0
         local __mapfile_line
+        local __mapfile_escaped
         # Reset the target array
         eval "${var_name}=()"
 
@@ -290,6 +314,54 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+is_allowed_config_key() {
+    local key="${1:-}"
+    case "$key" in
+        # Preferred, namespaced settings surface.
+        RALPHIE_*)
+            return 0
+            ;;
+        # Explicitly supported non-prefixed compatibility keys.
+        COMMAND_TIMEOUT_SECONDS|MAX_ITERATIONS|MAX_SESSION_CYCLES|YOLO|AUTO_UPDATE|AUTO_UPDATE_URL|\
+        SWARM_MAX_PARALLEL|CONFIDENCE_TARGET|CONFIDENCE_STAGNATION_LIMIT|\
+        AUTO_PLAN_BACKFILL_ON_IDLE_BUILD|AUTO_ENGINE_PREFERENCE|AUTO_INIT_GIT_IF_MISSING|\
+        AUTO_COMMIT_ON_PHASE_PASS|CODEX_ENDPOINT|CODEX_USE_RESPONSES_SCHEMA|\
+        CODEX_RESPONSES_SCHEMA_FILE|CODEX_THINKING_OVERRIDE|CLAUDE_ENDPOINT|CLAUDE_THINKING_OVERRIDE|\
+        RUN_AGENT_MAX_ATTEMPTS|RUN_AGENT_RETRY_DELAY_SECONDS|RUN_AGENT_RETRY_VERBOSE|\
+        ENGINE_OUTPUT_TO_STDOUT|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
+        PHASE_COMPLETION_RETRY_DELAY_SECONDS|PHASE_COMPLETION_RETRY_VERBOSE|\
+        MAX_CONSENSUS_ROUTING_ATTEMPTS|PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
+        PHASE_NOOP_POLICY_TEST|PHASE_NOOP_POLICY_REFACTOR|PHASE_NOOP_POLICY_LINT|\
+        PHASE_NOOP_POLICY_DOCUMENT|PHASE_NOOP_PROFILE|SESSION_TOKEN_BUDGET|\
+        SESSION_TOKEN_RATE_CENTS_PER_MILLION|SESSION_COST_BUDGET_CENTS|AUTO_REPAIR_MARKDOWN_ARTIFACTS|\
+        SWARM_CONSENSUS_TIMEOUT|CONSENSUS_SCORE_THRESHOLD|ENGINE_HEALTH_MAX_ATTEMPTS|\
+        ENGINE_HEALTH_RETRY_DELAY_SECONDS|ENGINE_HEALTH_RETRY_VERBOSE|ENGINE_SMOKE_TEST_TIMEOUT|\
+        STARTUP_OPERATIONAL_PROBE|ENGINE_OVERRIDES_BOOTSTRAPPED|NOTIFICATIONS_ENABLED|\
+        NOTIFY_TELEGRAM_ENABLED|NOTIFY_DISCORD_ENABLED|NOTIFY_DISCORD_WEBHOOK_URL|\
+        NOTIFY_TTS_ENABLED|NOTIFY_TTS_STYLE|NOTIFY_CHUTES_TTS_URL|NOTIFY_CHUTES_VOICE|NOTIFY_CHUTES_SPEED|\
+        NOTIFY_EVENT_DEDUP_WINDOW_SECONDS|NOTIFY_INCIDENT_REMINDER_MINUTES|\
+        NOTIFICATION_WIZARD_BOOTSTRAPPED|TG_BOT_TOKEN|TG_CHAT_ID|CHUTES_API_KEY|\
+        CODEX_ENGINE_CMD|CLAUDE_ENGINE_CMD|CODEX_MODEL|CLAUDE_MODEL)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+mark_phase_noop_policy_explicit_by_key() {
+    case "${1:-}" in
+        PHASE_NOOP_POLICY_PLAN|RALPHIE_PHASE_NOOP_POLICY_PLAN) PHASE_NOOP_POLICY_PLAN_EXPLICIT=true ;;
+        PHASE_NOOP_POLICY_BUILD|RALPHIE_PHASE_NOOP_POLICY_BUILD) PHASE_NOOP_POLICY_BUILD_EXPLICIT=true ;;
+        PHASE_NOOP_POLICY_TEST|RALPHIE_PHASE_NOOP_POLICY_TEST) PHASE_NOOP_POLICY_TEST_EXPLICIT=true ;;
+        PHASE_NOOP_POLICY_REFACTOR|RALPHIE_PHASE_NOOP_POLICY_REFACTOR) PHASE_NOOP_POLICY_REFACTOR_EXPLICIT=true ;;
+        PHASE_NOOP_POLICY_LINT|RALPHIE_PHASE_NOOP_POLICY_LINT) PHASE_NOOP_POLICY_LINT_EXPLICIT=true ;;
+        PHASE_NOOP_POLICY_DOCUMENT|RALPHIE_PHASE_NOOP_POLICY_DOCUMENT) PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT=true ;;
+        *) ;;
+    esac
+}
+
 # Portable pseudo-random number (0..32767). Uses $RANDOM when available (interactive
 # bash), falls back to /dev/urandom or PID-seeded arithmetic for non-interactive shells.
 portable_random() {
@@ -301,7 +373,7 @@ portable_random() {
         : "${RANDOM:=0}"
         echo "$RANDOM"
     elif [ -r /dev/urandom ]; then
-        od -An -tu2 -N2 /dev/urandom 2>/dev/null | tr -d ' '
+        od -An -tu2 -N2 /dev/urandom 2>/dev/null | tr -d ' \n' || echo 0
     else
         # Last resort: deterministic but varies per PID and second
         echo $(( ($$ * $(date +%s)) % 32768 ))
@@ -335,6 +407,23 @@ load_config_file_safe() {
         raw_value="${BASH_REMATCH[2]}"
         raw_value="$(printf '%s' "$raw_value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
 
+        # Prevent config files from mutating critical shell interpreter behavior.
+        case "$key" in
+            BASH_ENV|ENV|SHELLOPTS|BASHOPTS|BASH_XTRACEFD|IFS|PATH|CDPATH|GLOBIGNORE|PROMPT_COMMAND|PS4)
+                warn "Ignoring unsafe config key '$key' in $file_display."
+                continue
+                ;;
+        esac
+        if ! is_allowed_config_key "$key"; then
+            warn "Ignoring unsupported config key '$key' in $file_display."
+            continue
+        fi
+        # Preserve exported environment precedence over config file values.
+        # This keeps layering deterministic: defaults -> config.env -> env -> CLI.
+        if printenv "$key" >/dev/null 2>&1; then
+            continue
+        fi
+
         # For unquoted values, allow trailing comments using '#'.
         if [[ ! "$raw_value" =~ ^\".*\"$ ]] && [[ ! "$raw_value" =~ ^\'.*\'$ ]]; then
             # Strip inline comments only when '#' is preceded by whitespace,
@@ -352,7 +441,11 @@ load_config_file_safe() {
         fi
 
         # Literal assignment (no command or parameter expansion).
-        printf -v "$key" '%s' "$value"
+        if ! printf -v "$key" '%s' "$value" 2>/dev/null; then
+            warn "Ignoring config key '$key' in $file_display: assignment failed (readonly or invalid target)."
+            continue
+        fi
+        mark_phase_noop_policy_explicit_by_key "$key"
     done < "$file"
 }
 
@@ -360,6 +453,9 @@ config_escape_double_quotes() {
     local value="${1:-}"
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
     printf '%s' "$value"
 }
 
@@ -368,6 +464,15 @@ upsert_config_env_value() {
     local value="${2:-}"
     local escaped
     local tmp_config_file
+
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        warn "Refusing to persist invalid config key '$key'."
+        return 1
+    fi
+    if ! is_allowed_config_key "$key"; then
+        warn "Refusing to persist unsupported config key '$key'."
+        return 1
+    fi
 
     mkdir -p "$(dirname "$CONFIG_FILE")"
     touch "$CONFIG_FILE"
@@ -562,6 +667,7 @@ Additional runtime env knobs:
   RALPHIE_NOTIFY_DISCORD_ENABLED         Enable Discord webhook notifications (true|false)
   RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL     Discord incoming webhook URL
   RALPHIE_NOTIFY_TTS_ENABLED             Enable Chutes TTS voice notifications for Telegram/Discord (true|false)
+  RALPHIE_NOTIFY_TTS_STYLE               TTS narration text style (not voice id): standard|friendly|ralph_wiggum
   CHUTES_API_KEY                         Chutes API key for TTS
   RALPHIE_NOTIFY_CHUTES_TTS_URL          Chutes TTS endpoint URL
   RALPHIE_NOTIFY_CHUTES_VOICE            Chutes TTS voice id (example: am_michael)
@@ -884,9 +990,10 @@ DEFAULT_NOTIFICATIONS_ENABLED="false"              # master notifications toggle
 DEFAULT_NOTIFY_TELEGRAM_ENABLED="false"            # send status messages to Telegram bot/chat
 DEFAULT_NOTIFY_DISCORD_ENABLED="false"             # send status messages to Discord webhook
 DEFAULT_NOTIFY_TTS_ENABLED="false"                 # enable Chutes TTS voice notifications via Telegram/Discord
+DEFAULT_NOTIFY_TTS_STYLE="ralph_wiggum"            # narration text style (ralph alias supported)
 DEFAULT_NOTIFY_CHUTES_TTS_URL="https://chutes-kokoro.chutes.ai/speak"
-DEFAULT_NOTIFY_CHUTES_VOICE="am_michael"
-DEFAULT_NOTIFY_CHUTES_SPEED="1.0"
+DEFAULT_NOTIFY_CHUTES_VOICE="am_puck"
+DEFAULT_NOTIFY_CHUTES_SPEED="1.24"
 DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90       # suppress duplicate notification events in a short window
 DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES=10        # reminder cadence for ongoing incident series
 DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED="false"  # first-deploy notification setup prompt sentinel
@@ -944,6 +1051,7 @@ NOTIFY_TELEGRAM_ENABLED="${NOTIFY_TELEGRAM_ENABLED:-$DEFAULT_NOTIFY_TELEGRAM_ENA
 NOTIFY_DISCORD_ENABLED="${NOTIFY_DISCORD_ENABLED:-$DEFAULT_NOTIFY_DISCORD_ENABLED}"
 NOTIFY_DISCORD_WEBHOOK_URL="${NOTIFY_DISCORD_WEBHOOK_URL:-}"
 NOTIFY_TTS_ENABLED="${NOTIFY_TTS_ENABLED:-$DEFAULT_NOTIFY_TTS_ENABLED}"
+NOTIFY_TTS_STYLE="${NOTIFY_TTS_STYLE:-$DEFAULT_NOTIFY_TTS_STYLE}"
 NOTIFY_CHUTES_TTS_URL="${NOTIFY_CHUTES_TTS_URL:-$DEFAULT_NOTIFY_CHUTES_TTS_URL}"
 NOTIFY_CHUTES_VOICE="${NOTIFY_CHUTES_VOICE:-$DEFAULT_NOTIFY_CHUTES_VOICE}"
 NOTIFY_CHUTES_SPEED="${NOTIFY_CHUTES_SPEED:-$DEFAULT_NOTIFY_CHUTES_SPEED}"
@@ -962,6 +1070,24 @@ fi
 ACTIVE_ENGINE="${RALPHIE_ENGINE:-$DEFAULT_ENGINE}"
 CODEX_CMD="${CODEX_ENGINE_CMD:-$DEFAULT_CODEX_CMD}"
 CLAUDE_CMD="${CLAUDE_ENGINE_CMD:-$DEFAULT_CLAUDE_CMD}"
+COMMAND_TIMEOUT_SECONDS="${RALPHIE_COMMAND_TIMEOUT_SECONDS:-$COMMAND_TIMEOUT_SECONDS}"
+MAX_ITERATIONS="${RALPHIE_MAX_ITERATIONS:-$MAX_ITERATIONS}"
+MAX_SESSION_CYCLES="${RALPHIE_MAX_SESSION_CYCLES:-$MAX_SESSION_CYCLES}"
+SESSION_TOKEN_BUDGET="${RALPHIE_SESSION_TOKEN_BUDGET:-$SESSION_TOKEN_BUDGET}"
+SESSION_TOKEN_RATE_CENTS_PER_MILLION="${RALPHIE_SESSION_TOKEN_RATE_CENTS_PER_MILLION:-$SESSION_TOKEN_RATE_CENTS_PER_MILLION}"
+SESSION_COST_BUDGET_CENTS="${RALPHIE_SESSION_COST_BUDGET_CENTS:-$SESSION_COST_BUDGET_CENTS}"
+RUN_AGENT_MAX_ATTEMPTS="${RALPHIE_RUN_AGENT_MAX_ATTEMPTS:-$RUN_AGENT_MAX_ATTEMPTS}"
+RUN_AGENT_RETRY_DELAY_SECONDS="${RALPHIE_RUN_AGENT_RETRY_DELAY_SECONDS:-$RUN_AGENT_RETRY_DELAY_SECONDS}"
+RUN_AGENT_RETRY_VERBOSE="${RALPHIE_RUN_AGENT_RETRY_VERBOSE:-$RUN_AGENT_RETRY_VERBOSE}"
+PHASE_COMPLETION_MAX_ATTEMPTS="${RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS:-$PHASE_COMPLETION_MAX_ATTEMPTS}"
+PHASE_COMPLETION_RETRY_DELAY_SECONDS="${RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
+PHASE_COMPLETION_RETRY_VERBOSE="${RALPHIE_PHASE_COMPLETION_RETRY_VERBOSE:-$PHASE_COMPLETION_RETRY_VERBOSE}"
+MAX_CONSENSUS_ROUTING_ATTEMPTS="${RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS:-$MAX_CONSENSUS_ROUTING_ATTEMPTS}"
+SWARM_CONSENSUS_TIMEOUT="${RALPHIE_SWARM_CONSENSUS_TIMEOUT:-$SWARM_CONSENSUS_TIMEOUT}"
+ENGINE_HEALTH_MAX_ATTEMPTS="${RALPHIE_ENGINE_HEALTH_MAX_ATTEMPTS:-$ENGINE_HEALTH_MAX_ATTEMPTS}"
+ENGINE_HEALTH_RETRY_DELAY_SECONDS="${RALPHIE_ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
+ENGINE_HEALTH_RETRY_VERBOSE="${RALPHIE_ENGINE_HEALTH_RETRY_VERBOSE:-$ENGINE_HEALTH_RETRY_VERBOSE}"
+ENGINE_SMOKE_TEST_TIMEOUT="${RALPHIE_ENGINE_SMOKE_TEST_TIMEOUT:-$ENGINE_SMOKE_TEST_TIMEOUT}"
 RESUME_REQUESTED="${RALPHIE_RESUME_REQUESTED:-$DEFAULT_RESUME_REQUESTED}"
 REBOOTSTRAP_REQUESTED="${RALPHIE_REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}"
 ENGINE_OUTPUT_TO_STDOUT="${RALPHIE_ENGINE_OUTPUT_TO_STDOUT:-$ENGINE_OUTPUT_TO_STDOUT}"
@@ -969,14 +1095,24 @@ YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
+PHASE_NOOP_POLICY_PLAN="${RALPHIE_PHASE_NOOP_POLICY_PLAN:-$PHASE_NOOP_POLICY_PLAN}"
+PHASE_NOOP_POLICY_BUILD="${RALPHIE_PHASE_NOOP_POLICY_BUILD:-$PHASE_NOOP_POLICY_BUILD}"
+PHASE_NOOP_POLICY_TEST="${RALPHIE_PHASE_NOOP_POLICY_TEST:-$PHASE_NOOP_POLICY_TEST}"
+PHASE_NOOP_POLICY_REFACTOR="${RALPHIE_PHASE_NOOP_POLICY_REFACTOR:-$PHASE_NOOP_POLICY_REFACTOR}"
+PHASE_NOOP_POLICY_LINT="${RALPHIE_PHASE_NOOP_POLICY_LINT:-$PHASE_NOOP_POLICY_LINT}"
+PHASE_NOOP_POLICY_DOCUMENT="${RALPHIE_PHASE_NOOP_POLICY_DOCUMENT:-$PHASE_NOOP_POLICY_DOCUMENT}"
+STRICT_VALIDATION_NOOP="${RALPHIE_STRICT_VALIDATION_NOOP:-$STRICT_VALIDATION_NOOP}"
+AUTO_REPAIR_MARKDOWN_ARTIFACTS="${RALPHIE_AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
 AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
 AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_PHASE_PASS}"
 CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
+CODEX_MODEL="${RALPHIE_CODEX_MODEL:-${CODEX_MODEL:-}}"
 CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
 CODEX_RESPONSES_SCHEMA_FILE="${RALPHIE_CODEX_RESPONSES_SCHEMA_FILE:-$CODEX_RESPONSES_SCHEMA_FILE}"
 CODEX_THINKING_OVERRIDE="${RALPHIE_CODEX_THINKING_OVERRIDE:-$CODEX_THINKING_OVERRIDE}"
 CLAUDE_ENDPOINT="${RALPHIE_CLAUDE_ENDPOINT:-$CLAUDE_ENDPOINT}"
+CLAUDE_MODEL="${RALPHIE_CLAUDE_MODEL:-${CLAUDE_MODEL:-}}"
 CLAUDE_THINKING_OVERRIDE="${RALPHIE_CLAUDE_THINKING_OVERRIDE:-$CLAUDE_THINKING_OVERRIDE}"
 STARTUP_OPERATIONAL_PROBE="${RALPHIE_STARTUP_OPERATIONAL_PROBE:-$STARTUP_OPERATIONAL_PROBE}"
 CONSENSUS_SCORE_THRESHOLD="${RALPHIE_CONSENSUS_SCORE_THRESHOLD:-$CONSENSUS_SCORE_THRESHOLD}"
@@ -986,6 +1122,7 @@ NOTIFY_TELEGRAM_ENABLED="${RALPHIE_NOTIFY_TELEGRAM_ENABLED:-$NOTIFY_TELEGRAM_ENA
 NOTIFY_DISCORD_ENABLED="${RALPHIE_NOTIFY_DISCORD_ENABLED:-$NOTIFY_DISCORD_ENABLED}"
 NOTIFY_DISCORD_WEBHOOK_URL="${RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL:-$NOTIFY_DISCORD_WEBHOOK_URL}"
 NOTIFY_TTS_ENABLED="${RALPHIE_NOTIFY_TTS_ENABLED:-$NOTIFY_TTS_ENABLED}"
+NOTIFY_TTS_STYLE="${RALPHIE_NOTIFY_TTS_STYLE:-$NOTIFY_TTS_STYLE}"
 NOTIFY_CHUTES_TTS_URL="${RALPHIE_NOTIFY_CHUTES_TTS_URL:-$NOTIFY_CHUTES_TTS_URL}"
 NOTIFY_CHUTES_VOICE="${RALPHIE_NOTIFY_CHUTES_VOICE:-$NOTIFY_CHUTES_VOICE}"
 NOTIFY_CHUTES_SPEED="${RALPHIE_NOTIFY_CHUTES_SPEED:-$NOTIFY_CHUTES_SPEED}"
@@ -995,6 +1132,15 @@ NOTIFICATION_WIZARD_BOOTSTRAPPED="${RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED:-$N
 TG_BOT_TOKEN="${RALPHIE_TG_BOT_TOKEN:-$TG_BOT_TOKEN}"
 TG_CHAT_ID="${RALPHIE_TG_CHAT_ID:-$TG_CHAT_ID}"
 CHUTES_API_KEY="${RALPHIE_CHUTES_API_KEY:-$CHUTES_API_KEY}"
+
+# Treat env-provided phase no-op policies as explicit user intent so profile
+# application does not overwrite them.
+if printenv PHASE_NOOP_POLICY_PLAN >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_PLAN >/dev/null 2>&1; then PHASE_NOOP_POLICY_PLAN_EXPLICIT=true; fi
+if printenv PHASE_NOOP_POLICY_BUILD >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_BUILD >/dev/null 2>&1; then PHASE_NOOP_POLICY_BUILD_EXPLICIT=true; fi
+if printenv PHASE_NOOP_POLICY_TEST >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_TEST >/dev/null 2>&1; then PHASE_NOOP_POLICY_TEST_EXPLICIT=true; fi
+if printenv PHASE_NOOP_POLICY_REFACTOR >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_REFACTOR >/dev/null 2>&1; then PHASE_NOOP_POLICY_REFACTOR_EXPLICIT=true; fi
+if printenv PHASE_NOOP_POLICY_LINT >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_LINT >/dev/null 2>&1; then PHASE_NOOP_POLICY_LINT_EXPLICIT=true; fi
+if printenv PHASE_NOOP_POLICY_DOCUMENT >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_DOCUMENT >/dev/null 2>&1; then PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT=true; fi
 
 # Validate engine selection
 ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
@@ -1084,6 +1230,15 @@ if ! is_bool_like "$NOTIFY_TTS_ENABLED"; then
     warn "Invalid NOTIFY_TTS_ENABLED '$NOTIFY_TTS_ENABLED'. Falling back to '$DEFAULT_NOTIFY_TTS_ENABLED'."
     NOTIFY_TTS_ENABLED="$DEFAULT_NOTIFY_TTS_ENABLED"
 fi
+NOTIFY_TTS_STYLE="$(to_lower "$NOTIFY_TTS_STYLE")"
+case "$NOTIFY_TTS_STYLE" in
+    standard|friendly|ralph_wiggum) ;;
+    ralph) NOTIFY_TTS_STYLE="ralph_wiggum" ;;
+    *)
+        warn "Invalid NOTIFY_TTS_STYLE '$NOTIFY_TTS_STYLE'. Falling back to '$DEFAULT_NOTIFY_TTS_STYLE'."
+        NOTIFY_TTS_STYLE="$DEFAULT_NOTIFY_TTS_STYLE"
+        ;;
+esac
 
 NOTIFICATION_WIZARD_BOOTSTRAPPED="$(to_lower "$NOTIFICATION_WIZARD_BOOTSTRAPPED")"
 if ! is_bool_like "$NOTIFICATION_WIZARD_BOOTSTRAPPED"; then
@@ -1273,15 +1428,27 @@ sha256_file_sum() {
     fi
 }
 
+sha256_stream_sum() {
+    local checksum_cmd
+
+    checksum_cmd="$(sha256sum_command)" || return 1
+
+    if [ "$checksum_cmd" = "sha256sum" ]; then
+        "$checksum_cmd" | awk '{print $1}'
+    else
+        "$checksum_cmd" -a 256 | awk '{print $1}'
+    fi
+}
+
 state_blob_encode() {
     local payload="${1:-}"
     if command -v base64 >/dev/null 2>&1; then
         printf '%s' "$payload" | base64 | tr -d '\n'
-        return 0
+        return "${PIPESTATUS[1]:-$?}"
     fi
     if command -v openssl >/dev/null 2>&1; then
         printf '%s' "$payload" | openssl base64 -A 2>/dev/null
-        return 0
+        return "${PIPESTATUS[1]:-$?}"
     fi
     return 1
 }
@@ -1299,6 +1466,23 @@ state_blob_decode() {
         printf '%s' "$payload" | openssl base64 -d -A 2>/dev/null && return 0
     fi
     return 1
+}
+
+state_escape_value() {
+    config_escape_double_quotes "${1:-}"
+}
+
+state_unescape_value() {
+    local value="${1:-}"
+    local bslash_sentinel=$'\001'
+
+    value="${value//\\\\/$bslash_sentinel}"
+    value="${value//\\n/$'\n'}"
+    value="${value//\\r/$'\r'}"
+    value="${value//\\t/$'\t'}"
+    value="${value//\\\"/\"}"
+    value="${value//$bslash_sentinel/\\}"
+    printf '%s' "$value"
 }
 
 save_state() {
@@ -1321,22 +1505,22 @@ save_state() {
         return 1
     }
 
-    cat <<EOF > "$tmp_state_file"
-CURRENT_PHASE="$CURRENT_PHASE"
-CURRENT_PHASE_INDEX="$CURRENT_PHASE_INDEX"
-CURRENT_PHASE_ATTEMPT="$CURRENT_PHASE_ATTEMPT"
-PHASE_ATTEMPT_IN_PROGRESS="$PHASE_ATTEMPT_IN_PROGRESS"
-ITERATION_COUNT="$ITERATION_COUNT"
-SESSION_ID="$SESSION_ID"
-SESSION_ATTEMPT_COUNT="$SESSION_ATTEMPT_COUNT"
-SESSION_TOKEN_COUNT="$SESSION_TOKEN_COUNT"
-SESSION_COST_CENTS="$SESSION_COST_CENTS"
-LAST_RUN_TOKEN_COUNT="$LAST_RUN_TOKEN_COUNT"
-ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT"
-PHASE_TRANSITION_HISTORY_B64="$history_encoded"
-GIT_IDENTITY_READY="$GIT_IDENTITY_READY"
-GIT_IDENTITY_SOURCE="$GIT_IDENTITY_SOURCE"
-EOF
+    {
+        printf 'CURRENT_PHASE="%s"\n' "$(state_escape_value "$CURRENT_PHASE")"
+        printf 'CURRENT_PHASE_INDEX="%s"\n' "$(state_escape_value "$CURRENT_PHASE_INDEX")"
+        printf 'CURRENT_PHASE_ATTEMPT="%s"\n' "$(state_escape_value "$CURRENT_PHASE_ATTEMPT")"
+        printf 'PHASE_ATTEMPT_IN_PROGRESS="%s"\n' "$(state_escape_value "$PHASE_ATTEMPT_IN_PROGRESS")"
+        printf 'ITERATION_COUNT="%s"\n' "$(state_escape_value "$ITERATION_COUNT")"
+        printf 'SESSION_ID="%s"\n' "$(state_escape_value "$SESSION_ID")"
+        printf 'SESSION_ATTEMPT_COUNT="%s"\n' "$(state_escape_value "$SESSION_ATTEMPT_COUNT")"
+        printf 'SESSION_TOKEN_COUNT="%s"\n' "$(state_escape_value "$SESSION_TOKEN_COUNT")"
+        printf 'SESSION_COST_CENTS="%s"\n' "$(state_escape_value "$SESSION_COST_CENTS")"
+        printf 'LAST_RUN_TOKEN_COUNT="%s"\n' "$(state_escape_value "$LAST_RUN_TOKEN_COUNT")"
+        printf 'ENGINE_OUTPUT_TO_STDOUT="%s"\n' "$(state_escape_value "$ENGINE_OUTPUT_TO_STDOUT")"
+        printf 'PHASE_TRANSITION_HISTORY_B64="%s"\n' "$(state_escape_value "$history_encoded")"
+        printf 'GIT_IDENTITY_READY="%s"\n' "$(state_escape_value "$GIT_IDENTITY_READY")"
+        printf 'GIT_IDENTITY_SOURCE="%s"\n' "$(state_escape_value "$GIT_IDENTITY_SOURCE")"
+    } > "$tmp_state_file"
     # Append SHA-256 checksum to the end
     if checksum="$(sha256_file_sum "$tmp_state_file")"; then
         echo "STATE_CHECKSUM=\"$checksum\"" >> "$tmp_state_file"
@@ -1375,7 +1559,10 @@ load_state() {
     if grep -q "STATE_CHECKSUM=" "$STATE_FILE"; then
         local expected actual state_body_file
         expected="$(grep "STATE_CHECKSUM=" "$STATE_FILE" | head -n 1 | cut -d'"' -f2)"
-        state_body_file="$(mktemp "$CONFIG_DIR/state-body.XXXXXX")"
+        state_body_file="$(mktemp "$CONFIG_DIR/state-body.XXXXXX")" || {
+            warn "Unable to create temp file for state checksum validation."
+            return 1
+        }
         if grep -v "^STATE_CHECKSUM=" "$STATE_FILE" > "$state_body_file" 2>/dev/null && actual="$(sha256_file_sum "$state_body_file")"; then
             if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
                 warn "State file checksum mismatch! Corruption detected. Forcing clean state."
@@ -1393,6 +1580,7 @@ load_state() {
         [ -z "$key" ] && continue
         value="${value%\"}"
         value="${value#\"}"
+        value="$(state_unescape_value "$value")"
         case "$key" in
             CURRENT_PHASE) CURRENT_PHASE="$value" ;;
             CURRENT_PHASE_INDEX) is_number "$value" && CURRENT_PHASE_INDEX="$value" ;;
@@ -1814,8 +2002,13 @@ append_bootstrap_context_to_plan_prompt() {
     local target_prompt="$2"
     local project_type objective build_consent constraints success_criteria goals_doc_url
 
-    if [ ! -f "$source_prompt" ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
-        cp "$source_prompt" "$target_prompt"
+    if [ ! -f "$source_prompt" ]; then
+        warn "Plan prompt source missing: $(path_for_display "$source_prompt")"
+        return 1
+    fi
+
+    if [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        cp "$source_prompt" "$target_prompt" 2>/dev/null || return 1
         return 0
     fi
 
@@ -2149,6 +2342,67 @@ send_discord_tts_raw() {
     esac
 }
 
+normalize_notify_tts_style() {
+    local style
+    style="$(to_lower "${1:-$DEFAULT_NOTIFY_TTS_STYLE}")"
+    case "$style" in
+        standard|friendly|ralph_wiggum) echo "$style" ;;
+        ralph) echo "ralph_wiggum" ;;
+        *) echo "$DEFAULT_NOTIFY_TTS_STYLE" ;;
+    esac
+}
+
+notification_tts_event_summary() {
+    local event="${1:-}"
+    local status="${2:-}"
+    case "$event" in
+        notification_setup) echo "notifications are all set" ;;
+        session_start) echo "the mission started" ;;
+        phase_decision) echo "I made a phase decision" ;;
+        phase_complete) echo "a phase is complete" ;;
+        phase_blocked) echo "a phase got blocked" ;;
+        session_done) echo "the mission is complete" ;;
+        session_error)
+            if [ "$status" = "hold" ]; then
+                echo "I hit a blocker"
+            else
+                echo "I hit a problem"
+            fi
+            ;;
+        *) echo "here is an update" ;;
+    esac
+}
+
+build_tts_notification_line() {
+    local event="${1:-}"
+    local status="${2:-}"
+    local details="${3:-none}"
+    local style summary normalized_details line
+
+    style="$(normalize_notify_tts_style "${NOTIFY_TTS_STYLE:-$DEFAULT_NOTIFY_TTS_STYLE}")"
+    summary="$(notification_tts_event_summary "$event" "$status")"
+    normalized_details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    normalized_details="$(printf '%s' "$normalized_details" | cut -c 1-140)"
+    [ -n "$normalized_details" ] || normalized_details="no extra details"
+
+    case "$style" in
+        standard)
+            line="Ralphie update. ${summary}. ${normalized_details}."
+            ;;
+        friendly)
+            line="Hey friend, Ralphie here. ${summary}. ${normalized_details}."
+            ;;
+        ralph_wiggum)
+            line="Hi, I am Ralphie. ${summary}. ${normalized_details}. Woo hoo!"
+            ;;
+        *)
+            line="Ralphie update. ${summary}. ${normalized_details}."
+            ;;
+    esac
+
+    printf '%s' "$line" | cut -c 1-220
+}
+
 notify_event() {
     local event="$1"
     local status="$2"
@@ -2160,8 +2414,11 @@ notify_event() {
     local event_signature=""
     local incident_key=""
     local effective_details=""
+    local delivery_details=""
     local elapsed_since_last=0
     local elapsed_series_minutes=0
+    local tts_attempted=false
+    local tts_failed=false
 
     if ! is_true "$NOTIFICATIONS_ENABLED"; then
         return 0
@@ -2257,7 +2514,8 @@ EOF
         fi
         if is_true "$NOTIFY_TTS_ENABLED" && [ -n "$CHUTES_API_KEY" ]; then
             local tts_line
-            tts_line="$(printf '%s' "$event: $effective_details" | cut -c 1-220)"
+            tts_line="$(build_tts_notification_line "$event" "$status" "$effective_details")"
+            tts_attempted=true
             if send_telegram_tts_raw \
                 "$CHUTES_API_KEY" \
                 "$NOTIFY_CHUTES_TTS_URL" \
@@ -2268,6 +2526,8 @@ EOF
                 "$tts_line" \
                 "ralphie $event"; then
                 delivered=true
+            else
+                tts_failed=true
             fi
         fi
     fi
@@ -2278,7 +2538,8 @@ EOF
         fi
         if is_true "$NOTIFY_TTS_ENABLED" && [ -n "$CHUTES_API_KEY" ]; then
             local discord_tts_line
-            discord_tts_line="$(printf '%s' "$event: $effective_details" | cut -c 1-220)"
+            discord_tts_line="$(build_tts_notification_line "$event" "$status" "$effective_details")"
+            tts_attempted=true
             if send_discord_tts_raw \
                 "$CHUTES_API_KEY" \
                 "$NOTIFY_CHUTES_TTS_URL" \
@@ -2288,6 +2549,8 @@ EOF
                 "$discord_tts_line" \
                 "ralphie $event"; then
                 delivered=true
+            else
+                tts_failed=true
             fi
         fi
     fi
@@ -2297,7 +2560,11 @@ EOF
         NOTIFY_LAST_EVENT_SENT_AT="$now_epoch"
     fi
 
-    notification_log_append "$event" "$status" "$([ "$delivered" = true ] && echo "delivered" || echo "failed")" "$effective_details"
+    delivery_details="$effective_details"
+    if [ "$tts_attempted" = true ] && [ "$tts_failed" = true ]; then
+        delivery_details="${delivery_details}; tts=fallback_text_only"
+    fi
+    notification_log_append "$event" "$status" "$([ "$delivered" = true ] && echo "delivered" || echo "failed")" "$delivery_details"
     return 0
 }
 
@@ -2403,6 +2670,8 @@ run_first_deploy_notification_wizard() {
         if [ "$(prompt_yes_no "Enable Chutes TTS voice notifications?" "$(is_true "$NOTIFY_TTS_ENABLED" && echo y || echo n)")" = "true" ]; then
             tts_selected="true"
             CHUTES_API_KEY="$(prompt_override_value "Chutes API key (CHUTES_API_KEY)" "$CHUTES_API_KEY")"
+            NOTIFY_TTS_STYLE="$(prompt_override_value "TTS narration style (standard|friendly|ralph_wiggum)" "$NOTIFY_TTS_STYLE")"
+            NOTIFY_TTS_STYLE="$(normalize_notify_tts_style "$NOTIFY_TTS_STYLE")"
             NOTIFY_CHUTES_VOICE="$(prompt_override_value "Chutes voice id" "$NOTIFY_CHUTES_VOICE")"
             NOTIFY_CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.0)" "$NOTIFY_CHUTES_SPEED")"
             if ! is_decimal_number "$NOTIFY_CHUTES_SPEED"; then
@@ -2482,6 +2751,7 @@ run_first_deploy_notification_wizard() {
     persist_notification_value "RALPHIE_NOTIFY_DISCORD_ENABLED" "$NOTIFY_DISCORD_ENABLED" || true
     persist_notification_value "RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL" "$NOTIFY_DISCORD_WEBHOOK_URL" || true
     persist_notification_value "RALPHIE_NOTIFY_TTS_ENABLED" "$NOTIFY_TTS_ENABLED" || true
+    persist_notification_value "RALPHIE_NOTIFY_TTS_STYLE" "$NOTIFY_TTS_STYLE" || true
     persist_notification_value "CHUTES_API_KEY" "$CHUTES_API_KEY" || true
     persist_notification_value "RALPHIE_NOTIFY_CHUTES_TTS_URL" "$NOTIFY_CHUTES_TTS_URL" || true
     persist_notification_value "RALPHIE_NOTIFY_CHUTES_VOICE" "$NOTIFY_CHUTES_VOICE" || true
@@ -3134,7 +3404,7 @@ release_lock() {
 
 # Interrupt handling
 cleanup_managed_processes() {
-    if [ "${#RALPHIE_BG_PIDS[@]-0}" -gt 0 ]; then
+    if [ "${#RALPHIE_BG_PIDS[@]}" -gt 0 ]; then
         for pid in "${RALPHIE_BG_PIDS[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
                 kill -TERM "$pid" 2>/dev/null || true
@@ -3682,6 +3952,7 @@ run_swarm_consensus() {
     done
     # Wait for all reviewers with a safety timeout to prevent infinite hangs
     local swarm_timeout="${SWARM_CONSENSUS_TIMEOUT:-600}"
+    is_number "$swarm_timeout" || swarm_timeout=600
     local swarm_start swarm_elapsed
     swarm_start="$(date +%s)"
     local swarm_timed_out=false
@@ -3743,12 +4014,13 @@ run_swarm_consensus() {
         if [ -f "$status_file" ]; then
             status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
             engine="$(grep -E "^engine=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+            engine="$(sanitize_text_for_log "$engine" | cut -c 1-40)"
             [ "$status" = "success" ] || status="failure"
         fi
 
         if [ -f "$ofile" ]; then
             score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
-            is_number "$score" || score="0"
+            score="$(sanitize_review_score "$score")"
             if grep -qE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null; then
                 verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" | tail -n 1 | sed -E 's/<\/?verdict>//g' )"
             elif grep -qE "<decision>(GO|HOLD)</decision>" "$ofile" 2>/dev/null; then
@@ -3763,7 +4035,8 @@ run_swarm_consensus() {
             if grep -q "<gaps>" "$ofile" 2>/dev/null; then
                 verdict_gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
             fi
-            verdict_gaps="$(echo "$verdict_gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
+            verdict_gaps="$(sanitize_text_for_log "$verdict_gaps" | cut -c 1-180)"
+            next_phase_reason="$(sanitize_text_for_log "$next_phase_reason")"
             [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         else
             verdict_gaps="no output artifact"
@@ -3851,7 +4124,11 @@ run_swarm_consensus() {
     LAST_CONSENSUS_NEXT_PHASE_REASON="$next_phase_vote_reason"
     LAST_CONSENSUS_RESPONDED_VOTES="$responded_votes"
     LAST_CONSENSUS_SCORE="$avg_score"
-    LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
+    if [ "${#summary_lines[@]}" -gt 0 ]; then
+        LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
+    else
+        LAST_CONSENSUS_SUMMARY=""
+    fi
     if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge "$CONSENSUS_SCORE_THRESHOLD" ]; then
         LAST_CONSENSUS_PASS=true
         ACTIVE_ENGINE="$saved_engine"
@@ -3953,7 +4230,7 @@ read_handoff_review_output() {
     [ -f "$output_file" ] || return 0
 
     score="$(grep -oE "<score>[0-9]{1,3}</score>" "$output_file" | sed 's/[^0-9]//g' | tail -n 1)"
-    is_number "$score" || score="0"
+    score="$(sanitize_review_score "$score")"
 
     if grep -qE "<verdict>(GO|HOLD)</verdict>" "$output_file" 2>/dev/null; then
         verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$output_file" | tail -n 1 | sed -E 's/<\/?verdict>//g')"
@@ -3964,7 +4241,7 @@ read_handoff_review_output() {
     if grep -q "<gaps>" "$output_file" 2>/dev/null; then
         gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$output_file" | head -n 1)"
     fi
-    gaps="$(printf '%s' "$gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-180)"
+    gaps="$(sanitize_text_for_log "$gaps" | cut -c 1-180)"
     [ -z "$gaps" ] && gaps="no explicit gaps"
 
     LAST_HANDOFF_SCORE="$score"
@@ -4020,6 +4297,8 @@ run_handoff_validation() {
 
 phase_capture_worktree_manifest() {
     local manifest_file="$1"
+    local cached_diff_hash worktree_diff_hash
+    local rel_path abs_path untracked_hash
     [ -n "$manifest_file" ] || return 1
     : > "$manifest_file"
 
@@ -4027,10 +4306,23 @@ phase_capture_worktree_manifest() {
         return 1
     fi
 
+    cached_diff_hash="$(git -C "$PROJECT_DIR" diff --cached -- . | sha256_stream_sum 2>/dev/null || echo "unavailable")"
+    worktree_diff_hash="$(git -C "$PROJECT_DIR" diff -- . | sha256_stream_sum 2>/dev/null || echo "unavailable")"
+
     {
+        printf 'H CACHED_DIFF_SHA %s\n' "$cached_diff_hash"
+        printf 'H WORKTREE_DIFF_SHA %s\n' "$worktree_diff_hash"
         git -C "$PROJECT_DIR" diff --name-status --cached -- . | sed 's/^/C /'
         git -C "$PROJECT_DIR" diff --name-status -- . | sed 's/^/W /'
-        git -C "$PROJECT_DIR" ls-files --others --exclude-standard -- . | sed 's/^/U /'
+        while IFS= read -r -d '' rel_path; do
+            abs_path="$PROJECT_DIR/$rel_path"
+            if [ -f "$abs_path" ]; then
+                untracked_hash="$(sha256_file_sum "$abs_path" 2>/dev/null || echo "unavailable")"
+            else
+                untracked_hash="<non-file>"
+            fi
+            printf 'U %s %s\n' "$untracked_hash" "$rel_path"
+        done < <(git -C "$PROJECT_DIR" ls-files --others --exclude-standard -z -- .)
     } | sort > "$manifest_file"
     return 0
 }
@@ -4088,13 +4380,30 @@ phase_manifest_delta_preview() {
     local before_file="$1"
     local after_file="$2"
     local lines_limit="${3:-8}"
+    local emitted=0
+    local line
+    local label
+    local content
 
     if [ ! -f "$before_file" ] || [ ! -f "$after_file" ]; then
         echo ""
         return 0
     fi
 
-    comm -3 "$before_file" "$after_file" | sed 's/^[[:space:]]*//' | head -n "$lines_limit"
+    while IFS= read -r line; do
+        if [ "$emitted" -ge "$lines_limit" ]; then
+            break
+        fi
+        if [ "${line:0:1}" = $'\t' ]; then
+            label="after"
+            content="${line:1}"
+        else
+            label="before"
+            content="$line"
+        fi
+        printf '%s: %s\n' "$label" "$content"
+        emitted=$((emitted + 1))
+    done < <(comm -3 "$before_file" "$after_file")
 }
 
 git_has_local_changes() {
@@ -4361,6 +4670,7 @@ phase_index_from_name() {
         refactor) echo 3; return 0 ;;
         lint) echo 4; return 0 ;;
         document) echo 5; return 0 ;;
+        done) echo 6; return 0 ;;
         *) echo 0; return 1 ;;
     esac
 }
@@ -4480,6 +4790,10 @@ summarize_blocks_for_log() {
     local idx=0
     local output=""
     local item
+    if [ "${#blockers[@]}" -eq 0 ]; then
+        printf '%s' ""
+        return 0
+    fi
     for item in "${blockers[@]}"; do
         [ -z "$item" ] && continue
         if [ -z "$output" ]; then
@@ -4586,17 +4900,19 @@ markdown_artifacts_are_clean() {
         [ -n "$file" ] && files+=("$file")
     done <<< "$spec_files"
 
-    for file in "${files[@]}"; do
-        [ -f "$file" ] || continue
-        if grep -qiE "$leakage_pattern" "$file" 2>/dev/null; then
-            warn "Detected tool transcript leakage in markdown artifact: $(path_for_display "$file")"
-            bad=1
-        fi
-        if file_has_local_identity_leakage "$file"; then
-            warn "Detected local identity/path leakage in markdown artifact: $(path_for_display "$file")"
-            bad=1
-        fi
-    done
+    if [ "${#files[@]}" -gt 0 ]; then
+        for file in "${files[@]}"; do
+            [ -f "$file" ] || continue
+            if grep -qiE "$leakage_pattern" "$file" 2>/dev/null; then
+                warn "Detected tool transcript leakage in markdown artifact: $(path_for_display "$file")"
+                bad=1
+            fi
+            if file_has_local_identity_leakage "$file"; then
+                warn "Detected local identity/path leakage in markdown artifact: $(path_for_display "$file")"
+                bad=1
+            fi
+        done
+    fi
 
     [ "$bad" -eq 0 ]
 }
@@ -4606,7 +4922,7 @@ sanitize_markdown_artifact_file() {
     [ -f "$file" ] || return 0
 
     local tmp_file
-    tmp_file="$(mktemp "$CONFIG_DIR/markdown-clean.XXXXXX")"
+    tmp_file="$(mktemp "$CONFIG_DIR/markdown-clean.XXXXXX")" || return 1
 
     if awk '
         $0 ~ /succeeded in [0-9]+ms:/ || $0 ~ /assistant[[:space:]]+to=/ || $0 ~ /recipient_name[[:space:]]*:/ || $0 ~ /tokens used/ || $0 ~ /mcp startup:/ || $0 ~ /\/Users\/[A-Za-z0-9._-]+\// || $0 ~ /\/root\/[A-Za-z0-9._-]+\// || $0 ~ /\/home\/[A-Za-z0-9._-]+\//
@@ -4756,16 +5072,44 @@ run_stack_discovery() {
     [ -f "$PROJECT_DIR/Gemfile" ] && { unknown_score=$((unknown_score + 10)); unknown_signal+=("Gemfile"); }
     if is_number "$rb_count" && [ "$rb_count" -gt 0 ]; then unknown_score=$((unknown_score + 4)); unknown_signal+=("${rb_count} Ruby files"); fi
 
+    local node_signal_summary="-" python_signal_summary="-" go_signal_summary="-"
+    local rust_signal_summary="-" java_signal_summary="-" dotnet_signal_summary="-"
+    local unknown_signal_summary="-"
+    if [ "${#node_signal[@]}" -gt 0 ]; then
+        node_signal_summary="$(join_with_commas "${node_signal[@]}")"
+    fi
+    if [ "${#python_signal[@]}" -gt 0 ]; then
+        python_signal_summary="$(join_with_commas "${python_signal[@]}")"
+    fi
+    if [ "${#go_signal[@]}" -gt 0 ]; then
+        go_signal_summary="$(join_with_commas "${go_signal[@]}")"
+    fi
+    if [ "${#rust_signal[@]}" -gt 0 ]; then
+        rust_signal_summary="$(join_with_commas "${rust_signal[@]}")"
+    fi
+    if [ "${#java_signal[@]}" -gt 0 ]; then
+        java_signal_summary="$(join_with_commas "${java_signal[@]}")"
+    fi
+    if [ "${#dotnet_signal[@]}" -gt 0 ]; then
+        dotnet_signal_summary="$(join_with_commas "${dotnet_signal[@]}")"
+    fi
+    if [ "${#unknown_signal[@]}" -gt 0 ]; then
+        unknown_signal_summary="$(join_with_commas "${unknown_signal[@]}")"
+    fi
+
     local ranking_file
-    ranking_file="$(mktemp "$CONFIG_DIR/stack-ranking.XXXXXX")"
+    ranking_file="$(mktemp "$CONFIG_DIR/stack-ranking.XXXXXX")" || {
+        warn "Unable to create temp file for stack ranking."
+        return 1
+    }
     {
-        printf "%03d|Node.js|%s\n" "$node_score" "$(join_with_commas "${node_signal[@]}")"
-        printf "%03d|Python|%s\n" "$python_score" "$(join_with_commas "${python_signal[@]}")"
-        printf "%03d|Go|%s\n" "$go_score" "$(join_with_commas "${go_signal[@]}")"
-        printf "%03d|Rust|%s\n" "$rust_score" "$(join_with_commas "${rust_signal[@]}")"
-        printf "%03d|Java|%s\n" "$java_score" "$(join_with_commas "${java_signal[@]}")"
-        printf "%03d|.NET|%s\n" "$dotnet_score" "$(join_with_commas "${dotnet_signal[@]}")"
-        printf "%03d|Ruby|%s\n" "$unknown_score" "$(join_with_commas "${unknown_signal[@]}")"
+        printf "%03d|Node.js|%s\n" "$node_score" "$node_signal_summary"
+        printf "%03d|Python|%s\n" "$python_score" "$python_signal_summary"
+        printf "%03d|Go|%s\n" "$go_score" "$go_signal_summary"
+        printf "%03d|Rust|%s\n" "$rust_score" "$rust_signal_summary"
+        printf "%03d|Java|%s\n" "$java_score" "$java_signal_summary"
+        printf "%03d|.NET|%s\n" "$dotnet_score" "$dotnet_signal_summary"
+        printf "%03d|Ruby|%s\n" "$unknown_score" "$unknown_signal_summary"
         printf "%03d|Unknown|-\n" "$unknown_score"
     } > "$ranking_file"
 
@@ -5383,16 +5727,17 @@ collect_phase_retry_failures_from_consensus() {
         [ -f "$ofile" ] || continue
         local score verdict next_phase next_phase_reason
         score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
-        is_number "$score" || score="0"
+        score="$(sanitize_review_score "$score")"
         verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null | tail -n 1 | sed -E 's/<\/?verdict>//g')"
         [ "$verdict" = "GO" ] || [ "$verdict" = "HOLD" ] || verdict="HOLD"
         next_phase="$(extract_xml_value "$ofile" "next_phase" "unknown")"
         next_phase_reason="$(extract_xml_value "$ofile" "next_phase_reason" "")"
+        next_phase_reason="$(sanitize_text_for_log "$next_phase_reason")"
         [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         local gaps
         if grep -q "<gaps>" "$ofile" 2>/dev/null; then
             gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
-            gaps="$(echo "$gaps" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c 1-140)"
+            gaps="$(sanitize_text_for_log "$gaps" | cut -c 1-140)"
             [ -z "$gaps" ] && gaps="no explicit gaps"
         else
             gaps="no explicit gaps"
@@ -5482,6 +5827,7 @@ print_session_config_banner() {
     info "telegram_chat_id: $(redact_secret_for_log "$TG_CHAT_ID")"
     info "discord_webhook: $(redact_endpoint_for_log "$NOTIFY_DISCORD_WEBHOOK_URL")"
     info "tts_enabled: ${NOTIFY_TTS_ENABLED:-$DEFAULT_NOTIFY_TTS_ENABLED}"
+    info "tts_style: ${NOTIFY_TTS_STYLE:-$DEFAULT_NOTIFY_TTS_STYLE}"
     info "notify_event_dedup_window_seconds: ${NOTIFY_EVENT_DEDUP_WINDOW_SECONDS:-$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}"
     info "notify_incident_reminder_minutes: ${NOTIFY_INCIDENT_REMINDER_MINUTES:-$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES}"
     info "chutes_api_key: $(redact_secret_for_log "$CHUTES_API_KEY")"
@@ -5562,6 +5908,15 @@ main() {
     if ! is_number "$MAX_ITERATIONS" || [ "$MAX_ITERATIONS" -lt 0 ]; then
         MAX_ITERATIONS=0
     fi
+    if ! is_number "$COMMAND_TIMEOUT_SECONDS" || [ "$COMMAND_TIMEOUT_SECONDS" -lt 0 ]; then
+        COMMAND_TIMEOUT_SECONDS="$DEFAULT_COMMAND_TIMEOUT_SECONDS"
+    fi
+    if ! is_number "$SWARM_CONSENSUS_TIMEOUT" || [ "$SWARM_CONSENSUS_TIMEOUT" -lt 1 ]; then
+        SWARM_CONSENSUS_TIMEOUT="$DEFAULT_SWARM_CONSENSUS_TIMEOUT"
+    fi
+    if ! is_number "$ENGINE_SMOKE_TEST_TIMEOUT" || [ "$ENGINE_SMOKE_TEST_TIMEOUT" -lt 1 ]; then
+        ENGINE_SMOKE_TEST_TIMEOUT="$DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT"
+    fi
 
     local should_exit="false"
     if ! enforce_session_budget "session init"; then
@@ -5598,7 +5953,11 @@ main() {
     local start_phase_index=0
     local start_phase_name="plan"
     local -a phase_resume_blockers=()
+    local done_phase_index="${#phases[@]}"
     if is_true "$RESUME_REQUESTED"; then
+        if [ "${CURRENT_PHASE:-}" = "done" ]; then
+            start_phase_index="$done_phase_index"
+        else
         start_phase_index="$CURRENT_PHASE_INDEX"
         if ! is_number "$start_phase_index" || [ "$start_phase_index" -lt 0 ] || [ "$start_phase_index" -ge "${#phases[@]}" ]; then
             start_phase_index="$(phase_index_from_name "$CURRENT_PHASE")" || start_phase_index=0
@@ -5606,8 +5965,13 @@ main() {
                 start_phase_index=0
             fi
         fi
+        fi
         start_phase_name="$(phase_name_from_index "$start_phase_index")" || start_phase_name="plan"
-        mapfile -t phase_resume_blockers < <(collect_phase_resume_blockers "$start_phase_name")
+        if [ "$start_phase_index" -lt "${#phases[@]}" ]; then
+            mapfile -t phase_resume_blockers < <(collect_phase_resume_blockers "$start_phase_name")
+        else
+            phase_resume_blockers=()
+        fi
         if [ "${#phase_resume_blockers[@]}" -gt 0 ]; then
             local resume_blockers_summary
             resume_blockers_summary="$(summarize_blocks_for_log "${phase_resume_blockers[@]}")"
@@ -5706,6 +6070,10 @@ main() {
             if [ "$reentering_in_progress_phase" = "true" ] && is_number "$CURRENT_PHASE_ATTEMPT" && [ "$CURRENT_PHASE_ATTEMPT" -ge 1 ]; then
                 phase_attempt="$CURRENT_PHASE_ATTEMPT"
             fi
+            if ! is_number "$phase_attempt" || [ "$phase_attempt" -lt 1 ] || [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+                warn "Recovered invalid persisted phase attempt '$phase_attempt' for phase '$phase'; resetting to attempt 1."
+                phase_attempt=1
+            fi
             local -a cumulative_phase_failures=()
             local phase_next_target="$phase"
             local phase_route="false"
@@ -5742,9 +6110,7 @@ main() {
 
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
-                if [ "$phase_noop_mode" != "none" ]; then
-                    phase_capture_worktree_manifest "$manifest_before_file" || true
-                fi
+                phase_capture_worktree_manifest "$manifest_before_file" || true
 
                 if [ "$phase_attempt" -gt 1 ]; then
                     local previous_attempt_file="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_$((phase_attempt - 1)).out"
@@ -5755,12 +6121,19 @@ main() {
                 fi
 
                 if [ "$phase" = "plan" ]; then
-                    append_bootstrap_context_to_plan_prompt "$pfile" "$bootstrap_prompt_file"
-                    active_prompt="$bootstrap_prompt_file"
+                    if append_bootstrap_context_to_plan_prompt "$pfile" "$bootstrap_prompt_file"; then
+                        active_prompt="$bootstrap_prompt_file"
+                    else
+                        phase_failures+=("failed to assemble plan prompt with bootstrap context")
+                    fi
                 fi
 
                 if [ "$phase_attempt" -gt 1 ]; then
-                    build_phase_prompt_with_feedback "$phase" "$active_prompt" "$attempt_feedback_file" "$phase_attempt" "${cumulative_phase_failures[@]}"
+                    if [ "${#cumulative_phase_failures[@]}" -gt 0 ]; then
+                        build_phase_prompt_with_feedback "$phase" "$active_prompt" "$attempt_feedback_file" "$phase_attempt" "${cumulative_phase_failures[@]}"
+                    else
+                        build_phase_prompt_with_feedback "$phase" "$active_prompt" "$attempt_feedback_file" "$phase_attempt"
+                    fi
                     active_prompt="$attempt_feedback_file"
                 fi
 
@@ -5784,9 +6157,11 @@ main() {
                         phase_failures+=("pre-build markdown remediation applied before retry")
                         phase_failures+=("pre-build markdown remediation summary: ${repair_summary//$'\\n'/; }")
                     fi
-                    for issue in "${gate_issues[@]}"; do
-                    phase_failures+=("build gate blocked before build execution: $issue")
-                    done
+                    if [ "${#gate_issues[@]}" -gt 0 ]; then
+                        for issue in "${gate_issues[@]}"; do
+                            phase_failures+=("build gate blocked before build execution: $issue")
+                        done
+                    fi
                 fi
 
                 if [ "${#phase_failures[@]}" -eq 0 ] && run_agent_with_prompt "$active_prompt" "$lfile" "$ofile" "$YOLO" "$phase_attempt"; then
@@ -5824,25 +6199,25 @@ main() {
                         fi
                     fi
 
-                    if [ "$phase_noop_mode" != "none" ]; then
-                        phase_capture_worktree_manifest "$manifest_after_file" || true
-                        if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
-                            if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
-                                phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
-                                if [ -n "$phase_delta_preview" ]; then
-                                    phase_delta_preview="$(printf '%s' "$phase_delta_preview" | tr '\n' '; ')"
+                    phase_capture_worktree_manifest "$manifest_after_file" || true
+                    if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
+                        if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
+                            phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
+                            if [ -n "$phase_delta_preview" ]; then
+                                phase_delta_preview="$(printf '%s' "$phase_delta_preview" | tr '\n' '; ')"
+                                if [ "$phase_noop_mode" != "none" ]; then
                                     phase_warnings+=("manifest delta preview: $phase_delta_preview")
-                                fi
-                            else
-                                if [ "$phase_noop_mode" = "hard" ]; then
-                                    phase_failures+=("$phase completed with no worktree mutation for phase '$phase'")
-                                else
-                                    phase_warnings+=("soft no-op signal: $phase completed without visible worktree mutation; acceptable for validation-only phases when run outputs are present")
                                 fi
                             fi
                         else
-                            phase_warnings+=("phase no-op check skipped: could not capture a reliable manifest snapshot for this attempt")
+                            if [ "$phase_noop_mode" = "hard" ]; then
+                                phase_failures+=("$phase completed with no worktree mutation for phase '$phase'")
+                            elif [ "$phase_noop_mode" = "soft" ]; then
+                                phase_warnings+=("soft no-op signal: $phase completed without visible worktree mutation; acceptable for validation-only phases when run outputs are present")
+                            fi
                         fi
+                    elif [ "$phase_noop_mode" != "none" ]; then
+                        phase_warnings+=("phase no-op check skipped: could not capture a reliable manifest snapshot for this attempt")
                     fi
 
                     phase_warnings_text="$(printf '%s\n' "${phase_warnings[@]+"${phase_warnings[@]}"}")"
@@ -5935,21 +6310,29 @@ main() {
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
                     cumulative_phase_failures=("${phase_failures[@]}")
                     if [ "$consensus_evaluated" = "true" ] && [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
-                        phase_next_target="$LAST_CONSENSUS_NEXT_PHASE"
-                        phase_route="true"
-                        phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
-                        phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
-                        notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
-                        PHASE_ATTEMPT_IN_PROGRESS="false"
-                        CURRENT_PHASE_ATTEMPT=1
-                        save_state
-                        break
+                        local phase_route_candidate phase_route_candidate_index
+                        phase_route_candidate="$LAST_CONSENSUS_NEXT_PHASE"
+                        phase_route_candidate_index="$(phase_index_or_done "$phase_route_candidate")"
+                        # On failed attempts, only allow backtracking reroutes.
+                        # Forward/terminal reroutes would skip unresolved phase failures.
+                        if is_number "$phase_route_candidate_index" && [ "$phase_route_candidate_index" -ge 0 ] && [ "$phase_route_candidate_index" -lt "$phase_index" ]; then
+                            phase_next_target="$phase_route_candidate"
+                            phase_route="true"
+                            phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                            phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                            notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            CURRENT_PHASE_ATTEMPT=1
+                            save_state
+                            break
+                        fi
+                        phase_warnings+=("ignoring non-backtracking reroute recommendation '$phase_route_candidate' while phase '$phase' has unresolved failures")
                     fi
                     write_gate_feedback "$phase" "${phase_failures[@]}"
                     for issue in "${phase_failures[@]}"; do
                         warn "$issue"
                     done
-                    if [ "${#phase_warnings[@]-0}" -gt 0 ]; then
+                    if [ "${#phase_warnings[@]}" -gt 0 ]; then
                         for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                             info "note: $issue"
                         done
@@ -5977,7 +6360,7 @@ main() {
                     continue
                 fi
 
-                if [ "${#phase_warnings[@]-0}" -gt 0 ]; then
+                if [ "${#phase_warnings[@]}" -gt 0 ]; then
                     for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                         info "note: $issue"
                     done
@@ -6044,6 +6427,11 @@ main() {
         if [ "$start_phase_index" -ge "${#phases[@]}" ]; then
             info "All phases completed. Session done."
             notify_event "session_done" "ok" "all phases completed successfully" || true
+            CURRENT_PHASE="done"
+            CURRENT_PHASE_INDEX="${#phases[@]}"
+            CURRENT_PHASE_ATTEMPT=1
+            PHASE_ATTEMPT_IN_PROGRESS="false"
+            save_state
             break
         fi
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then

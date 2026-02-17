@@ -1,0 +1,68 @@
+name: Durability CI
+
+on:
+  push:
+    paths:
+      - 'ralphie.sh'
+      - 'tests/**'
+      - '.github/workflows/durability-ci.yml'
+  pull_request:
+    paths:
+      - 'ralphie.sh'
+      - 'tests/**'
+      - '.github/workflows/durability-ci.yml'
+  workflow_dispatch:
+    inputs:
+      run_live_smoke:
+        description: 'Run a real live engine smoke check (uses API secrets and can incur cost)'
+        required: true
+        type: boolean
+        default: false
+      live_engine:
+        description: 'Engine for live smoke'
+        required: true
+        type: choice
+        options:
+          - codex
+          - claude
+        default: codex
+
+permissions:
+  contents: read
+
+jobs:
+  durability:
+    name: Offline Durability Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run durability suite
+        run: |
+          chmod +x tests/durability/run-durability-suite.sh
+          tests/durability/run-durability-suite.sh
+
+  live_smoke:
+    name: Live Engine Smoke
+    needs: durability
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_smoke }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run live smoke
+        env:
+          LIVE_SMOKE_ENGINE: ${{ inputs.live_engine }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          LIVE_SMOKE_CODEX_MODEL: ${{ vars.LIVE_SMOKE_CODEX_MODEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          LIVE_SMOKE_CLAUDE_MODEL: ${{ vars.LIVE_SMOKE_CLAUDE_MODEL }}
+        run: |
+          chmod +x tests/durability/run-live-smoke.sh
+          tests/durability/run-live-smoke.sh "$LIVE_SMOKE_ENGINE"

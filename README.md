@@ -2,7 +2,7 @@
 
 Version: `2.0.0`
 
-Ralphie is a high-fidelity autonomous development framework for Codex and Claude Code. It orchestrates a multi-phase engineering lifecycle—merging recursive planning, evidence-based implementation, and deep consensus swarms into a single, self-healing recursive loop.
+Ralphie is an autonomous engineering orchestrator for Codex and Claude Code. It runs a multi-phase software lifecycle with planning, implementation, validation, and consensus review in a resumable loop.
 
 ## Design Philosophy: Correct-by-Construction
 
@@ -11,7 +11,7 @@ Ralphie operates on a "Thinking before Doing" doctrine. The system is designed a
 ## Core Features
 
 -   **Recursive Planning:** Merges research, specification, and implementation planning into a single high-fidelity `Plan` mode.
--   **Deep Consensus Swarm:** Multi-persona reviewer panels (Adversarial, Optimist, Forensic) that alternate engines (Codex/Claude) and utilize stochastic jitter to eliminate confirmation bias.
+-   **Deep Consensus Swarm:** Multi-persona reviewer panels (Architect, Skeptic, Execution Reviewer, Safety Reviewer, Operations Reviewer, Quality Reviewer) with score/verdict routing (`GO|HOLD`) and next-phase recommendations.
 -   **Autonomous YOLO Mode:** Enabled by default, granting agents the authority to execute shell commands and modify files.
 -   **Self-Healing State:** SHA-256 checksum-validated state snapshots that detect artifact drift and allow for robust recovery via `--resume`.
 -   **Atomic Lifecycle Management:** Global process tracking ensures that orphaned agent processes are terminated on failure or interrupt.
@@ -55,9 +55,9 @@ To upgrade behavior, update the checked-out `ralphie.sh` script (or repository) 
 
 ## Security & Sandboxing (Claude Code)
 
-When operating in autonomous YOLO mode, Ralphie enforces high-security standards for Claude Code:
--   **Environment Isolation:** All commands are prefixed with `env IS_SANDBOX=1`.
--   **Permission Enforcement:** Automatically injects `--dangerously-skip-permissions` using an idempotent check to prevent argument duplication.
+When operating in autonomous YOLO mode, Ralphie applies Claude runtime safeguards:
+-   **Environment Flagging:** Agent command execution includes `IS_SANDBOX=1`.
+-   **Permission Flag Handling:** If supported by the installed Claude binary, Ralphie injects `--dangerously-skip-permissions` with idempotent argument checks.
 
 ## Usage
 
@@ -155,7 +155,9 @@ Equivalent environment variables in `.ralphie/config.env`:
 `TG_BOT_TOKEN`, `TG_CHAT_ID`,
 `RALPHIE_NOTIFY_DISCORD_ENABLED`, `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`,
 `RALPHIE_NOTIFY_TTS_ENABLED`, `CHUTES_API_KEY`,
+`RALPHIE_NOTIFY_TTS_STYLE`,
 `RALPHIE_NOTIFY_CHUTES_TTS_URL`, `RALPHIE_NOTIFY_CHUTES_VOICE`, `RALPHIE_NOTIFY_CHUTES_SPEED`,
+`RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS`, `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES`,
 `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED`,
 `RALPHIE_AUTO_INIT_GIT_IF_MISSING`,
 `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS`,
@@ -197,6 +199,7 @@ All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` u
 - `RALPHIE_NOTIFY_TELEGRAM_ENABLED=true|false` enables Telegram bot notifications (requires `TG_BOT_TOKEN` and `TG_CHAT_ID`).
 - `RALPHIE_NOTIFY_DISCORD_ENABLED=true|false` enables Discord webhook notifications (requires `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`).
 - `RALPHIE_NOTIFY_TTS_ENABLED=true|false` enables Chutes TTS voice notifications over Telegram/Discord (requires `CHUTES_API_KEY`).
+- `RALPHIE_NOTIFY_TTS_STYLE=standard|friendly|ralph_wiggum` controls the spoken narration format for TTS updates (this is text style, not a voice id).
 - `RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=N` suppresses duplicate notification events for `N` seconds.
 - `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=N` sends reminders every `N` minutes for sustained incident series.
 - `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true|false` controls whether the first-deploy notification wizard should run.
@@ -222,9 +225,12 @@ Current defaults are:
 - `RALPHIE_NOTIFY_TELEGRAM_ENABLED=false`
 - `RALPHIE_NOTIFY_DISCORD_ENABLED=false`
 - `RALPHIE_NOTIFY_TTS_ENABLED=false`
+- `RALPHIE_NOTIFY_TTS_STYLE=ralph_wiggum`
 - `RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak`
-- `RALPHIE_NOTIFY_CHUTES_VOICE=am_michael`
-- `RALPHIE_NOTIFY_CHUTES_SPEED=1.0`
+- `RALPHIE_NOTIFY_CHUTES_VOICE=am_puck`
+- `RALPHIE_NOTIFY_CHUTES_SPEED=1.24`
+- `RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90`
+- `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=10`
 - `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`
 
 Example `.ralphie/config.env`:
@@ -255,10 +261,11 @@ TG_CHAT_ID=
 RALPHIE_NOTIFY_DISCORD_ENABLED=false
 RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL=
 RALPHIE_NOTIFY_TTS_ENABLED=false
+RALPHIE_NOTIFY_TTS_STYLE=ralph_wiggum
 CHUTES_API_KEY=
 RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak
-RALPHIE_NOTIFY_CHUTES_VOICE=am_michael
-RALPHIE_NOTIFY_CHUTES_SPEED=1.0
+RALPHIE_NOTIFY_CHUTES_VOICE=am_puck
+RALPHIE_NOTIFY_CHUTES_SPEED=1.24
 RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90
 RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=10
 RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false
@@ -371,6 +378,82 @@ Build transitions require the snapshot and clean artifact checks to pass.
 - Completion state is stored in `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true`.
 - To re-run later, set `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`.
 
+## Notification Reliability Guarantees
+
+- Notification delivery is non-blocking for the main phase loop: delivery failures are logged and do not terminate Ralphie execution.
+- If TTS is enabled but Chutes TTS generation/upload fails, Ralphie still sends text updates on enabled channels and records `tts=fallback_text_only` in `.ralphie/notifications.log`.
+- If notifications are disabled or `curl` is unavailable, Ralphie continues normally without channel delivery attempts.
+
+## GitHub Actions CI
+
+Ralphie now includes a GitHub Actions workflow at `.github/workflows/durability-ci.yml`.
+
+- Auto run (push + PR): runs `tests/durability/run-durability-suite.sh` as the default offline durability gate.
+- Manual run (`workflow_dispatch`): optional live engine smoke check using `tests/durability/run-live-smoke.sh`.
+
+### Live smoke inputs
+
+- `run_live_smoke` (`true|false`): whether to execute live smoke.
+- `live_engine` (`codex|claude`): which live engine to test.
+
+### Live smoke interactive behavior
+
+- Running `tests/durability/run-live-smoke.sh` in an interactive terminal now prompts for:
+  - engine selection (`codex|claude`) when not explicitly provided
+  - optional temporary API key/model/endpoint overrides for the selected engine
+- These overrides are in-memory for that invocation only and are not persisted.
+- You can force prompt mode with `--prompt` or disable prompts with `--no-prompt`.
+
+### Live smoke secrets/vars
+
+- Codex live smoke:
+  - Secret: `OPENAI_API_KEY`
+  - Optional secret: `OPENAI_BASE_URL`
+  - Optional repo variable: `LIVE_SMOKE_CODEX_MODEL` (default: `gpt-4.1-mini`)
+- Claude live smoke:
+  - Secret: `ANTHROPIC_API_KEY`
+  - Optional secret: `ANTHROPIC_BASE_URL`
+  - Optional repo variable: `LIVE_SMOKE_CLAUDE_MODEL` (default: `claude-3-5-haiku-latest`)
+
+Live smoke is manual by default because it uses real provider credentials and can incur usage cost.
+
+## Controlled Claude Phase Stress Harness
+
+For fast, fail-fast, end-to-end orchestration validation (all Ralphie phases with handoff + consensus), use:
+
+```bash
+tests/durability/run-claude-phase-stress.sh
+```
+
+This harness runs in isolated temporary workspaces using a deterministic mock Claude binary (`tests/durability/mock-claude-control.sh`) and verifies:
+
+- full lifecycle path: `plan -> build -> test -> refactor -> lint -> document -> done`
+- retry behavior (simulated first-attempt handoff HOLD, then recovery)
+- crash/resume behavior (mid-phase interrupt, then `--resume` completion)
+- phase artifacts, handoff artifacts, consensus outputs, and terminal state integrity
+
+Common options:
+
+- `--scenarios full,retry,resume`
+- `--timeout-seconds 90`
+- `--keep-workspaces` (retain scenario workspaces for debugging)
+- `--discord-webhook-url <url>` (optional high-signal run notifications)
+- `--exercise-tts-fallback` (requires `--discord-webhook-url`; enables Ralphie TTS path with forced fail-fast TTS generation to verify text fallback delivery)
+
+Artifacts are written to:
+
+- `tests/durability/artifacts/claude-phase-stress-<timestamp>/`
+- summary report: `report.md`
+- per-scenario stdout/stderr logs
+
+## Test Isolation Guarantees
+
+- `tests/durability/run-durability-suite.sh` runs against isolated temporary copies and fails if tracked repository files change.
+- `tests/durability/run-claude-phase-stress.sh` executes scenarios in isolated temporary workspaces and enforces tracked-file integrity checks against the main repo.
+- `tests/durability/run-live-smoke.sh` performs network smoke checks only and enforces tracked-file integrity on exit.
+- `tests/notify-smoke.sh` targets project-root `.ralphie/config.env` for optional onboarding persistence and enforces tracked-file integrity checks to protect repository code.
+
 ## Credits
 
 Ralphie was inspired by the original [`ralph-wiggum`](https://github.com/fstandhartinger/ralph-wiggum) project by Florian Standhartinger.
+Florian's original work is the foundation for this project's name, spirit, and autonomous orchestration direction.
