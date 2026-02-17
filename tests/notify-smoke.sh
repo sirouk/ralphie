@@ -29,8 +29,8 @@ LOAD_CONFIG="true"       # true|false
 ONBOARD_MODE="auto"      # auto|always|never
 
 DEFAULT_CHUTES_TTS_URL="https://chutes-kokoro.chutes.ai/speak"
-DEFAULT_CHUTES_VOICE="am_michael"
-DEFAULT_CHUTES_SPEED="1.0"
+DEFAULT_CHUTES_VOICE="am_puck"
+DEFAULT_CHUTES_SPEED="1.24"
 
 NOTIFICATIONS_ENABLED="false"
 NOTIFY_TELEGRAM_ENABLED="false"
@@ -659,7 +659,7 @@ run_communication_onboarding_wizard() {
             tts_selected="true"
             CHUTES_API_KEY="$(prompt_override_value "Chutes API key (CHUTES_API_KEY)" "$CHUTES_API_KEY")"
             CHUTES_VOICE="$(prompt_override_value "Chutes voice id" "$CHUTES_VOICE")"
-            CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.0)" "$CHUTES_SPEED")"
+            CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.24)" "$CHUTES_SPEED")"
             is_decimal_number "$CHUTES_SPEED" || CHUTES_SPEED="$DEFAULT_CHUTES_SPEED"
             if [ -n "$CHUTES_API_KEY" ]; then
                 if [ "$telegram_selected" = "true" ]; then
