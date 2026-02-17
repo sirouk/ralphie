@@ -453,6 +453,28 @@ Artifacts are written to:
 - `tests/durability/run-live-smoke.sh` performs network smoke checks only and enforces tracked-file integrity on exit.
 - `tests/notify-smoke.sh` targets project-root `.ralphie/config.env` for optional onboarding persistence and enforces tracked-file integrity checks to protect repository code.
 
+## One-Command Pre-Ship
+
+Use the root test runner to execute the full pre-ship chain:
+
+```bash
+./test.sh
+```
+
+Default sequence:
+- `bash -n ralphie.sh`
+- `tests/durability/run-durability-suite.sh`
+- `tests/durability/run-claude-phase-stress.sh --scenarios full,retry,resume`
+- `tests/durability/run-live-smoke.sh` in auto mode (runs only if matching creds are present)
+
+Common flags:
+- `--live` (require live smoke and fail if creds missing)
+- `--skip-live` (offline-only pre-ship run)
+- `--live-engine codex|claude`
+- `--stress-scenarios full,retry,resume`
+- `--discord-webhook-url <url>`
+- `--exercise-tts-fallback` (requires webhook)
+
 ## Credits
 
 Ralphie was inspired by the original [`ralph-wiggum`](https://github.com/fstandhartinger/ralph-wiggum) project by Florian Standhartinger.
