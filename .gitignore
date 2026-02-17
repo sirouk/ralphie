@@ -9,3 +9,5 @@ research/HUMAN_FEEDBACK.md
 coverage/
 .nyc_output/
 htmlcov/
+tests/durability/artifacts/
+harness-mutation-audit.txt
