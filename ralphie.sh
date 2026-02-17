@@ -40,6 +40,7 @@ CONFIG_DIR="$PROJECT_DIR/.ralphie"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 LOCK_FILE="$CONFIG_DIR/run.lock"
 REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
+NOTIFICATION_LOG_FILE="$CONFIG_DIR/notifications.log"
 GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
 STATE_FILE="$CONFIG_DIR/state.env"
 DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh"
@@ -73,6 +74,7 @@ PROMPT_LINT_FILE="$PROJECT_DIR/PROMPT_lint.md"
 PROMPT_DOCUMENT_FILE="$PROJECT_DIR/PROMPT_document.md"
 PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
 PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
 
 # Shared logic for interactive questions and formatting.
 err() { echo -e "\033[1;31m$*\033[0m" >&2; }
@@ -121,6 +123,25 @@ redact_endpoint_for_log() {
     echo "<custom-set>"
 }
 
+redact_secret_for_log() {
+    local value="${1:-}"
+    if [ -z "$value" ]; then
+        echo "<unset>"
+        return 0
+    fi
+    echo "<set:${#value} chars>"
+}
+
+json_escape_string() {
+    local value="${1:-}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "$value"
+}
+
 # Boolean helper
 is_true() {
     case "${1:-}" in
@@ -138,6 +159,10 @@ is_bool_like() {
 
 is_number() {
     [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+is_decimal_number() {
+    [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
 
 extract_xml_value() {
@@ -331,6 +356,58 @@ load_config_file_safe() {
     done < "$file"
 }
 
+config_escape_double_quotes() {
+    local value="${1:-}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s' "$value"
+}
+
+upsert_config_env_value() {
+    local key="$1"
+    local value="${2:-}"
+    local escaped
+    local tmp_config_file
+
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    touch "$CONFIG_FILE"
+    escaped="$(config_escape_double_quotes "$value")"
+    tmp_config_file="$(mktemp "$CONFIG_DIR/config-upsert.XXXXXX")" || return 1
+
+    if ! awk -v key="$key" -v value="$escaped" '
+        BEGIN {
+            found=0
+        }
+        {
+            if ($0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/) {
+                line=$0
+                sub(/^[[:space:]]*/, "", line)
+                split(line, parts, "=")
+                if (parts[1] == key) {
+                    print key "=\"" value "\""
+                    found=1
+                    next
+                }
+            }
+            print
+        }
+        END {
+            if (!found) {
+                print key "=\"" value "\""
+            }
+        }
+    ' "$CONFIG_FILE" > "$tmp_config_file"; then
+        rm -f "$tmp_config_file"
+        return 1
+    fi
+
+    if ! mv "$tmp_config_file" "$CONFIG_FILE"; then
+        rm -f "$tmp_config_file"
+        return 1
+    fi
+    return 0
+}
+
 normalize_phase_noop_profile() {
     local profile="${1:-balanced}"
     case "$profile" in
@@ -467,7 +544,7 @@ Core options:
 
 All options may also be set through config.env (eg. SESSION_TOKEN_BUDGET, MAX_SESSION_CYCLES, etc).
 
-Additional runtime engine env knobs:
+Additional runtime env knobs:
   RALPHIE_CODEX_ENDPOINT                 Optional OPENAI_BASE_URL override for codex calls
   RALPHIE_CODEX_USE_RESPONSES_SCHEMA     Whether to pass codex --output-schema (true|false)
   RALPHIE_CODEX_RESPONSES_SCHEMA_FILE    JSON schema file path for codex --output-schema
@@ -477,6 +554,21 @@ Additional runtime engine env knobs:
   RALPHIE_AUTO_INIT_GIT_IF_MISSING       Initialize git repo at startup when missing (true|false)
   RALPHIE_AUTO_COMMIT_ON_PHASE_PASS      Auto-commit phase-approved changes (true|false)
   RALPHIE_STARTUP_OPERATIONAL_PROBE      Run startup operational self-checks (true|false)
+  RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED  First-deploy engine override prompt sentinel (true|false)
+  RALPHIE_NOTIFICATIONS_ENABLED          Master notifications toggle (true|false)
+  RALPHIE_NOTIFY_TELEGRAM_ENABLED        Enable Telegram notifications (true|false)
+  TG_BOT_TOKEN                           Telegram bot token
+  TG_CHAT_ID                             Telegram chat/channel id
+  RALPHIE_NOTIFY_DISCORD_ENABLED         Enable Discord webhook notifications (true|false)
+  RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL     Discord incoming webhook URL
+  RALPHIE_NOTIFY_TTS_ENABLED             Enable Chutes TTS voice notifications for Telegram/Discord (true|false)
+  CHUTES_API_KEY                         Chutes API key for TTS
+  RALPHIE_NOTIFY_CHUTES_TTS_URL          Chutes TTS endpoint URL
+  RALPHIE_NOTIFY_CHUTES_VOICE            Chutes TTS voice id (example: am_michael)
+  RALPHIE_NOTIFY_CHUTES_SPEED            Chutes TTS speed (example: 1.0)
+  RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS  Suppress duplicate notification events within N seconds
+  RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES   Reminder cadence (minutes) for sustained incident series
+  RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED  First-deploy notification setup prompt sentinel (true|false)
 EOF
 }
 
@@ -787,6 +879,17 @@ DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
 DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT=15               # seconds to wait for smoke-test canary response
 DEFAULT_STARTUP_OPERATIONAL_PROBE="true"          # run startup self-checks for runtime confidence
+DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED="false"     # first-deploy interactive engine override prompt sentinel
+DEFAULT_NOTIFICATIONS_ENABLED="false"              # master notifications toggle
+DEFAULT_NOTIFY_TELEGRAM_ENABLED="false"            # send status messages to Telegram bot/chat
+DEFAULT_NOTIFY_DISCORD_ENABLED="false"             # send status messages to Discord webhook
+DEFAULT_NOTIFY_TTS_ENABLED="false"                 # enable Chutes TTS voice notifications via Telegram/Discord
+DEFAULT_NOTIFY_CHUTES_TTS_URL="https://chutes-kokoro.chutes.ai/speak"
+DEFAULT_NOTIFY_CHUTES_VOICE="am_michael"
+DEFAULT_NOTIFY_CHUTES_SPEED="1.0"
+DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90       # suppress duplicate notification events in a short window
+DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES=10        # reminder cadence for ongoing incident series
+DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED="false"  # first-deploy notification setup prompt sentinel
 
 # Load configuration from environment or file.
 COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-$DEFAULT_COMMAND_TIMEOUT_SECONDS}"
@@ -835,6 +938,21 @@ ENGINE_HEALTH_RETRY_DELAY_SECONDS="${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT
 ENGINE_HEALTH_RETRY_VERBOSE="${ENGINE_HEALTH_RETRY_VERBOSE:-$DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE}"
 ENGINE_SMOKE_TEST_TIMEOUT="${ENGINE_SMOKE_TEST_TIMEOUT:-$DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT}"
 STARTUP_OPERATIONAL_PROBE="${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
+ENGINE_OVERRIDES_BOOTSTRAPPED="${ENGINE_OVERRIDES_BOOTSTRAPPED:-$DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED}"
+NOTIFICATIONS_ENABLED="${NOTIFICATIONS_ENABLED:-$DEFAULT_NOTIFICATIONS_ENABLED}"
+NOTIFY_TELEGRAM_ENABLED="${NOTIFY_TELEGRAM_ENABLED:-$DEFAULT_NOTIFY_TELEGRAM_ENABLED}"
+NOTIFY_DISCORD_ENABLED="${NOTIFY_DISCORD_ENABLED:-$DEFAULT_NOTIFY_DISCORD_ENABLED}"
+NOTIFY_DISCORD_WEBHOOK_URL="${NOTIFY_DISCORD_WEBHOOK_URL:-}"
+NOTIFY_TTS_ENABLED="${NOTIFY_TTS_ENABLED:-$DEFAULT_NOTIFY_TTS_ENABLED}"
+NOTIFY_CHUTES_TTS_URL="${NOTIFY_CHUTES_TTS_URL:-$DEFAULT_NOTIFY_CHUTES_TTS_URL}"
+NOTIFY_CHUTES_VOICE="${NOTIFY_CHUTES_VOICE:-$DEFAULT_NOTIFY_CHUTES_VOICE}"
+NOTIFY_CHUTES_SPEED="${NOTIFY_CHUTES_SPEED:-$DEFAULT_NOTIFY_CHUTES_SPEED}"
+NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="${NOTIFY_EVENT_DEDUP_WINDOW_SECONDS:-$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}"
+NOTIFY_INCIDENT_REMINDER_MINUTES="${NOTIFY_INCIDENT_REMINDER_MINUTES:-$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES}"
+NOTIFICATION_WIZARD_BOOTSTRAPPED="${NOTIFICATION_WIZARD_BOOTSTRAPPED:-$DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED}"
+TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+TG_CHAT_ID="${TG_CHAT_ID:-}"
+CHUTES_API_KEY="${CHUTES_API_KEY:-}"
 
 if [ -f "$CONFIG_FILE" ]; then
     load_config_file_safe "$CONFIG_FILE"
@@ -862,6 +980,21 @@ CLAUDE_ENDPOINT="${RALPHIE_CLAUDE_ENDPOINT:-$CLAUDE_ENDPOINT}"
 CLAUDE_THINKING_OVERRIDE="${RALPHIE_CLAUDE_THINKING_OVERRIDE:-$CLAUDE_THINKING_OVERRIDE}"
 STARTUP_OPERATIONAL_PROBE="${RALPHIE_STARTUP_OPERATIONAL_PROBE:-$STARTUP_OPERATIONAL_PROBE}"
 CONSENSUS_SCORE_THRESHOLD="${RALPHIE_CONSENSUS_SCORE_THRESHOLD:-$CONSENSUS_SCORE_THRESHOLD}"
+ENGINE_OVERRIDES_BOOTSTRAPPED="${RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED:-$ENGINE_OVERRIDES_BOOTSTRAPPED}"
+NOTIFICATIONS_ENABLED="${RALPHIE_NOTIFICATIONS_ENABLED:-$NOTIFICATIONS_ENABLED}"
+NOTIFY_TELEGRAM_ENABLED="${RALPHIE_NOTIFY_TELEGRAM_ENABLED:-$NOTIFY_TELEGRAM_ENABLED}"
+NOTIFY_DISCORD_ENABLED="${RALPHIE_NOTIFY_DISCORD_ENABLED:-$NOTIFY_DISCORD_ENABLED}"
+NOTIFY_DISCORD_WEBHOOK_URL="${RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL:-$NOTIFY_DISCORD_WEBHOOK_URL}"
+NOTIFY_TTS_ENABLED="${RALPHIE_NOTIFY_TTS_ENABLED:-$NOTIFY_TTS_ENABLED}"
+NOTIFY_CHUTES_TTS_URL="${RALPHIE_NOTIFY_CHUTES_TTS_URL:-$NOTIFY_CHUTES_TTS_URL}"
+NOTIFY_CHUTES_VOICE="${RALPHIE_NOTIFY_CHUTES_VOICE:-$NOTIFY_CHUTES_VOICE}"
+NOTIFY_CHUTES_SPEED="${RALPHIE_NOTIFY_CHUTES_SPEED:-$NOTIFY_CHUTES_SPEED}"
+NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="${RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS:-$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}"
+NOTIFY_INCIDENT_REMINDER_MINUTES="${RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES:-$NOTIFY_INCIDENT_REMINDER_MINUTES}"
+NOTIFICATION_WIZARD_BOOTSTRAPPED="${RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED:-$NOTIFICATION_WIZARD_BOOTSTRAPPED}"
+TG_BOT_TOKEN="${RALPHIE_TG_BOT_TOKEN:-$TG_BOT_TOKEN}"
+TG_CHAT_ID="${RALPHIE_TG_CHAT_ID:-$TG_CHAT_ID}"
+CHUTES_API_KEY="${RALPHIE_CHUTES_API_KEY:-$CHUTES_API_KEY}"
 
 # Validate engine selection
 ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
@@ -922,6 +1055,90 @@ if ! is_number "$CONSENSUS_SCORE_THRESHOLD" || [ "$CONSENSUS_SCORE_THRESHOLD" -l
     CONSENSUS_SCORE_THRESHOLD="$DEFAULT_CONSENSUS_SCORE_THRESHOLD"
 fi
 
+ENGINE_OVERRIDES_BOOTSTRAPPED="$(to_lower "$ENGINE_OVERRIDES_BOOTSTRAPPED")"
+if ! is_bool_like "$ENGINE_OVERRIDES_BOOTSTRAPPED"; then
+    warn "Invalid ENGINE_OVERRIDES_BOOTSTRAPPED '$ENGINE_OVERRIDES_BOOTSTRAPPED'. Falling back to '$DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED'."
+    ENGINE_OVERRIDES_BOOTSTRAPPED="$DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED"
+fi
+
+NOTIFICATIONS_ENABLED="$(to_lower "$NOTIFICATIONS_ENABLED")"
+if ! is_bool_like "$NOTIFICATIONS_ENABLED"; then
+    warn "Invalid NOTIFICATIONS_ENABLED '$NOTIFICATIONS_ENABLED'. Falling back to '$DEFAULT_NOTIFICATIONS_ENABLED'."
+    NOTIFICATIONS_ENABLED="$DEFAULT_NOTIFICATIONS_ENABLED"
+fi
+
+NOTIFY_TELEGRAM_ENABLED="$(to_lower "$NOTIFY_TELEGRAM_ENABLED")"
+if ! is_bool_like "$NOTIFY_TELEGRAM_ENABLED"; then
+    warn "Invalid NOTIFY_TELEGRAM_ENABLED '$NOTIFY_TELEGRAM_ENABLED'. Falling back to '$DEFAULT_NOTIFY_TELEGRAM_ENABLED'."
+    NOTIFY_TELEGRAM_ENABLED="$DEFAULT_NOTIFY_TELEGRAM_ENABLED"
+fi
+
+NOTIFY_DISCORD_ENABLED="$(to_lower "$NOTIFY_DISCORD_ENABLED")"
+if ! is_bool_like "$NOTIFY_DISCORD_ENABLED"; then
+    warn "Invalid NOTIFY_DISCORD_ENABLED '$NOTIFY_DISCORD_ENABLED'. Falling back to '$DEFAULT_NOTIFY_DISCORD_ENABLED'."
+    NOTIFY_DISCORD_ENABLED="$DEFAULT_NOTIFY_DISCORD_ENABLED"
+fi
+
+NOTIFY_TTS_ENABLED="$(to_lower "$NOTIFY_TTS_ENABLED")"
+if ! is_bool_like "$NOTIFY_TTS_ENABLED"; then
+    warn "Invalid NOTIFY_TTS_ENABLED '$NOTIFY_TTS_ENABLED'. Falling back to '$DEFAULT_NOTIFY_TTS_ENABLED'."
+    NOTIFY_TTS_ENABLED="$DEFAULT_NOTIFY_TTS_ENABLED"
+fi
+
+NOTIFICATION_WIZARD_BOOTSTRAPPED="$(to_lower "$NOTIFICATION_WIZARD_BOOTSTRAPPED")"
+if ! is_bool_like "$NOTIFICATION_WIZARD_BOOTSTRAPPED"; then
+    warn "Invalid NOTIFICATION_WIZARD_BOOTSTRAPPED '$NOTIFICATION_WIZARD_BOOTSTRAPPED'. Falling back to '$DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED'."
+    NOTIFICATION_WIZARD_BOOTSTRAPPED="$DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED"
+fi
+
+if ! is_decimal_number "$NOTIFY_CHUTES_SPEED"; then
+    warn "Invalid NOTIFY_CHUTES_SPEED '$NOTIFY_CHUTES_SPEED'. Falling back to '$DEFAULT_NOTIFY_CHUTES_SPEED'."
+    NOTIFY_CHUTES_SPEED="$DEFAULT_NOTIFY_CHUTES_SPEED"
+fi
+if ! is_number "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" || [ "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" -lt 0 ]; then
+    warn "Invalid NOTIFY_EVENT_DEDUP_WINDOW_SECONDS '$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS'. Falling back to '$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS'."
+    NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
+fi
+if ! is_number "$NOTIFY_INCIDENT_REMINDER_MINUTES" || [ "$NOTIFY_INCIDENT_REMINDER_MINUTES" -lt 0 ]; then
+    warn "Invalid NOTIFY_INCIDENT_REMINDER_MINUTES '$NOTIFY_INCIDENT_REMINDER_MINUTES'. Falling back to '$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES'."
+    NOTIFY_INCIDENT_REMINDER_MINUTES="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
+fi
+if [ -z "$NOTIFY_CHUTES_TTS_URL" ]; then
+    NOTIFY_CHUTES_TTS_URL="$DEFAULT_NOTIFY_CHUTES_TTS_URL"
+fi
+if [ -z "$NOTIFY_CHUTES_VOICE" ]; then
+    NOTIFY_CHUTES_VOICE="$DEFAULT_NOTIFY_CHUTES_VOICE"
+fi
+
+if ! command -v curl >/dev/null 2>&1 && is_true "$NOTIFICATIONS_ENABLED"; then
+    warn "Notifications requested but 'curl' is unavailable. Disabling notifications."
+    NOTIFICATIONS_ENABLED="false"
+fi
+
+if is_true "$NOTIFY_TELEGRAM_ENABLED"; then
+    if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+        warn "Telegram notifications enabled but TG_BOT_TOKEN/TG_CHAT_ID are incomplete. Disabling Telegram channel."
+        NOTIFY_TELEGRAM_ENABLED="false"
+    fi
+fi
+if is_true "$NOTIFY_DISCORD_ENABLED" && [ -z "$NOTIFY_DISCORD_WEBHOOK_URL" ]; then
+    warn "Discord notifications enabled but webhook URL is empty. Disabling Discord channel."
+    NOTIFY_DISCORD_ENABLED="false"
+fi
+if is_true "$NOTIFY_TTS_ENABLED"; then
+    if ! is_true "$NOTIFY_TELEGRAM_ENABLED" && ! is_true "$NOTIFY_DISCORD_ENABLED"; then
+        warn "TTS notifications require Telegram or Discord notifications. Disabling TTS channel."
+        NOTIFY_TTS_ENABLED="false"
+    elif [ -z "$CHUTES_API_KEY" ]; then
+        warn "TTS notifications enabled but CHUTES_API_KEY is empty. Disabling TTS channel."
+        NOTIFY_TTS_ENABLED="false"
+    fi
+fi
+
+if [ "$NOTIFY_TELEGRAM_ENABLED" != "true" ] && [ "$NOTIFY_DISCORD_ENABLED" != "true" ]; then
+    NOTIFICATIONS_ENABLED="false"
+fi
+
 if [ "$ENGINE_SELECTION_REQUESTED" = "codex" ]; then
     ACTIVE_ENGINE="codex"
     ACTIVE_CMD="$CODEX_CMD"
@@ -976,6 +1193,13 @@ PHASE_ATTEMPT_IN_PROGRESS="false"
 AUTO_COMMIT_SESSION_ENABLED="false"
 GIT_IDENTITY_READY="unknown"
 GIT_IDENTITY_SOURCE="unknown"
+NOTIFY_LAST_EVENT_SIGNATURE=""
+NOTIFY_LAST_EVENT_SENT_AT=0
+NOTIFY_INCIDENT_SERIES_ACTIVE="false"
+NOTIFY_INCIDENT_SERIES_KEY=""
+NOTIFY_INCIDENT_SERIES_STARTED_AT=0
+NOTIFY_INCIDENT_LAST_SENT_AT=0
+NOTIFY_INCIDENT_REPEAT_COUNT=0
 
 # Capability Probing results (populated by probe_engine_capabilities)
 CLAUDE_CAP_PRINT=0
@@ -1332,6 +1556,64 @@ prompt_optional_line() {
     prompt_read_line "$prompt: " "$default"
 }
 
+prompt_multiline_block() {
+    local prompt="$1"
+    local default="${2:-}"
+    local sentinel="${3:-EOF}"
+    local line=""
+    local result=""
+
+    if ! { exec 9<>/dev/tty; } 2>/dev/null; then
+        printf '%s' "$default"
+        return 0
+    fi
+
+    {
+        printf '%s\n' "$prompt"
+        printf 'Paste multi-line input, then end with a line containing only %s (or press Ctrl+D).\n' "$sentinel"
+        printf 'Press Enter immediately to keep current/default.\n'
+        printf '> '
+    } >&9
+
+    while IFS= read -r -u 9 line; do
+        if [ -z "$result" ] && [ -z "$line" ]; then
+            exec 9>&- 9<&-
+            printf '%s' "$default"
+            return 0
+        fi
+        if [ "$line" = "$sentinel" ]; then
+            break
+        fi
+        result="${result}${result:+$'\n'}$line"
+        printf '> ' >&9
+    done
+    exec 9>&- 9<&-
+
+    if [ -z "$result" ]; then
+        printf '%s' "$default"
+    else
+        printf '%s' "$result"
+    fi
+}
+
+prompt_override_value() {
+    local label="$1"
+    local current="${2:-}"
+    local current_display="${current:-<default>}"
+    local response=""
+
+    response="$(prompt_read_line "$label [current: $current_display, enter=keep, -=clear]: " "")"
+    if [ -z "$response" ]; then
+        echo "$current"
+        return 0
+    fi
+    if [ "$response" = "-" ]; then
+        echo ""
+        return 0
+    fi
+    echo "$response"
+}
+
 bootstrap_prompt_value() {
     local key="$1"
     [ -f "$PROJECT_BOOTSTRAP_FILE" ] || return 1
@@ -1375,29 +1657,59 @@ write_bootstrap_context_file() {
     local objective="$2"
     local build_consent="$3"
     local interactive_source="$4"
+    local constraints="${5:-No explicit constraints provided.}"
+    local success_criteria="${6:-All required phase gates pass and deliverables match project objectives.}"
+    local goals_doc_present="${7:-false}"
+    local goals_doc_url="${8:-}"
 
     cat > "$PROJECT_BOOTSTRAP_FILE" <<EOF
 # Ralphie Project Bootstrap
 project_type: $project_type
 build_consent: $build_consent
 objective: $objective
+constraints: $constraints
+success_criteria: $success_criteria
+goals_document_present: $goals_doc_present
+goals_document_url: $goals_doc_url
 interactive_prompted: $interactive_source
 captured_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 EOF
 }
 
+write_project_goals_file() {
+    local goals_text="${1:-}"
+    if [ -z "$goals_text" ]; then
+        rm -f "$PROJECT_GOALS_FILE" 2>/dev/null || true
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$PROJECT_GOALS_FILE")"
+    cat > "$PROJECT_GOALS_FILE" <<EOF
+# Project Goals Document
+
+$goals_text
+EOF
+}
+
 ensure_project_bootstrap() {
-    local project_type objective build_consent interactive_source
+    local project_type objective build_consent interactive_source constraints success_criteria goals_text goals_doc_url
     project_type="existing"
     objective="Improve project with a deterministic, evidence-first implementation path."
     build_consent="true"
     interactive_source="false"
+    constraints="No explicit constraints provided."
+    success_criteria="All required phase gates pass and deliverables match project objectives."
+    goals_text=""
+    goals_doc_url=""
 
     mkdir -p "$(dirname "$PROJECT_BOOTSTRAP_FILE")"
     local existing_project_type=""
     local existing_objective=""
     local existing_build_consent=""
     local existing_interactive_prompted=""
+    local existing_constraints=""
+    local existing_success_criteria=""
+    local existing_goals_doc_url=""
     local needs_prompt="false"
 
     if [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
@@ -1405,6 +1717,9 @@ ensure_project_bootstrap() {
         existing_objective="$(bootstrap_prompt_value "objective" 2>/dev/null || true)"
         existing_build_consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null || true)"
         existing_interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+        existing_constraints="$(bootstrap_prompt_value "constraints" 2>/dev/null || true)"
+        existing_success_criteria="$(bootstrap_prompt_value "success_criteria" 2>/dev/null || true)"
+        existing_goals_doc_url="$(bootstrap_prompt_value "goals_document_url" 2>/dev/null || true)"
 
         if [ -n "$existing_project_type" ]; then
             project_type="$existing_project_type"
@@ -1415,9 +1730,21 @@ ensure_project_bootstrap() {
         if [ -n "$existing_build_consent" ]; then
             build_consent="$existing_build_consent"
         fi
+        if [ -n "$existing_constraints" ]; then
+            constraints="$existing_constraints"
+        fi
+        if [ -n "$existing_success_criteria" ]; then
+            success_criteria="$existing_success_criteria"
+        fi
+        if [ -n "$existing_goals_doc_url" ]; then
+            goals_doc_url="$existing_goals_doc_url"
+        fi
         if [ "$existing_interactive_prompted" = "true" ]; then
             interactive_source="true"
         fi
+    fi
+    if [ -f "$PROJECT_GOALS_FILE" ]; then
+        goals_text="$(cat "$PROJECT_GOALS_FILE" 2>/dev/null || true)"
     fi
 
     if [ "$REBOOTSTRAP_REQUESTED" = true ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ] || ! bootstrap_context_is_valid; then
@@ -1443,7 +1770,15 @@ ensure_project_bootstrap() {
             if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "n")" = "true" ]; then
                 project_type="new"
             fi
-            objective="$(prompt_optional_line "What is the primary objective for this session" "$objective")"
+            objective="$(prompt_optional_line "What is the primary objective for this session (single line)" "$objective")"
+            constraints="$(prompt_optional_line "Key constraints or non-goals (single line, optional)" "$constraints")"
+            success_criteria="$(prompt_optional_line "Success criteria / definition of done (single line, optional)" "$success_criteria")"
+            goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")"
+
+            if [ "$(prompt_yes_no "Paste a project goals document/URL block now?" "n")" = "true" ]; then
+                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
+            fi
+
             if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "y")" = "true" ]; then
                 build_consent="true"
             else
@@ -1465,15 +1800,19 @@ ensure_project_bootstrap() {
         info "Non-interactive bootstrap fallback retained: objective and build consent defaults were applied."
     fi
 
-    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source"
+    write_project_goals_file "$goals_text"
+    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source" "$constraints" "$success_criteria" "$([ -s "$PROJECT_GOALS_FILE" ] && echo true || echo false)" "$goals_doc_url"
     info "Captured project bootstrap context: $(path_for_display "$PROJECT_BOOTSTRAP_FILE")"
+    if [ -s "$PROJECT_GOALS_FILE" ]; then
+        info "Captured project goals document: $(path_for_display "$PROJECT_GOALS_FILE")"
+    fi
     REBOOTSTRAP_REQUESTED=false
 }
 
 append_bootstrap_context_to_plan_prompt() {
     local source_prompt="$1"
     local target_prompt="$2"
-    local project_type objective build_consent
+    local project_type objective build_consent constraints success_criteria goals_doc_url
 
     if [ ! -f "$source_prompt" ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
         cp "$source_prompt" "$target_prompt"
@@ -1483,6 +1822,9 @@ append_bootstrap_context_to_plan_prompt() {
     project_type="$(bootstrap_prompt_value "project_type")"
     objective="$(bootstrap_prompt_value "objective")"
     build_consent="$(bootstrap_prompt_value "build_consent")"
+    constraints="$(bootstrap_prompt_value "constraints")"
+    success_criteria="$(bootstrap_prompt_value "success_criteria")"
+    goals_doc_url="$(bootstrap_prompt_value "goals_document_url")"
 
     cat > "$target_prompt" <<EOF
 $(cat "$source_prompt")
@@ -1490,15 +1832,823 @@ $(cat "$source_prompt")
 ## Project Bootstrap Context
 - Project type: ${project_type:-existing}
 - Objective: ${objective:-unspecified}
+- Constraints / non-goals: ${constraints:-none stated}
+- Success criteria: ${success_criteria:-none stated}
+- Goals document URL: ${goals_doc_url:-not provided}
 - Build consent after plan: ${build_consent:-true}
 
 EOF
+
+    if [ -s "$PROJECT_GOALS_FILE" ]; then
+        {
+            echo "## Project Goals Document (User-Provided)"
+            echo ""
+            cat "$PROJECT_GOALS_FILE"
+            echo ""
+        } >> "$target_prompt"
+    fi
 }
 
 build_is_preapproved() {
     local consent
     consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null)"
     [ "$consent" = "true" ]
+}
+
+healthy_engines_for_display() {
+    local engines=""
+    if [ "$CODEX_HEALTHY" = "true" ]; then
+        engines="codex"
+    fi
+    if [ "$CLAUDE_HEALTHY" = "true" ]; then
+        engines="${engines}${engines:+, }claude"
+    fi
+    if [ -z "$engines" ]; then
+        engines="none"
+    fi
+    printf '%s' "$engines"
+}
+
+notification_channels_for_display() {
+    local channels=""
+    if is_true "$NOTIFY_TELEGRAM_ENABLED"; then
+        channels="telegram"
+    fi
+    if is_true "$NOTIFY_DISCORD_ENABLED"; then
+        channels="${channels}${channels:+, }discord"
+    fi
+    if is_true "$NOTIFY_TTS_ENABLED"; then
+        if is_true "$NOTIFY_TELEGRAM_ENABLED"; then
+            channels="${channels/telegram/telegram+tts}"
+        fi
+        if is_true "$NOTIFY_DISCORD_ENABLED"; then
+            channels="${channels/discord/discord+tts}"
+        fi
+    fi
+    if [ -z "$channels" ]; then
+        channels="none"
+    fi
+    printf '%s' "$channels"
+}
+
+notification_now_epoch() {
+    local now
+    now="$(date +%s 2>/dev/null || echo 0)"
+    if ! is_number "$now"; then
+        now=0
+    fi
+    printf '%s' "$now"
+}
+
+notification_event_is_high_signal() {
+    case "${1:-}" in
+        notification_setup|session_start|phase_decision|phase_complete|phase_blocked|session_done|session_error) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+notification_reset_incident_series() {
+    NOTIFY_INCIDENT_SERIES_ACTIVE="false"
+    NOTIFY_INCIDENT_SERIES_KEY=""
+    NOTIFY_INCIDENT_SERIES_STARTED_AT=0
+    NOTIFY_INCIDENT_LAST_SENT_AT=0
+    NOTIFY_INCIDENT_REPEAT_COUNT=0
+}
+
+notification_log_append() {
+    local event="$1"
+    local status="$2"
+    local delivery="$3"
+    local details="${4:-}"
+    mkdir -p "$(dirname "$NOTIFICATION_LOG_FILE")"
+    printf '%s\tevent=%s\tstatus=%s\tdelivery=%s\tdetails=%s\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        "$event" \
+        "$status" \
+        "$delivery" \
+        "$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')" \
+        >> "$NOTIFICATION_LOG_FILE"
+}
+
+send_telegram_message_raw() {
+    local bot_token="$1"
+    local chat_id="$2"
+    local message="$3"
+    local response=""
+
+    [ -n "$bot_token" ] || return 1
+    [ -n "$chat_id" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    response="$(curl -sS -m 20 -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        --data-urlencode "chat_id=${chat_id}" \
+        --data-urlencode "text=${message}" 2>/dev/null || true)"
+    printf '%s' "$response" | grep -q '"ok":[[:space:]]*true'
+}
+
+telegram_get_updates_raw() {
+    local bot_token="$1"
+    [ -n "$bot_token" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -sS -m 20 "https://api.telegram.org/bot${bot_token}/getUpdates" 2>/dev/null || return 1
+}
+
+telegram_extract_chat_ids_raw() {
+    local payload="${1:-}"
+    [ -n "$payload" ] || return 0
+
+    printf '%s' "$payload" | tr -d '\n' | \
+        grep -oE '"chat":[[:space:]]*\{[^}]*"id":[[:space:]]*-?[0-9]+' | \
+        grep -oE -- '-?[0-9]+$' | awk '!seen[$0]++'
+}
+
+telegram_suggest_chat_id_raw() {
+    local bot_token="$1"
+    local updates chat_ids first_id count
+
+    updates="$(telegram_get_updates_raw "$bot_token" 2>/dev/null || true)"
+    if [ -z "$updates" ]; then
+        warn "Could not query Telegram getUpdates right now."
+        printf '%s' ""
+        return 0
+    fi
+    if ! printf '%s' "$updates" | grep -q '"ok":[[:space:]]*true'; then
+        warn "Telegram getUpdates did not return ok=true. Verify bot token."
+        printf '%s' ""
+        return 0
+    fi
+    if printf '%s' "$updates" | grep -q '"result":[[:space:]]*\[\]'; then
+        warn "Telegram getUpdates is empty. Send a message to your bot/chat first, then retry."
+        printf '%s' ""
+        return 0
+    fi
+
+    chat_ids="$(telegram_extract_chat_ids_raw "$updates" || true)"
+    count="$(printf '%s\n' "$chat_ids" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if ! is_number "$count" || [ "$count" -lt 1 ]; then
+        warn "Could not parse chat IDs from getUpdates response."
+        printf '%s' ""
+        return 0
+    fi
+
+    info "Discovered Telegram chat IDs from getUpdates:"
+    printf '%s\n' "$chat_ids" | sed '/^$/d' | sed 's/^/  - /'
+    first_id="$(printf '%s\n' "$chat_ids" | sed '/^$/d' | head -n 1)"
+    printf '%s' "$first_id"
+}
+
+send_discord_message_raw() {
+    local webhook_url="$1"
+    local message="$2"
+    local payload=""
+    local http_code=""
+
+    [ -n "$webhook_url" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    payload="$(json_escape_string "$message")"
+    http_code="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"content\":\"${payload}\"}" \
+        "$webhook_url" 2>/dev/null || true)"
+    case "$http_code" in
+        200|201|202|204) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+generate_chutes_tts_audio_file_raw() {
+    local chutes_api_key="$1"
+    local tts_url="$2"
+    local voice="$3"
+    local speed="$4"
+    local text="$5"
+    local output_file="$6"
+    local escaped_text escaped_voice
+
+    [ -n "$chutes_api_key" ] || return 1
+    [ -n "$tts_url" ] || return 1
+    [ -n "$voice" ] || return 1
+    [ -n "$text" ] || return 1
+    [ -n "$output_file" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    is_decimal_number "$speed" || speed="$DEFAULT_NOTIFY_CHUTES_SPEED"
+
+    escaped_text="$(json_escape_string "$text")"
+    escaped_voice="$(json_escape_string "$voice")"
+
+    if ! curl -sS -m 45 -X POST "$tts_url" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $chutes_api_key" \
+        -d "{\"text\":\"${escaped_text}\",\"voice\":\"${escaped_voice}\",\"speed\":${speed}}" \
+        --output "$output_file" >/dev/null 2>&1; then
+        return 1
+    fi
+    [ -s "$output_file" ] || return 1
+    return 0
+}
+
+send_telegram_voice_file_raw() {
+    local bot_token="$1"
+    local chat_id="$2"
+    local file_path="$3"
+    local caption="$4"
+    local method="$5"
+    local field_name="$6"
+    local response http_code body
+
+    [ -n "$bot_token" ] || return 1
+    [ -n "$chat_id" ] || return 1
+    [ -n "$file_path" ] || return 1
+    [ -n "$method" ] || return 1
+    [ -n "$field_name" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    response="$(curl -sS -m 30 -w $'\n%{http_code}' -X POST "https://api.telegram.org/bot${bot_token}/${method}" \
+        -F "chat_id=${chat_id}" \
+        -F "${field_name}=@${file_path}" \
+        -F "caption=${caption}" 2>/dev/null || true)"
+    http_code="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+    [ "$http_code" = "200" ] && printf '%s' "$body" | grep -q '"ok":[[:space:]]*true'
+}
+
+send_telegram_tts_raw() {
+    local chutes_api_key="$1"
+    local tts_url="$2"
+    local voice="$3"
+    local speed="$4"
+    local bot_token="$5"
+    local chat_id="$6"
+    local text="$7"
+    local caption="${8:-Ralphie TTS}"
+    local tmp_audio_file=""
+
+    [ -n "$chutes_api_key" ] || return 1
+    [ -n "$tts_url" ] || return 1
+    [ -n "$voice" ] || return 1
+    [ -n "$bot_token" ] || return 1
+    [ -n "$chat_id" ] || return 1
+    [ -n "$text" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    is_decimal_number "$speed" || speed="$DEFAULT_NOTIFY_CHUTES_SPEED"
+
+    tmp_audio_file="$(mktemp "${TMPDIR:-/tmp}/ralphie_tts.XXXXXX")" || return 1
+    if ! generate_chutes_tts_audio_file_raw "$chutes_api_key" "$tts_url" "$voice" "$speed" "$text" "$tmp_audio_file"; then
+        rm -f "$tmp_audio_file"
+        return 1
+    fi
+
+    if ! send_telegram_voice_file_raw "$bot_token" "$chat_id" "$tmp_audio_file" "$caption" "sendVoice" "voice" \
+        && ! send_telegram_voice_file_raw "$bot_token" "$chat_id" "$tmp_audio_file" "$caption" "sendAudio" "audio" \
+        && ! send_telegram_voice_file_raw "$bot_token" "$chat_id" "$tmp_audio_file" "$caption" "sendDocument" "document"; then
+            rm -f "$tmp_audio_file"
+            return 1
+        fi
+
+    rm -f "$tmp_audio_file"
+    return 0
+}
+
+send_discord_tts_raw() {
+    local chutes_api_key="$1"
+    local tts_url="$2"
+    local voice="$3"
+    local speed="$4"
+    local webhook_url="$5"
+    local text="$6"
+    local caption="${7:-Ralphie TTS}"
+    local tmp_audio_file=""
+    local payload=""
+    local http_code=""
+
+    [ -n "$chutes_api_key" ] || return 1
+    [ -n "$tts_url" ] || return 1
+    [ -n "$voice" ] || return 1
+    [ -n "$webhook_url" ] || return 1
+    [ -n "$text" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    is_decimal_number "$speed" || speed="$DEFAULT_NOTIFY_CHUTES_SPEED"
+
+    tmp_audio_file="$(mktemp "${TMPDIR:-/tmp}/ralphie_discord_tts.XXXXXX")" || return 1
+    if ! generate_chutes_tts_audio_file_raw "$chutes_api_key" "$tts_url" "$voice" "$speed" "$text" "$tmp_audio_file"; then
+        rm -f "$tmp_audio_file"
+        return 1
+    fi
+
+    payload="$(json_escape_string "$caption")"
+    http_code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST \
+        -F "payload_json={\"content\":\"${payload}\"}" \
+        -F "file=@${tmp_audio_file};filename=ralphie-tts.mp3;type=audio/mpeg" \
+        "$webhook_url" 2>/dev/null || true)"
+
+    rm -f "$tmp_audio_file"
+    case "$http_code" in
+        200|201|202|204) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+notify_event() {
+    local event="$1"
+    local status="$2"
+    local details="${3:-}"
+    local project_name branch_name timestamp_utc phase_value attempt_value iteration_value
+    local message=""
+    local delivered=false
+    local now_epoch dedup_window reminder_minutes reminder_seconds
+    local event_signature=""
+    local incident_key=""
+    local effective_details=""
+    local elapsed_since_last=0
+    local elapsed_series_minutes=0
+
+    if ! is_true "$NOTIFICATIONS_ENABLED"; then
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+
+    details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    [ -n "$details" ] || details="none"
+
+    if ! notification_event_is_high_signal "$event"; then
+        notification_log_append "$event" "$status" "suppressed" "low-signal event suppressed: $details"
+        return 0
+    fi
+
+    now_epoch="$(notification_now_epoch)"
+    dedup_window="$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
+    reminder_minutes="$NOTIFY_INCIDENT_REMINDER_MINUTES"
+    is_number "$dedup_window" || dedup_window="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
+    is_number "$reminder_minutes" || reminder_minutes="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
+    if [ "$dedup_window" -lt 0 ]; then
+        dedup_window="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
+    fi
+    if [ "$reminder_minutes" -lt 0 ]; then
+        reminder_minutes="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
+    fi
+    reminder_seconds=$((reminder_minutes * 60))
+    effective_details="$details"
+
+    if [ "$event" = "session_error" ]; then
+        incident_key="${event}|${status}"
+        if [ "$NOTIFY_INCIDENT_SERIES_ACTIVE" != "true" ] || [ "$NOTIFY_INCIDENT_SERIES_KEY" != "$incident_key" ]; then
+            NOTIFY_INCIDENT_SERIES_ACTIVE="true"
+            NOTIFY_INCIDENT_SERIES_KEY="$incident_key"
+            NOTIFY_INCIDENT_SERIES_STARTED_AT="$now_epoch"
+            NOTIFY_INCIDENT_LAST_SENT_AT="$now_epoch"
+            NOTIFY_INCIDENT_REPEAT_COUNT=1
+        else
+            NOTIFY_INCIDENT_REPEAT_COUNT=$((NOTIFY_INCIDENT_REPEAT_COUNT + 1))
+            if [ "$reminder_seconds" -eq 0 ]; then
+                notification_log_append "$event" "$status" "suppressed" "incident series active (reminders disabled, repeat=$NOTIFY_INCIDENT_REPEAT_COUNT): $details"
+                return 0
+            fi
+            if [ "$now_epoch" -gt 0 ] && [ "$NOTIFY_INCIDENT_LAST_SENT_AT" -gt 0 ]; then
+                elapsed_since_last=$((now_epoch - NOTIFY_INCIDENT_LAST_SENT_AT))
+            else
+                elapsed_since_last=0
+            fi
+            if [ "$elapsed_since_last" -lt "$reminder_seconds" ]; then
+                notification_log_append "$event" "$status" "suppressed" "incident series active (repeat=$NOTIFY_INCIDENT_REPEAT_COUNT): $details"
+                return 0
+            fi
+            if [ "$now_epoch" -gt 0 ] && [ "$NOTIFY_INCIDENT_SERIES_STARTED_AT" -gt 0 ]; then
+                elapsed_series_minutes=$(( (now_epoch - NOTIFY_INCIDENT_SERIES_STARTED_AT) / 60 ))
+            else
+                elapsed_series_minutes=0
+            fi
+            effective_details="${details}; ongoing=${elapsed_series_minutes}m repeats=${NOTIFY_INCIDENT_REPEAT_COUNT}"
+            NOTIFY_INCIDENT_LAST_SENT_AT="$now_epoch"
+        fi
+    else
+        if [ "$NOTIFY_INCIDENT_SERIES_ACTIVE" = "true" ]; then
+            notification_reset_incident_series
+        fi
+        event_signature="${event}|${status}|$(printf '%s' "$details" | cut -c 1-220)"
+        if [ "$dedup_window" -gt 0 ] && [ -n "$NOTIFY_LAST_EVENT_SIGNATURE" ] && [ "$event_signature" = "$NOTIFY_LAST_EVENT_SIGNATURE" ] && [ "$now_epoch" -gt 0 ] && [ "$NOTIFY_LAST_EVENT_SENT_AT" -gt 0 ]; then
+            elapsed_since_last=$((now_epoch - NOTIFY_LAST_EVENT_SENT_AT))
+            if [ "$elapsed_since_last" -lt "$dedup_window" ]; then
+                notification_log_append "$event" "$status" "suppressed" "duplicate event within ${dedup_window}s window: $details"
+                return 0
+            fi
+        fi
+    fi
+
+    project_name="$(basename "$PROJECT_DIR")"
+    branch_name="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo "detached")"
+    timestamp_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    phase_value="${CURRENT_PHASE:-unknown}"
+    attempt_value="${CURRENT_PHASE_ATTEMPT:-0}"
+    iteration_value="${ITERATION_COUNT:-0}"
+
+    message="$(cat <<EOF
+[ralphie] event=$event status=$status
+project=$project_name branch=$branch_name session=${SESSION_ID:-unknown}
+phase=$phase_value attempt=$attempt_value iteration=$iteration_value engine=${ACTIVE_ENGINE:-unknown}
+details=$effective_details
+timestamp_utc=$timestamp_utc
+EOF
+)"
+
+    if is_true "$NOTIFY_TELEGRAM_ENABLED" && [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+        if send_telegram_message_raw "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$message"; then
+            delivered=true
+        fi
+        if is_true "$NOTIFY_TTS_ENABLED" && [ -n "$CHUTES_API_KEY" ]; then
+            local tts_line
+            tts_line="$(printf '%s' "$event: $effective_details" | cut -c 1-220)"
+            if send_telegram_tts_raw \
+                "$CHUTES_API_KEY" \
+                "$NOTIFY_CHUTES_TTS_URL" \
+                "$NOTIFY_CHUTES_VOICE" \
+                "$NOTIFY_CHUTES_SPEED" \
+                "$TG_BOT_TOKEN" \
+                "$TG_CHAT_ID" \
+                "$tts_line" \
+                "ralphie $event"; then
+                delivered=true
+            fi
+        fi
+    fi
+
+    if is_true "$NOTIFY_DISCORD_ENABLED" && [ -n "$NOTIFY_DISCORD_WEBHOOK_URL" ]; then
+        if send_discord_message_raw "$NOTIFY_DISCORD_WEBHOOK_URL" "$message"; then
+            delivered=true
+        fi
+        if is_true "$NOTIFY_TTS_ENABLED" && [ -n "$CHUTES_API_KEY" ]; then
+            local discord_tts_line
+            discord_tts_line="$(printf '%s' "$event: $effective_details" | cut -c 1-220)"
+            if send_discord_tts_raw \
+                "$CHUTES_API_KEY" \
+                "$NOTIFY_CHUTES_TTS_URL" \
+                "$NOTIFY_CHUTES_VOICE" \
+                "$NOTIFY_CHUTES_SPEED" \
+                "$NOTIFY_DISCORD_WEBHOOK_URL" \
+                "$discord_tts_line" \
+                "ralphie $event"; then
+                delivered=true
+            fi
+        fi
+    fi
+
+    if [ "$event" != "session_error" ]; then
+        NOTIFY_LAST_EVENT_SIGNATURE="${event_signature:-${event}|${status}|$(printf '%s' "$details" | cut -c 1-220)}"
+        NOTIFY_LAST_EVENT_SENT_AT="$now_epoch"
+    fi
+
+    notification_log_append "$event" "$status" "$([ "$delivered" = true ] && echo "delivered" || echo "failed")" "$effective_details"
+    return 0
+}
+
+persist_notification_wizard_bootstrap_flag() {
+    NOTIFICATION_WIZARD_BOOTSTRAPPED="true"
+    if ! upsert_config_env_value "RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED" "true"; then
+        warn "Could not persist RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED to $(path_for_display "$CONFIG_FILE")."
+        return 1
+    fi
+    return 0
+}
+
+persist_notification_value() {
+    local key="$1"
+    local value="${2:-}"
+    if ! upsert_config_env_value "$key" "$value"; then
+        warn "Could not persist $key to $(path_for_display "$CONFIG_FILE")."
+        return 1
+    fi
+    return 0
+}
+
+run_first_deploy_notification_wizard() {
+    if is_true "$NOTIFICATION_WIZARD_BOOTSTRAPPED"; then
+        return 1
+    fi
+    if ! is_tty_input_available; then
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        warn "Notification setup skipped: curl is required for Telegram/Discord/Chutes delivery checks."
+        persist_notification_wizard_bootstrap_flag || true
+        return 1
+    fi
+
+    info "First-deploy notification setup is available."
+    info "Standardized events: session_start, phase_decision, phase_complete, phase_blocked, session_done, session_error."
+    info "Channels supported: Telegram bot, Discord webhook, optional Chutes TTS voice attachments."
+    info "Anti-spam policy: only high-signal events are sent; repeated incident alerts are batched with periodic reminders."
+
+    if [ "$(prompt_yes_no "Configure notifications now (Telegram/Discord/Chutes TTS)?" "n")" != "true" ]; then
+        info "Skipping first-deploy notification setup."
+        persist_notification_wizard_bootstrap_flag || true
+        return 1
+    fi
+
+    local telegram_selected="false"
+    local discord_selected="false"
+    local tts_selected="false"
+
+    info "Telegram setup guide:"
+    info "  1) Open Telegram @BotFather, run /newbot, copy bot token."
+    info "  2) Send one message to your bot/chat/channel."
+    info "  3) Open https://api.telegram.org/bot<token>/getUpdates and copy chat.id (or let Ralphie auto-discover it)."
+    if [ "$(prompt_yes_no "Configure Telegram notifications?" "$(is_true "$NOTIFY_TELEGRAM_ENABLED" && echo y || echo n)")" = "true" ]; then
+        local suggested_chat_id=""
+        telegram_selected="true"
+        TG_BOT_TOKEN="$(prompt_override_value "Telegram bot token (TG_BOT_TOKEN)" "$TG_BOT_TOKEN")"
+        if [ -z "$TG_CHAT_ID" ] && [ -n "$TG_BOT_TOKEN" ]; then
+            suggested_chat_id="$(telegram_suggest_chat_id_raw "$TG_BOT_TOKEN")"
+            if [ -n "$suggested_chat_id" ]; then
+                TG_CHAT_ID="$suggested_chat_id"
+            fi
+        fi
+        TG_CHAT_ID="$(prompt_override_value "Telegram chat id (TG_CHAT_ID)" "$TG_CHAT_ID")"
+        if [ -z "$TG_CHAT_ID" ] && [ -n "$TG_BOT_TOKEN" ]; then
+            suggested_chat_id="$(telegram_suggest_chat_id_raw "$TG_BOT_TOKEN")"
+            if [ -n "$suggested_chat_id" ]; then
+                info "Using discovered chat id: $suggested_chat_id"
+                TG_CHAT_ID="$suggested_chat_id"
+            fi
+        fi
+        if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            warn "Telegram credentials are incomplete; disabling Telegram channel."
+            telegram_selected="false"
+        elif send_telegram_message_raw "$TG_BOT_TOKEN" "$TG_CHAT_ID" "[ralphie] telegram setup test"; then
+            success "Telegram test message sent."
+        else
+            warn "Telegram test failed. Verify bot token/chat id and bot permissions."
+        fi
+    fi
+
+    info "Discord setup guide:"
+    info "  1) Open Server Settings -> Integrations -> Webhooks."
+    info "  2) Create webhook, copy URL, and paste it here."
+    if [ "$(prompt_yes_no "Configure Discord webhook notifications?" "$(is_true "$NOTIFY_DISCORD_ENABLED" && echo y || echo n)")" = "true" ]; then
+        discord_selected="true"
+        NOTIFY_DISCORD_WEBHOOK_URL="$(prompt_override_value "Discord webhook URL" "$NOTIFY_DISCORD_WEBHOOK_URL")"
+        if [ -z "$NOTIFY_DISCORD_WEBHOOK_URL" ]; then
+            warn "Discord webhook URL is empty; disabling Discord channel."
+            discord_selected="false"
+        elif send_discord_message_raw "$NOTIFY_DISCORD_WEBHOOK_URL" "[ralphie] discord setup test"; then
+            success "Discord test message sent."
+        else
+            warn "Discord webhook test failed. Verify webhook URL and channel permissions."
+        fi
+    fi
+
+    if [ "$telegram_selected" = "true" ] || [ "$discord_selected" = "true" ]; then
+        info "Optional Chutes TTS setup guide:"
+        info "  1) Create API key at https://chutes.ai"
+        info "  2) Provide CHUTES_API_KEY to enable voice notifications (Telegram and/or Discord)."
+        if [ "$(prompt_yes_no "Enable Chutes TTS voice notifications?" "$(is_true "$NOTIFY_TTS_ENABLED" && echo y || echo n)")" = "true" ]; then
+            tts_selected="true"
+            CHUTES_API_KEY="$(prompt_override_value "Chutes API key (CHUTES_API_KEY)" "$CHUTES_API_KEY")"
+            NOTIFY_CHUTES_VOICE="$(prompt_override_value "Chutes voice id" "$NOTIFY_CHUTES_VOICE")"
+            NOTIFY_CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.0)" "$NOTIFY_CHUTES_SPEED")"
+            if ! is_decimal_number "$NOTIFY_CHUTES_SPEED"; then
+                warn "Invalid Chutes speed; defaulting to $DEFAULT_NOTIFY_CHUTES_SPEED."
+                NOTIFY_CHUTES_SPEED="$DEFAULT_NOTIFY_CHUTES_SPEED"
+            fi
+            if [ -z "$CHUTES_API_KEY" ]; then
+                warn "Chutes API key is empty; disabling TTS channel."
+                tts_selected="false"
+            else
+                if [ "$telegram_selected" = "true" ]; then
+                    if send_telegram_tts_raw \
+                        "$CHUTES_API_KEY" \
+                        "$NOTIFY_CHUTES_TTS_URL" \
+                        "$NOTIFY_CHUTES_VOICE" \
+                        "$NOTIFY_CHUTES_SPEED" \
+                        "$TG_BOT_TOKEN" \
+                        "$TG_CHAT_ID" \
+                        "ralphie setup test message" \
+                        "ralphie tts test"; then
+                        success "Telegram TTS test voice sent."
+                    else
+                        warn "Telegram TTS test failed. Verify CHUTES_API_KEY and Telegram credentials."
+                    fi
+                fi
+                if [ "$discord_selected" = "true" ] && [ -n "$NOTIFY_DISCORD_WEBHOOK_URL" ]; then
+                    if send_discord_tts_raw \
+                        "$CHUTES_API_KEY" \
+                        "$NOTIFY_CHUTES_TTS_URL" \
+                        "$NOTIFY_CHUTES_VOICE" \
+                        "$NOTIFY_CHUTES_SPEED" \
+                        "$NOTIFY_DISCORD_WEBHOOK_URL" \
+                        "ralphie setup test message" \
+                        "ralphie tts test"; then
+                        success "Discord TTS test voice sent."
+                    else
+                        warn "Discord TTS test failed. Verify CHUTES_API_KEY and webhook permissions."
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    if [ "$(prompt_yes_no "Adjust anti-spam notification cadence?" "n")" = "true" ]; then
+        local dedup_candidate reminder_candidate
+        dedup_candidate="$(prompt_optional_line "Duplicate-event suppression window seconds (0 disables suppression)" "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS")"
+        reminder_candidate="$(prompt_optional_line "Incident reminder interval minutes (0 disables reminders)" "$NOTIFY_INCIDENT_REMINDER_MINUTES")"
+        if is_number "$dedup_candidate" && [ "$dedup_candidate" -ge 0 ]; then
+            NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$dedup_candidate"
+        else
+            warn "Invalid dedup window '$dedup_candidate'; keeping ${NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}."
+        fi
+        if is_number "$reminder_candidate" && [ "$reminder_candidate" -ge 0 ]; then
+            NOTIFY_INCIDENT_REMINDER_MINUTES="$reminder_candidate"
+        else
+            warn "Invalid incident reminder interval '$reminder_candidate'; keeping ${NOTIFY_INCIDENT_REMINDER_MINUTES}."
+        fi
+    fi
+
+    NOTIFY_TELEGRAM_ENABLED="$telegram_selected"
+    NOTIFY_DISCORD_ENABLED="$discord_selected"
+    NOTIFY_TTS_ENABLED="$tts_selected"
+    if [ "$NOTIFY_TELEGRAM_ENABLED" = "true" ] || [ "$NOTIFY_DISCORD_ENABLED" = "true" ]; then
+        NOTIFICATIONS_ENABLED="true"
+    else
+        NOTIFICATIONS_ENABLED="false"
+        NOTIFY_TTS_ENABLED="false"
+    fi
+    if [ "$NOTIFY_TELEGRAM_ENABLED" != "true" ] && [ "$NOTIFY_DISCORD_ENABLED" != "true" ]; then
+        NOTIFY_TTS_ENABLED="false"
+    fi
+
+    persist_notification_value "RALPHIE_NOTIFICATIONS_ENABLED" "$NOTIFICATIONS_ENABLED" || true
+    persist_notification_value "RALPHIE_NOTIFY_TELEGRAM_ENABLED" "$NOTIFY_TELEGRAM_ENABLED" || true
+    persist_notification_value "TG_BOT_TOKEN" "$TG_BOT_TOKEN" || true
+    persist_notification_value "TG_CHAT_ID" "$TG_CHAT_ID" || true
+    persist_notification_value "RALPHIE_NOTIFY_DISCORD_ENABLED" "$NOTIFY_DISCORD_ENABLED" || true
+    persist_notification_value "RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL" "$NOTIFY_DISCORD_WEBHOOK_URL" || true
+    persist_notification_value "RALPHIE_NOTIFY_TTS_ENABLED" "$NOTIFY_TTS_ENABLED" || true
+    persist_notification_value "CHUTES_API_KEY" "$CHUTES_API_KEY" || true
+    persist_notification_value "RALPHIE_NOTIFY_CHUTES_TTS_URL" "$NOTIFY_CHUTES_TTS_URL" || true
+    persist_notification_value "RALPHIE_NOTIFY_CHUTES_VOICE" "$NOTIFY_CHUTES_VOICE" || true
+    persist_notification_value "RALPHIE_NOTIFY_CHUTES_SPEED" "$NOTIFY_CHUTES_SPEED" || true
+    persist_notification_value "RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" || true
+    persist_notification_value "RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES" "$NOTIFY_INCIDENT_REMINDER_MINUTES" || true
+    persist_notification_wizard_bootstrap_flag || true
+
+    info "Notification setup saved to $(path_for_display "$CONFIG_FILE")."
+    info "Notification channels configured: $(notification_channels_for_display)"
+
+    if is_true "$NOTIFICATIONS_ENABLED"; then
+        notify_event "notification_setup" "ok" "notification channels configured via first-deploy wizard"
+        return 0
+    fi
+    return 1
+}
+
+persist_engine_override_bootstrap_flag() {
+    ENGINE_OVERRIDES_BOOTSTRAPPED="true"
+    if ! upsert_config_env_value "RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED" "true"; then
+        warn "Could not persist RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED to $(path_for_display "$CONFIG_FILE")."
+        return 1
+    fi
+    return 0
+}
+
+persist_engine_override_value() {
+    local key="$1"
+    local value="${2:-}"
+    if ! upsert_config_env_value "$key" "$value"; then
+        warn "Could not persist $key to $(path_for_display "$CONFIG_FILE")."
+        return 1
+    fi
+    return 0
+}
+
+run_first_deploy_engine_override_wizard() {
+    if is_true "$ENGINE_OVERRIDES_BOOTSTRAPPED"; then
+        return 1
+    fi
+    if ! is_tty_input_available; then
+        return 1
+    fi
+
+    info "First-deploy engine override setup is available."
+    info "Requested engine mode: $ENGINE_SELECTION_REQUESTED (auto preference: $AUTO_ENGINE_PREFERENCE)"
+    info "Healthy engines from readiness checks: $(healthy_engines_for_display)"
+
+    if [ "$(prompt_yes_no "Configure engine selection and provider/model/thinking overrides now?" "y")" != "true" ]; then
+        info "Skipping first-deploy engine override setup."
+        persist_engine_override_bootstrap_flag || true
+        return 1
+    fi
+
+    local overrides_changed=false
+    local selected_engine_choice preferred_auto_choice
+    local codex_endpoint_choice codex_model_choice codex_thinking_choice
+    local codex_schema_enabled_choice codex_schema_file_choice
+    local claude_endpoint_choice claude_model_choice claude_thinking_choice
+
+    selected_engine_choice="$(to_lower "$(prompt_read_line "Engine mode (auto|codex|claude) [current: $ENGINE_SELECTION_REQUESTED]: " "$ENGINE_SELECTION_REQUESTED")")"
+    case "$selected_engine_choice" in
+        auto|codex|claude) ;;
+        *)
+            warn "Invalid engine mode '$selected_engine_choice'. Keeping '$ENGINE_SELECTION_REQUESTED'."
+            selected_engine_choice="$ENGINE_SELECTION_REQUESTED"
+            ;;
+    esac
+    if [ "$selected_engine_choice" != "$ENGINE_SELECTION_REQUESTED" ]; then
+        ENGINE_SELECTION_REQUESTED="$selected_engine_choice"
+        overrides_changed=true
+    fi
+    persist_engine_override_value "RALPHIE_ENGINE" "$ENGINE_SELECTION_REQUESTED" || true
+
+    if [ "$ENGINE_SELECTION_REQUESTED" = "auto" ]; then
+        preferred_auto_choice="$(to_lower "$(prompt_read_line "AUTO preference (codex|claude) [current: $AUTO_ENGINE_PREFERENCE]: " "$AUTO_ENGINE_PREFERENCE")")"
+        case "$preferred_auto_choice" in
+            codex|claude) ;;
+            *)
+                warn "Invalid AUTO preference '$preferred_auto_choice'. Keeping '$AUTO_ENGINE_PREFERENCE'."
+                preferred_auto_choice="$AUTO_ENGINE_PREFERENCE"
+                ;;
+        esac
+        if [ "$preferred_auto_choice" != "$AUTO_ENGINE_PREFERENCE" ]; then
+            AUTO_ENGINE_PREFERENCE="$preferred_auto_choice"
+            overrides_changed=true
+        fi
+        persist_engine_override_value "RALPHIE_AUTO_ENGINE_PREFERENCE" "$AUTO_ENGINE_PREFERENCE" || true
+    fi
+
+    if [ "$CODEX_HEALTHY" = "true" ]; then
+        if [ "$(prompt_yes_no "Configure Codex endpoint/model/thinking/schema overrides?" "n")" = "true" ]; then
+            codex_endpoint_choice="$(prompt_override_value "Codex endpoint (OPENAI_BASE_URL)" "$CODEX_ENDPOINT")"
+            codex_model_choice="$(prompt_override_value "Codex model" "${CODEX_MODEL:-}")"
+            codex_thinking_choice="$(to_lower "$(prompt_override_value "Codex thinking override (none|minimal|low|medium|high|xhigh)" "$CODEX_THINKING_OVERRIDE")")"
+            case "$codex_thinking_choice" in
+                none|minimal|low|medium|high|xhigh|"") ;;
+                *)
+                    warn "Invalid codex thinking override '$codex_thinking_choice'. Keeping '$CODEX_THINKING_OVERRIDE'."
+                    codex_thinking_choice="$CODEX_THINKING_OVERRIDE"
+                    ;;
+            esac
+
+            if [ "$(prompt_yes_no "Enable Codex output schema?" "$(is_true "$CODEX_USE_RESPONSES_SCHEMA" && echo y || echo n)")" = "true" ]; then
+                codex_schema_enabled_choice="true"
+                codex_schema_file_choice="$(prompt_override_value "Codex schema file path" "$CODEX_RESPONSES_SCHEMA_FILE")"
+            else
+                codex_schema_enabled_choice="false"
+                codex_schema_file_choice="$CODEX_RESPONSES_SCHEMA_FILE"
+            fi
+
+            [ "$codex_endpoint_choice" = "$CODEX_ENDPOINT" ] || overrides_changed=true
+            [ "$codex_model_choice" = "${CODEX_MODEL:-}" ] || overrides_changed=true
+            [ "$codex_thinking_choice" = "$CODEX_THINKING_OVERRIDE" ] || overrides_changed=true
+            [ "$codex_schema_enabled_choice" = "$CODEX_USE_RESPONSES_SCHEMA" ] || overrides_changed=true
+            [ "$codex_schema_file_choice" = "$CODEX_RESPONSES_SCHEMA_FILE" ] || overrides_changed=true
+
+            CODEX_ENDPOINT="$codex_endpoint_choice"
+            CODEX_MODEL="$codex_model_choice"
+            CODEX_THINKING_OVERRIDE="$codex_thinking_choice"
+            CODEX_USE_RESPONSES_SCHEMA="$codex_schema_enabled_choice"
+            CODEX_RESPONSES_SCHEMA_FILE="$codex_schema_file_choice"
+
+            persist_engine_override_value "RALPHIE_CODEX_ENDPOINT" "$CODEX_ENDPOINT" || true
+            persist_engine_override_value "CODEX_MODEL" "$CODEX_MODEL" || true
+            persist_engine_override_value "RALPHIE_CODEX_THINKING_OVERRIDE" "$CODEX_THINKING_OVERRIDE" || true
+            persist_engine_override_value "RALPHIE_CODEX_USE_RESPONSES_SCHEMA" "$CODEX_USE_RESPONSES_SCHEMA" || true
+            persist_engine_override_value "RALPHIE_CODEX_RESPONSES_SCHEMA_FILE" "$CODEX_RESPONSES_SCHEMA_FILE" || true
+        fi
+    fi
+
+    if [ "$CLAUDE_HEALTHY" = "true" ]; then
+        if [ "$(prompt_yes_no "Configure Claude endpoint/model/thinking overrides?" "n")" = "true" ]; then
+            claude_endpoint_choice="$(prompt_override_value "Claude endpoint (ANTHROPIC_BASE_URL)" "$CLAUDE_ENDPOINT")"
+            claude_model_choice="$(prompt_override_value "Claude model" "${CLAUDE_MODEL:-}")"
+            claude_thinking_choice="$(to_lower "$(prompt_override_value "Claude thinking override (none|off|low|medium|high|xhigh)" "$CLAUDE_THINKING_OVERRIDE")")"
+            case "$claude_thinking_choice" in
+                none|off|low|medium|high|xhigh|"") ;;
+                *)
+                    warn "Invalid claude thinking override '$claude_thinking_choice'. Keeping '$CLAUDE_THINKING_OVERRIDE'."
+                    claude_thinking_choice="$CLAUDE_THINKING_OVERRIDE"
+                    ;;
+            esac
+
+            [ "$claude_endpoint_choice" = "$CLAUDE_ENDPOINT" ] || overrides_changed=true
+            [ "$claude_model_choice" = "${CLAUDE_MODEL:-}" ] || overrides_changed=true
+            [ "$claude_thinking_choice" = "$CLAUDE_THINKING_OVERRIDE" ] || overrides_changed=true
+
+            CLAUDE_ENDPOINT="$claude_endpoint_choice"
+            CLAUDE_MODEL="$claude_model_choice"
+            CLAUDE_THINKING_OVERRIDE="$claude_thinking_choice"
+
+            persist_engine_override_value "RALPHIE_CLAUDE_ENDPOINT" "$CLAUDE_ENDPOINT" || true
+            persist_engine_override_value "CLAUDE_MODEL" "$CLAUDE_MODEL" || true
+            persist_engine_override_value "RALPHIE_CLAUDE_THINKING_OVERRIDE" "$CLAUDE_THINKING_OVERRIDE" || true
+        fi
+    fi
+
+    persist_engine_override_bootstrap_flag || true
+
+    if [ "$overrides_changed" = "true" ]; then
+        info "Engine overrides saved to $(path_for_display "$CONFIG_FILE")."
+        return 0
+    fi
+    info "Engine override setup completed with no changes."
+    return 1
 }
 
 run_command_with_timeout() {
@@ -1915,6 +3065,9 @@ ensure_engines_ready() {
             if [ "$requested_engine" = "auto" ] && [ "$ACTIVE_ENGINE" != "$preferred_auto_engine" ]; then
                 warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with $ACTIVE_ENGINE."
             fi
+            if [ "$attempt" -gt 1 ]; then
+                notify_event "phase_decision" "engine_outage_recovered" "engine readiness recovered on attempt $attempt/$max_attempts; active_engine=$ACTIVE_ENGINE" || true
+            fi
             if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
                 info "Engine ready: $ACTIVE_ENGINE selected (codex=$CODEX_HEALTHY, claude=$CLAUDE_HEALTHY)"
             fi
@@ -1932,6 +3085,7 @@ ensure_engines_ready() {
         jitter=$(( $(portable_random) % (base_delay + 1) ))
         backoff_delay=$((backoff_delay + jitter))
         warn "Engine readiness blocked (${LAST_ENGINE_SELECTION_BLOCK_REASON}); retrying in ${backoff_delay}s..."
+        notify_event "session_error" "engine_outage" "engine readiness blocked: ${LAST_ENGINE_SELECTION_BLOCK_REASON}; attempt $attempt/$max_attempts; retry_in=${backoff_delay}s" || true
         sleep "$backoff_delay"
         attempt=$((attempt + 1))
         ENGINE_CAPABILITIES_PROBED=false
@@ -4320,6 +5474,20 @@ print_session_config_banner() {
     info "claude_thinking_override: ${CLAUDE_THINKING_OVERRIDE:-<unset>}"
     info "engine_selection_requested: ${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
     info "active_engine_bootstrap: ${ACTIVE_ENGINE:-unknown} (${ACTIVE_CMD:-unset})"
+    info "engine_overrides_bootstrapped: ${ENGINE_OVERRIDES_BOOTSTRAPPED:-$DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED}"
+    info "notifications_enabled: ${NOTIFICATIONS_ENABLED:-$DEFAULT_NOTIFICATIONS_ENABLED}"
+    info "notification_channels: $(notification_channels_for_display)"
+    info "notification_wizard_bootstrapped: ${NOTIFICATION_WIZARD_BOOTSTRAPPED:-$DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED}"
+    info "telegram_bot_token: $(redact_secret_for_log "$TG_BOT_TOKEN")"
+    info "telegram_chat_id: $(redact_secret_for_log "$TG_CHAT_ID")"
+    info "discord_webhook: $(redact_endpoint_for_log "$NOTIFY_DISCORD_WEBHOOK_URL")"
+    info "tts_enabled: ${NOTIFY_TTS_ENABLED:-$DEFAULT_NOTIFY_TTS_ENABLED}"
+    info "notify_event_dedup_window_seconds: ${NOTIFY_EVENT_DEDUP_WINDOW_SECONDS:-$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}"
+    info "notify_incident_reminder_minutes: ${NOTIFY_INCIDENT_REMINDER_MINUTES:-$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES}"
+    info "chutes_api_key: $(redact_secret_for_log "$CHUTES_API_KEY")"
+    info "chutes_tts_url: $(redact_endpoint_for_log "$NOTIFY_CHUTES_TTS_URL")"
+    info "chutes_voice: ${NOTIFY_CHUTES_VOICE:-$DEFAULT_NOTIFY_CHUTES_VOICE}"
+    info "chutes_speed: ${NOTIFY_CHUTES_SPEED:-$DEFAULT_NOTIFY_CHUTES_SPEED}"
     info "startup_operational_probe: ${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
     info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
@@ -4422,6 +5590,7 @@ main() {
     fi
     refresh_git_identity_status || true
     prepare_phase_auto_commit_mode
+    run_first_deploy_notification_wizard || true
     save_state
 
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
@@ -4457,12 +5626,31 @@ main() {
     fi
 
     local consensus_route_count=0
+    local engine_override_bootstrap_checked="false"
+    local session_start_notified="false"
     while true; do
         ENGINE_CAPABILITIES_PROBED=false  # force fresh probe (including smoke test) each iteration
         if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
             should_exit="true"
             log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
+            notify_event "session_error" "engine_selection_failed" "$LAST_ENGINE_SELECTION_BLOCK_REASON" || true
             break
+        fi
+        if [ "$engine_override_bootstrap_checked" = "false" ]; then
+            engine_override_bootstrap_checked="true"
+            if run_first_deploy_engine_override_wizard; then
+                ENGINE_CAPABILITIES_PROBED=false
+                if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
+                    should_exit="true"
+                    log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
+                    notify_event "session_error" "engine_selection_failed" "$LAST_ENGINE_SELECTION_BLOCK_REASON" || true
+                    break
+                fi
+            fi
+        fi
+        if [ "$session_start_notified" = "false" ]; then
+            session_start_notified="true"
+            notify_event "session_start" "ok" "engine_request=$ENGINE_SELECTION_REQUESTED active_engine=$ACTIVE_ENGINE channels=$(notification_channels_for_display)" || true
         fi
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
@@ -4498,6 +5686,7 @@ main() {
                 warn "Build execution was not pre-approved in project bootstrap context."
                 warn "Edit $(path_for_display "$PROJECT_BOOTSTRAP_FILE") and set build_consent: true to continue automatically into BUILD."
                 log_reason_code "RB_BUILD_CONSENT_REQUIRED" "bootstrap build_consent is false"
+                notify_event "session_error" "build_consent_missing" "build phase blocked because bootstrap build_consent=false" || true
                 should_exit="true"
                 break 2
             fi
@@ -4506,6 +5695,7 @@ main() {
                 if [ ! -f "$STACK_SNAPSHOT_FILE" ] || ! grep -qE '^##[[:space:]]*Project Stack Ranking' "$STACK_SNAPSHOT_FILE" 2>/dev/null; then
                     warn "Stack discovery could not generate a valid ranking snapshot."
                     log_reason_code "RB_STACK_DISCOVERY_FAILED" "could not generate deterministic stack snapshot"
+                    notify_event "session_error" "stack_discovery_failed" "deterministic stack snapshot generation failed" || true
                     should_exit="true"
                     break
                 fi
@@ -4749,6 +5939,7 @@ main() {
                         phase_route="true"
                         phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
                         phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                        notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                         PHASE_ATTEMPT_IN_PROGRESS="false"
                         CURRENT_PHASE_ATTEMPT=1
                         save_state
@@ -4769,6 +5960,7 @@ main() {
                     if [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
                         warn "Phase $phase blocked after ${PHASE_COMPLETION_MAX_ATTEMPTS} attempts."
                         format_retry_budget_block_reason "$phase" "$((phase_attempt - 1))" "$PHASE_COMPLETION_MAX_ATTEMPTS"
+                        notify_event "phase_blocked" "hold" "phase=$phase exhausted completion retries (${PHASE_COMPLETION_MAX_ATTEMPTS})" || true
                         should_exit="true"
                         PHASE_ATTEMPT_IN_PROGRESS="false"
                         CURRENT_PHASE_ATTEMPT="$PHASE_COMPLETION_MAX_ATTEMPTS"
@@ -4805,18 +5997,26 @@ main() {
                 save_state
 
                 success "Phase $phase completed."
+                notify_event "phase_complete" "go" "phase=$phase next=${phase_next_target:-unknown} route_reason=${phase_route_reason:-none}" || true
                 break
             done
             if [ "$phase_route" = "true" ] && is_phase_or_done "$phase_next_target"; then
                 local route_index
+                local expected_next_phase expected_route_index
+                expected_next_phase="$(phase_default_next "$phase")"
+                expected_route_index="$(phase_index_or_done "$expected_next_phase")"
                 route_index="$(phase_index_or_done "$phase_next_target")"
                 if [ "$route_index" = "-1" ] || [ -z "$route_index" ]; then
                     route_index="$((phase_index + 1))"
+                fi
+                if [ "$phase_next_target" = "done" ] || [ "$route_index" -ne "$expected_route_index" ]; then
+                    notify_event "phase_decision" "reroute_pass" "phase=$phase rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                 fi
                 if [ "$route_index" -lt "$phase_index" ]; then
                     consensus_route_count=$((consensus_route_count + 1))
                     if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
                         warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
+                        notify_event "session_error" "routing_budget_exceeded" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)" || true
                         should_exit="true"
                         break 2
                     fi
@@ -4843,14 +6043,19 @@ main() {
         # or natural completion of all phases), exit the outer loop
         if [ "$start_phase_index" -ge "${#phases[@]}" ]; then
             info "All phases completed. Session done."
+            notify_event "session_done" "ok" "all phases completed successfully" || true
             break
         fi
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then
             log_reason_code "RB_ITERATION_BUDGET_REACHED" "run iteration budget reached at $ITERATION_COUNT"
+            notify_event "session_error" "iteration_budget_reached" "iteration budget reached at $ITERATION_COUNT/$MAX_ITERATIONS" || true
             break
         fi
     done
 
+    if is_true "$should_exit"; then
+        notify_event "session_error" "stopped" "session exited before full completion; see $(path_for_display "$REASON_LOG_FILE")" || true
+    fi
     save_state
     release_lock
 }

@@ -74,14 +74,21 @@ curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ra
 - `.ralphie/project-bootstrap.md` containing:
   - project type (`existing` or `new`)
   - primary objective for this session
+  - optional constraints/non-goals and success criteria
   - explicit plan→build transition consent
+- optional `.ralphie/project-goals.md` for pasted goals/context documents
 
 Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is present):
 - `project_type`: is this a new project?
 - `objective`: what should Ralphie optimize for?
+- `constraints` and `success_criteria`: quick single-line defaults (press Enter to keep)
+- optional `goals document URL`: single-line link input (press Enter to skip)
+- optional multi-line `project goals/context` paste mode:
+  - paste full document content or URL notes
+  - finish with a line containing only `EOF` (or press `Ctrl+D`)
 - `build_consent`: proceed from PLAN to BUILD automatically when gates pass?
 
-If `project_bootstrap.md` already exists and was created interactively, `ralphie.sh` will reuse it.
+If `.ralphie/project-bootstrap.md` already exists and was created interactively, `ralphie.sh` will reuse it.
 If it was created non-interactively, the first interactive run will refresh it by default.
 To force a refresh at any time, run:
 ```bash
@@ -143,6 +150,13 @@ Equivalent environment variables in `.ralphie/config.env`:
 `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
 `RALPHIE_STARTUP_OPERATIONAL_PROBE`,
 `RALPHIE_CONSENSUS_SCORE_THRESHOLD`,
+`RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED`,
+`RALPHIE_NOTIFICATIONS_ENABLED`, `RALPHIE_NOTIFY_TELEGRAM_ENABLED`,
+`TG_BOT_TOKEN`, `TG_CHAT_ID`,
+`RALPHIE_NOTIFY_DISCORD_ENABLED`, `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`,
+`RALPHIE_NOTIFY_TTS_ENABLED`, `CHUTES_API_KEY`,
+`RALPHIE_NOTIFY_CHUTES_TTS_URL`, `RALPHIE_NOTIFY_CHUTES_VOICE`, `RALPHIE_NOTIFY_CHUTES_SPEED`,
+`RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED`,
 `RALPHIE_AUTO_INIT_GIT_IF_MISSING`,
 `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS`,
 `RALPHIE_AUTO_ENGINE_PREFERENCE`,
@@ -178,6 +192,14 @@ All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` u
 - `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true|false` controls phase-gated local commits (no push).
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true|false` controls startup operational self-checks.
 - `RALPHIE_CONSENSUS_SCORE_THRESHOLD=0..100` sets minimum average score for consensus and handoff pass.
+- `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true|false` controls whether the first-deploy engine override wizard should run.
+- `RALPHIE_NOTIFICATIONS_ENABLED=true|false` is the master notification toggle.
+- `RALPHIE_NOTIFY_TELEGRAM_ENABLED=true|false` enables Telegram bot notifications (requires `TG_BOT_TOKEN` and `TG_CHAT_ID`).
+- `RALPHIE_NOTIFY_DISCORD_ENABLED=true|false` enables Discord webhook notifications (requires `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`).
+- `RALPHIE_NOTIFY_TTS_ENABLED=true|false` enables Chutes TTS voice notifications over Telegram/Discord (requires `CHUTES_API_KEY`).
+- `RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=N` suppresses duplicate notification events for `N` seconds.
+- `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=N` sends reminders every `N` minutes for sustained incident series.
+- `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true|false` controls whether the first-deploy notification wizard should run.
 
 Current defaults are:
 
@@ -195,6 +217,15 @@ Current defaults are:
 - `RALPHIE_CLAUDE_THINKING_OVERRIDE=high`
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`
 - `RALPHIE_CONSENSUS_SCORE_THRESHOLD=70`
+- `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false`
+- `RALPHIE_NOTIFICATIONS_ENABLED=false`
+- `RALPHIE_NOTIFY_TELEGRAM_ENABLED=false`
+- `RALPHIE_NOTIFY_DISCORD_ENABLED=false`
+- `RALPHIE_NOTIFY_TTS_ENABLED=false`
+- `RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak`
+- `RALPHIE_NOTIFY_CHUTES_VOICE=am_michael`
+- `RALPHIE_NOTIFY_CHUTES_SPEED=1.0`
+- `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`
 
 Example `.ralphie/config.env`:
 
@@ -215,6 +246,22 @@ CLAUDE_MODEL=
 RALPHIE_CLAUDE_THINKING_OVERRIDE=high
 RALPHIE_STARTUP_OPERATIONAL_PROBE=true
 RALPHIE_CONSENSUS_SCORE_THRESHOLD=70
+RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false
+
+RALPHIE_NOTIFICATIONS_ENABLED=false
+RALPHIE_NOTIFY_TELEGRAM_ENABLED=false
+TG_BOT_TOKEN=
+TG_CHAT_ID=
+RALPHIE_NOTIFY_DISCORD_ENABLED=false
+RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL=
+RALPHIE_NOTIFY_TTS_ENABLED=false
+CHUTES_API_KEY=
+RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak
+RALPHIE_NOTIFY_CHUTES_VOICE=am_michael
+RALPHIE_NOTIFY_CHUTES_SPEED=1.0
+RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90
+RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=10
+RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false
 ```
 
 Supported no-op profiles:
@@ -290,6 +337,39 @@ Build transitions require the snapshot and clean artifact checks to pass.
 - When `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`, Ralphie validates core runtime dependencies before the loop starts.
 - This includes command availability checks for core shell tooling and git workflow commands (`git`, `seq`, `cut`, `head`, `tail`, `wc`, `tr`, `tee`, `comm`, `cmp`, plus base shell utilities).
 - It also validates writable state storage and timeout wrapper behavior.
+
+## First-Deploy Engine Override Wizard
+
+- On first interactive run, Ralphie can prompt once for engine override setup after engine readiness checks pass.
+- The wizard can update:
+  - engine mode (`auto|codex|claude`) and AUTO preference
+  - Codex endpoint/model/thinking/schema settings
+  - Claude endpoint/model/thinking settings
+- It only offers Codex/Claude override prompts for engines that passed health checks in that run.
+- Selections are persisted to `.ralphie/config.env`.
+- Completion state is stored in `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true` to avoid repeated prompting.
+- To re-run the wizard later, set `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false` in config.
+
+## First-Deploy Notification Wizard
+
+- On first interactive run, Ralphie can prompt once for notification setup.
+- Supported channels:
+  - Telegram bot messages (`TG_BOT_TOKEN`, `TG_CHAT_ID`)
+  - Discord webhook (`RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`)
+  - Optional Chutes TTS voice attachments for Telegram/Discord (`CHUTES_API_KEY`)
+- The wizard includes quick setup guidance, auto-chat-id discovery for Telegram via `getUpdates`, and sends test messages during setup.
+- The wizard can also configure anti-spam cadence (`RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS`, `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES`).
+- Notification events are standardized:
+  - `session_start`
+  - `phase_decision`
+  - `phase_complete`
+  - `phase_blocked`
+  - `session_done`
+  - `session_error`
+- Notification policy is high-signal only. Repeated incidents are suppressed and re-notified on reminder cadence.
+- Selections are persisted to `.ralphie/config.env`.
+- Completion state is stored in `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true`.
+- To re-run later, set `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`.
 
 ## Credits
 
