@@ -265,6 +265,24 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# Portable pseudo-random number (0..32767). Uses $RANDOM when available (interactive
+# bash), falls back to /dev/urandom or PID-seeded arithmetic for non-interactive shells.
+portable_random() {
+    if [ -n "${RANDOM+x}" ]; then
+        echo "$RANDOM"
+    elif [ -n "${BASH_VERSION:-}" ]; then
+        # In some shells $RANDOM may appear unset until first use.
+        # Force initialization once, then use it.
+        : "${RANDOM:=0}"
+        echo "$RANDOM"
+    elif [ -r /dev/urandom ]; then
+        od -An -tu2 -N2 /dev/urandom 2>/dev/null | tr -d ' '
+    else
+        # Last resort: deterministic but varies per PID and second
+        echo $(( ($$ * $(date +%s)) % 32768 ))
+    fi
+}
+
 load_config_file_safe() {
     local file="$1"
     local file_display
@@ -428,6 +446,7 @@ Core options:
   --phase-completion-retry-delay-seconds N Delay in seconds between completion retries
   --phase-completion-retry-verbose bool   Verbose phase completion retry logging (true|false)
   --max-consensus-routing-attempts N      Max adaptive consensus reroutes per run (0=unlimited)
+  --consensus-score-threshold N           Minimum consensus/handoff pass score (0-100)
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
@@ -547,6 +566,15 @@ parse_args() {
             --max-consensus-routing-attempts)
                 MAX_CONSENSUS_ROUTING_ATTEMPTS="$(parse_arg_value "--max-consensus-routing-attempts" "${2:-}")"
                 require_non_negative_int "MAX_CONSENSUS_ROUTING_ATTEMPTS" "$MAX_CONSENSUS_ROUTING_ATTEMPTS"
+                shift 2
+                ;;
+            --consensus-score-threshold)
+                CONSENSUS_SCORE_THRESHOLD="$(parse_arg_value "--consensus-score-threshold" "${2:-}")"
+                require_non_negative_int "CONSENSUS_SCORE_THRESHOLD" "$CONSENSUS_SCORE_THRESHOLD"
+                if [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
+                    err "Invalid value for --consensus-score-threshold: $CONSENSUS_SCORE_THRESHOLD (expected 0-100)"
+                    exit 1
+                fi
                 shift 2
                 ;;
             --run-agent-max-attempts)
@@ -753,6 +781,7 @@ DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
 DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
 DEFAULT_SWARM_CONSENSUS_TIMEOUT=600             # max seconds for all reviewers in a consensus round
+DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
 DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=3             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
@@ -800,6 +829,7 @@ SESSION_TOKEN_RATE_CENTS_PER_MILLION="${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-$D
 SESSION_COST_BUDGET_CENTS="${SESSION_COST_BUDGET_CENTS:-$DEFAULT_SESSION_COST_BUDGET_CENTS}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
 SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
+CONSENSUS_SCORE_THRESHOLD="${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
 ENGINE_HEALTH_RETRY_VERBOSE="${ENGINE_HEALTH_RETRY_VERBOSE:-$DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE}"
@@ -831,6 +861,7 @@ CODEX_THINKING_OVERRIDE="${RALPHIE_CODEX_THINKING_OVERRIDE:-$CODEX_THINKING_OVER
 CLAUDE_ENDPOINT="${RALPHIE_CLAUDE_ENDPOINT:-$CLAUDE_ENDPOINT}"
 CLAUDE_THINKING_OVERRIDE="${RALPHIE_CLAUDE_THINKING_OVERRIDE:-$CLAUDE_THINKING_OVERRIDE}"
 STARTUP_OPERATIONAL_PROBE="${RALPHIE_STARTUP_OPERATIONAL_PROBE:-$STARTUP_OPERATIONAL_PROBE}"
+CONSENSUS_SCORE_THRESHOLD="${RALPHIE_CONSENSUS_SCORE_THRESHOLD:-$CONSENSUS_SCORE_THRESHOLD}"
 
 # Validate engine selection
 ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
@@ -886,6 +917,11 @@ case "$CLAUDE_THINKING_OVERRIDE" in
         ;;
 esac
 
+if ! is_number "$CONSENSUS_SCORE_THRESHOLD" || [ "$CONSENSUS_SCORE_THRESHOLD" -lt 0 ] || [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
+    warn "Invalid CONSENSUS_SCORE_THRESHOLD '$CONSENSUS_SCORE_THRESHOLD'. Falling back to '$DEFAULT_CONSENSUS_SCORE_THRESHOLD'."
+    CONSENSUS_SCORE_THRESHOLD="$DEFAULT_CONSENSUS_SCORE_THRESHOLD"
+fi
+
 if [ "$ENGINE_SELECTION_REQUESTED" = "codex" ]; then
     ACTIVE_ENGINE="codex"
     ACTIVE_CMD="$CODEX_CMD"
@@ -919,7 +955,7 @@ fi
 CURRENT_PHASE="plan"
 CURRENT_PHASE_INDEX=0
 ITERATION_COUNT=0
-SESSION_ID="$(date +%Y%m%d_%H%M%S)_$$"
+SESSION_ID="$(date +%Y%m%d_%H%M%S)_$(printf '%s' "${EPOCHREALTIME:-$(date +%s)}" | tr -d '.')_$$_$(portable_random)"
 SESSION_ATTEMPT_COUNT=0
 SESSION_TOKEN_COUNT=0
 SESSION_COST_CENTS=0
@@ -1633,8 +1669,13 @@ smoke_test_engine() {
 
     smoke_elapsed=$(( $(date +%s) - smoke_start ))
     local result=1
-    if [ "$smoke_exit" -eq 0 ] && [ -f "$output_file" ] && grep -qF "$canary_token" "$output_file" 2>/dev/null; then
-        result=0
+    # Check for canary token in output regardless of exit code — the engine may
+    # have written the correct response before timeout killed the process.
+    # Strip newlines before matching to handle LLMs that split the token across lines.
+    if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+        if tr -d '\n\r' < "$output_file" 2>/dev/null | grep -qF "$canary_token"; then
+            result=0
+        fi
     fi
 
     if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
@@ -1771,15 +1812,6 @@ resolve_active_engine() {
         fallback_auto_engine="codex"
     fi
 
-    # Upfront visibility: warn about any unavailable engine before selection
-    if [ "$CODEX_HEALTHY" != "true" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
-        warn "Both engines unavailable: codex (${CODEX_CAP_NOTE:-unknown}), claude (${CLAUDE_CAP_NOTE:-unknown})."
-    elif [ "$CODEX_HEALTHY" != "true" ]; then
-        warn "codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
-    elif [ "$CLAUDE_HEALTHY" != "true" ]; then
-        warn "claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
-    fi
-
     case "$requested_engine" in
         auto)
             # Auto: prefer configured engine, fall back to the other silently.
@@ -1794,13 +1826,11 @@ resolve_active_engine() {
                 return 0
             fi
             if [ "$fallback_auto_engine" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ]; then
-                warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with codex."
                 ACTIVE_ENGINE="codex"
                 ACTIVE_CMD="$CODEX_CMD"
                 return 0
             fi
             if [ "$fallback_auto_engine" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ]; then
-                warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with claude."
                 ACTIVE_ENGINE="claude"
                 ACTIVE_CMD="$CLAUDE_CMD"
                 return 0
@@ -1842,6 +1872,12 @@ ensure_engines_ready() {
     local max_attempts="$ENGINE_HEALTH_MAX_ATTEMPTS"
     local base_delay="$ENGINE_HEALTH_RETRY_DELAY_SECONDS"
     local attempt=1
+    local preferred_auto_engine="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
+    preferred_auto_engine="$(to_lower "$preferred_auto_engine")"
+    case "$preferred_auto_engine" in
+        codex|claude) ;;
+        *) preferred_auto_engine="$DEFAULT_AUTO_ENGINE_PREFERENCE" ;;
+    esac
 
     if ! is_number "$max_attempts" || [ "$max_attempts" -lt 1 ]; then
         max_attempts=1
@@ -1850,6 +1886,7 @@ ensure_engines_ready() {
         base_delay=5
     fi
 
+    local warned_unavailable=false
     while [ "$attempt" -le "$max_attempts" ]; do
         if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
             info "Engine readiness check attempt $attempt/$max_attempts..."
@@ -1862,7 +1899,22 @@ ensure_engines_ready() {
             log_engine_health_summary
         fi
 
+        # Warn once about unavailable engines (not on every retry)
+        if [ "$warned_unavailable" = false ]; then
+            warned_unavailable=true
+            if [ "$CODEX_HEALTHY" != "true" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
+                warn "Both engines unavailable: codex (${CODEX_CAP_NOTE:-unknown}), claude (${CLAUDE_CAP_NOTE:-unknown})."
+            elif [ "$CODEX_HEALTHY" != "true" ]; then
+                warn "codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
+            elif [ "$CLAUDE_HEALTHY" != "true" ]; then
+                warn "claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
+            fi
+        fi
+
         if resolve_active_engine "$requested_engine"; then
+            if [ "$requested_engine" = "auto" ] && [ "$ACTIVE_ENGINE" != "$preferred_auto_engine" ]; then
+                warn "AUTO: preferred $preferred_auto_engine unavailable; proceeding with $ACTIVE_ENGINE."
+            fi
             if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
                 info "Engine ready: $ACTIVE_ENGINE selected (codex=$CODEX_HEALTHY, claude=$CLAUDE_HEALTHY)"
             fi
@@ -1877,7 +1929,7 @@ ensure_engines_ready() {
         local backoff_delay jitter
         backoff_delay=$(( base_delay * (1 << (attempt - 1)) ))
         [ "$backoff_delay" -gt 120 ] && backoff_delay=120
-        jitter=$(( ${RANDOM:-0} % (base_delay + 1) ))
+        jitter=$(( $(portable_random) % (base_delay + 1) ))
         backoff_delay=$((backoff_delay + jitter))
         warn "Engine readiness blocked (${LAST_ENGINE_SELECTION_BLOCK_REASON}); retrying in ${backoff_delay}s..."
         sleep "$backoff_delay"
@@ -2253,8 +2305,7 @@ run_agent_with_prompt() {
             backoff_delay=$((retry_delay * (1 << (attempt - 1))))
             # Cap at 120 seconds
             [ "$backoff_delay" -gt 120 ] && backoff_delay=120
-            # Add jitter: 0 to retry_delay seconds (use RANDOM if available, else 0)
-            jitter=$(( ${RANDOM:-0} % (retry_delay + 1) ))
+            jitter=$(( $(portable_random) % (retry_delay + 1) ))
             backoff_delay=$((backoff_delay + jitter))
             if is_true "$RUN_AGENT_RETRY_VERBOSE"; then
                 warn "Inference hiccup detected (exit=$exit_code) on attempt $attempt/$max_run_attempts. Retrying in ${backoff_delay}s..."
@@ -2632,9 +2683,7 @@ run_swarm_consensus() {
             for tie_phase in "${tied_phases[@]}"; do
                 tie_summary="${tie_summary}${tie_summary:+, }$tie_phase"
             done
-            if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
-                warn "Consensus next-phase vote tie ($tie_summary at ${highest_next_votes} votes); defaulting to $default_next_phase."
-            fi
+            warn "Consensus next-phase vote tie ($tie_summary at ${highest_next_votes} votes each); defaulting to $default_next_phase."
             if [ -n "$next_phase_vote_reason" ]; then
                 next_phase_vote_reason="$next_phase_vote_reason (tie: $tie_summary -> default $default_next_phase)"
             else
@@ -2649,7 +2698,7 @@ run_swarm_consensus() {
     LAST_CONSENSUS_RESPONDED_VOTES="$responded_votes"
     LAST_CONSENSUS_SCORE="$avg_score"
     LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
-    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge 70 ]; then
+    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge "$CONSENSUS_SCORE_THRESHOLD" ]; then
         LAST_CONSENSUS_PASS=true
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
@@ -2807,7 +2856,7 @@ run_handoff_validation() {
         [ "$status" = "success" ] || status="failure"
     fi
 
-    if [ "$status" = "success" ] && is_number "$LAST_HANDOFF_SCORE" && [ "$LAST_HANDOFF_SCORE" -ge 70 ] && [ "$LAST_HANDOFF_VERDICT" = "GO" ]; then
+    if [ "$status" = "success" ] && is_number "$LAST_HANDOFF_SCORE" && [ "$LAST_HANDOFF_SCORE" -ge "$CONSENSUS_SCORE_THRESHOLD" ] && [ "$LAST_HANDOFF_VERDICT" = "GO" ]; then
         return 0
     fi
 
@@ -4274,6 +4323,7 @@ print_session_config_banner() {
     info "startup_operational_probe: ${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
     info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
+    info "consensus_score_threshold: ${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"

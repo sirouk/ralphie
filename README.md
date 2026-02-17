@@ -116,6 +116,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--phase-completion-retry-delay-seconds N`  
 - `--phase-completion-retry-verbose true|false`  
 - `--max-consensus-routing-attempts N`  
+- `--consensus-score-threshold N`  
 - `--run-agent-max-attempts N`  
 - `--run-agent-retry-delay-seconds N`  
 - `--run-agent-retry-verbose true|false`  
@@ -141,6 +142,7 @@ Equivalent environment variables in `.ralphie/config.env`:
 `RUN_AGENT_RETRY_DELAY_SECONDS`, `RUN_AGENT_RETRY_VERBOSE`, `SWARM_CONSENSUS_TIMEOUT`,
 `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
 `RALPHIE_STARTUP_OPERATIONAL_PROBE`,
+`RALPHIE_CONSENSUS_SCORE_THRESHOLD`,
 `RALPHIE_AUTO_INIT_GIT_IF_MISSING`,
 `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS`,
 `RALPHIE_AUTO_ENGINE_PREFERENCE`,
@@ -175,6 +177,7 @@ All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` u
 - `RALPHIE_AUTO_INIT_GIT_IF_MISSING=true|false` initializes a local git repository at startup when missing.
 - `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true|false` controls phase-gated local commits (no push).
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true|false` controls startup operational self-checks.
+- `RALPHIE_CONSENSUS_SCORE_THRESHOLD=0..100` sets minimum average score for consensus and handoff pass.
 
 Current defaults are:
 
@@ -191,6 +194,7 @@ Current defaults are:
 - `CLAUDE_MODEL=""`
 - `RALPHIE_CLAUDE_THINKING_OVERRIDE=high`
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`
+- `RALPHIE_CONSENSUS_SCORE_THRESHOLD=70`
 
 Example `.ralphie/config.env`:
 
@@ -210,6 +214,7 @@ RALPHIE_CLAUDE_ENDPOINT=
 CLAUDE_MODEL=
 RALPHIE_CLAUDE_THINKING_OVERRIDE=high
 RALPHIE_STARTUP_OPERATIONAL_PROBE=true
+RALPHIE_CONSENSUS_SCORE_THRESHOLD=70
 ```
 
 Supported no-op profiles:
