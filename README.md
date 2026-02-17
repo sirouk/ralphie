@@ -119,6 +119,8 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--run-agent-max-attempts N`  
 - `--run-agent-retry-delay-seconds N`  
 - `--run-agent-retry-verbose true|false`  
+- `--auto-init-git-if-missing true|false`
+- `--auto-commit-on-phase-pass true|false`
 - `--auto-engine-preference codex|claude`
 - `--auto-repair-markdown-artifacts true|false`  
 - `--strict-validation-noop true|false`  
@@ -139,6 +141,8 @@ Equivalent environment variables in `.ralphie/config.env`:
 `RUN_AGENT_RETRY_DELAY_SECONDS`, `RUN_AGENT_RETRY_VERBOSE`, `SWARM_CONSENSUS_TIMEOUT`,
 `AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
 `RALPHIE_STARTUP_OPERATIONAL_PROBE`,
+`RALPHIE_AUTO_INIT_GIT_IF_MISSING`,
+`RALPHIE_AUTO_COMMIT_ON_PHASE_PASS`,
 `RALPHIE_AUTO_ENGINE_PREFERENCE`,
 `RALPHIE_CODEX_ENDPOINT`, `RALPHIE_CODEX_USE_RESPONSES_SCHEMA`, `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE`,
 `RALPHIE_CODEX_THINKING_OVERRIDE`, `RALPHIE_CLAUDE_ENDPOINT`, `RALPHIE_CLAUDE_THINKING_OVERRIDE`,
@@ -168,12 +172,16 @@ All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` u
 - `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE` is only used when schema mode is enabled.
 - `RALPHIE_CODEX_THINKING_OVERRIDE=none|minimal|low|medium|high|xhigh` controls codex reasoning effort.
 - `RALPHIE_CLAUDE_THINKING_OVERRIDE=none|off|low|medium|high|xhigh` controls claude thinking behavior.
+- `RALPHIE_AUTO_INIT_GIT_IF_MISSING=true|false` initializes a local git repository at startup when missing.
+- `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true|false` controls phase-gated local commits (no push).
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true|false` controls startup operational self-checks.
 
 Current defaults are:
 
 - `RALPHIE_ENGINE=auto`
 - `RALPHIE_AUTO_ENGINE_PREFERENCE=codex`
+- `RALPHIE_AUTO_INIT_GIT_IF_MISSING=true`
+- `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true`
 - `RALPHIE_CODEX_ENDPOINT=""`
 - `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false`
 - `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=""`
@@ -189,6 +197,8 @@ Example `.ralphie/config.env`:
 ```bash
 RALPHIE_ENGINE=auto
 RALPHIE_AUTO_ENGINE_PREFERENCE=codex
+RALPHIE_AUTO_INIT_GIT_IF_MISSING=true
+RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true
 
 RALPHIE_CODEX_ENDPOINT=
 RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false
@@ -215,6 +225,8 @@ Defaults:
 - `max-phase-completion-attempts`: `3`
 - `max-consensus-routing-attempts`: `2`
 - `run-agent-max-attempts`: `3`
+- `auto-init-git-if-missing`: `true`
+- `auto-commit-on-phase-pass`: `true` (local commit only; no push)
 - `engine-output-to-stdout`: `true`
 - `SWARM_CONSENSUS_TIMEOUT`: `600`
 - `phase-noop default policy`: plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`
@@ -245,8 +257,34 @@ Build transitions require the snapshot and clean artifact checks to pass.
 ## Restart behavior
 
 - Resume is enabled by default. On restart, `ralphie.sh` restores the latest persisted phase and iteration state.
+- State snapshots are written atomically (`tmp` file + rename) with checksum validation to avoid partial-write corruption.
+- Resume now restores attempt-level execution (`CURRENT_PHASE_ATTEMPT`) and whether an attempt was in-flight.
+- If a process stops mid-attempt, the next run re-enters that exact phase/attempt instead of skipping ahead.
+- Phase transition context is persisted and restored, so consensus routing history survives restarts.
 - If resume lands on a phase with broken prerequisites (for example missing artifacts, bad markdown hygiene, or non-actionable plan), it automatically falls back to `plan` and records the reason in `last_gate_feedback`.
 - This prevents silent stalls while avoiding unnecessary recomputation.
+
+## Phase-Gated Auto Commit (No Push)
+
+- When enabled, Ralphie creates a local commit after a phase passes handoff + consensus gates.
+- Commit subjects are concise, lowercase, one-line summaries grouped by changed file areas.
+- Ralphie never runs `git push`.
+- At startup, Ralphie checks whether a valid git commit identity is available (`git var GIT_COMMITTER_IDENT`) and records that status in resumable state.
+- If identity is missing, auto-commit is disabled for the run and a clear warning is shown up front.
+- After configuring identity (`git config user.name/user.email` or `GIT_COMMITTER_*` env vars), restart with `--resume`; Ralphie re-checks identity and auto-commit can resume.
+- If the run starts from a dirty worktree, the first phase commit may include those pre-existing local changes.
+
+## Git Repository Bootstrap
+
+- By default, Ralphie initializes a git repository at startup when one is missing.
+- This behavior is controlled by `RALPHIE_AUTO_INIT_GIT_IF_MISSING` (or `--auto-init-git-if-missing`).
+- If git is unavailable and auto-init is enabled, startup fails early.
+
+## Startup Operational Probe
+
+- When `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`, Ralphie validates core runtime dependencies before the loop starts.
+- This includes command availability checks for core shell tooling and git workflow commands (`git`, `seq`, `cut`, `head`, `tail`, `wc`, `tr`, `tee`, `comm`, `cmp`, plus base shell utilities).
+- It also validates writable state storage and timeout wrapper behavior.
 
 ## Credits
 

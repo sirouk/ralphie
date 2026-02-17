@@ -431,6 +431,8 @@ Core options:
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
+  --auto-init-git-if-missing bool         Initialize git repository at startup when missing (true|false)
+  --auto-commit-on-phase-pass bool        Auto-commit local changes after phase gate pass (true|false, no push)
   --auto-engine-preference codex|claude   Preferred AUTO engine selection order
   --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
@@ -453,6 +455,8 @@ Additional runtime engine env knobs:
   RALPHIE_CODEX_THINKING_OVERRIDE        Codex reasoning override: none|minimal|low|medium|high|xhigh
   RALPHIE_CLAUDE_ENDPOINT                Optional ANTHROPIC_BASE_URL override for claude calls
   RALPHIE_CLAUDE_THINKING_OVERRIDE       Claude thinking override: none|off|low|medium|high|xhigh
+  RALPHIE_AUTO_INIT_GIT_IF_MISSING       Initialize git repo at startup when missing (true|false)
+  RALPHIE_AUTO_COMMIT_ON_PHASE_PASS      Auto-commit phase-approved changes (true|false)
   RALPHIE_STARTUP_OPERATIONAL_PROBE      Run startup operational self-checks (true|false)
 EOF
 }
@@ -559,6 +563,22 @@ parse_args() {
                 RUN_AGENT_RETRY_VERBOSE="$(parse_arg_value "--run-agent-retry-verbose" "${2:-}")"
                 if ! is_bool_like "$RUN_AGENT_RETRY_VERBOSE"; then
                     err "Invalid boolean value for --run-agent-retry-verbose: $RUN_AGENT_RETRY_VERBOSE"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --auto-init-git-if-missing)
+                AUTO_INIT_GIT_IF_MISSING="$(parse_arg_value "--auto-init-git-if-missing" "${2:-}")"
+                if ! is_bool_like "$AUTO_INIT_GIT_IF_MISSING"; then
+                    err "Invalid boolean value for --auto-init-git-if-missing: $AUTO_INIT_GIT_IF_MISSING"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --auto-commit-on-phase-pass)
+                AUTO_COMMIT_ON_PHASE_PASS="$(parse_arg_value "--auto-commit-on-phase-pass" "${2:-}")"
+                if ! is_bool_like "$AUTO_COMMIT_ON_PHASE_PASS"; then
+                    err "Invalid boolean value for --auto-commit-on-phase-pass: $AUTO_COMMIT_ON_PHASE_PASS"
                     exit 1
                 fi
                 shift 2
@@ -694,6 +714,8 @@ DEFAULT_CODEX_RESPONSES_SCHEMA_FILE=""        # path passed to codex --output-sc
 DEFAULT_CODEX_THINKING_OVERRIDE="high"        # none|minimal|low|medium|high|xhigh
 DEFAULT_CLAUDE_ENDPOINT=""                    # empty = do not override ANTHROPIC_BASE_URL
 DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
+DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup when missing
+DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="true"
 DEFAULT_COMMAND_TIMEOUT_SECONDS=0 # 0 means disabled
@@ -749,6 +771,8 @@ CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
 CONFIDENCE_STAGNATION_LIMIT="${CONFIDENCE_STAGNATION_LIMIT:-3}"
 AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
 AUTO_ENGINE_PREFERENCE="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
+AUTO_INIT_GIT_IF_MISSING="${AUTO_INIT_GIT_IF_MISSING:-$DEFAULT_AUTO_INIT_GIT_IF_MISSING}"
+AUTO_COMMIT_ON_PHASE_PASS="${AUTO_COMMIT_ON_PHASE_PASS:-$DEFAULT_AUTO_COMMIT_ON_PHASE_PASS}"
 CODEX_ENDPOINT="${CODEX_ENDPOINT:-$DEFAULT_CODEX_ENDPOINT}"
 CODEX_USE_RESPONSES_SCHEMA="${CODEX_USE_RESPONSES_SCHEMA:-$DEFAULT_CODEX_USE_RESPONSES_SCHEMA}"
 CODEX_RESPONSES_SCHEMA_FILE="${CODEX_RESPONSES_SCHEMA_FILE:-$DEFAULT_CODEX_RESPONSES_SCHEMA_FILE}"
@@ -798,6 +822,8 @@ AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
+AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
+AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_PHASE_PASS}"
 CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
 CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
 CODEX_RESPONSES_SCHEMA_FILE="${RALPHIE_CODEX_RESPONSES_SCHEMA_FILE:-$CODEX_RESPONSES_SCHEMA_FILE}"
@@ -823,6 +849,18 @@ case "$AUTO_ENGINE_PREFERENCE" in
         AUTO_ENGINE_PREFERENCE="$DEFAULT_AUTO_ENGINE_PREFERENCE"
         ;;
 esac
+
+AUTO_COMMIT_ON_PHASE_PASS="$(to_lower "$AUTO_COMMIT_ON_PHASE_PASS")"
+if ! is_bool_like "$AUTO_COMMIT_ON_PHASE_PASS"; then
+    warn "Invalid AUTO_COMMIT_ON_PHASE_PASS '$AUTO_COMMIT_ON_PHASE_PASS'. Falling back to '$DEFAULT_AUTO_COMMIT_ON_PHASE_PASS'."
+    AUTO_COMMIT_ON_PHASE_PASS="$DEFAULT_AUTO_COMMIT_ON_PHASE_PASS"
+fi
+
+AUTO_INIT_GIT_IF_MISSING="$(to_lower "$AUTO_INIT_GIT_IF_MISSING")"
+if ! is_bool_like "$AUTO_INIT_GIT_IF_MISSING"; then
+    warn "Invalid AUTO_INIT_GIT_IF_MISSING '$AUTO_INIT_GIT_IF_MISSING'. Falling back to '$DEFAULT_AUTO_INIT_GIT_IF_MISSING'."
+    AUTO_INIT_GIT_IF_MISSING="$DEFAULT_AUTO_INIT_GIT_IF_MISSING"
+fi
 
 CODEX_USE_RESPONSES_SCHEMA="$(to_lower "$CODEX_USE_RESPONSES_SCHEMA")"
 if ! is_bool_like "$CODEX_USE_RESPONSES_SCHEMA"; then
@@ -897,6 +935,11 @@ LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
 PHASE_TRANSITION_HISTORY=()
+CURRENT_PHASE_ATTEMPT=1
+PHASE_ATTEMPT_IN_PROGRESS="false"
+AUTO_COMMIT_SESSION_ENABLED="false"
+GIT_IDENTITY_READY="unknown"
+GIT_IDENTITY_SOURCE="unknown"
 
 # Capability Probing results (populated by probe_engine_capabilities)
 CLAUDE_CAP_PRINT=0
@@ -970,13 +1013,59 @@ sha256_file_sum() {
     fi
 }
 
+state_blob_encode() {
+    local payload="${1:-}"
+    if command -v base64 >/dev/null 2>&1; then
+        printf '%s' "$payload" | base64 | tr -d '\n'
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$payload" | openssl base64 -A 2>/dev/null
+        return 0
+    fi
+    return 1
+}
+
+state_blob_decode() {
+    local payload="${1:-}"
+    [ -z "$payload" ] && { echo ""; return 0; }
+
+    if command -v base64 >/dev/null 2>&1; then
+        printf '%s' "$payload" | base64 --decode 2>/dev/null && return 0
+        printf '%s' "$payload" | base64 -d 2>/dev/null && return 0
+        printf '%s' "$payload" | base64 -D 2>/dev/null && return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$payload" | openssl base64 -d -A 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 save_state() {
     mkdir -p "$(dirname "$STATE_FILE")"
     local checksum
+    local tmp_state_file
+    local history_payload=""
+    local history_encoded=""
 
-    cat <<EOF > "$STATE_FILE"
+    if [ "${#PHASE_TRANSITION_HISTORY[@]}" -gt 0 ]; then
+        history_payload="$(printf '%s\n' "${PHASE_TRANSITION_HISTORY[@]}")"
+        history_encoded="$(state_blob_encode "$history_payload" 2>/dev/null || true)"
+        if [ -z "$history_encoded" ]; then
+            warn "Could not encode phase transition history for state persistence."
+        fi
+    fi
+
+    tmp_state_file="$(mktemp "$CONFIG_DIR/state.tmp.XXXXXX")" || {
+        warn "Could not create temporary state file in $(path_for_display "$CONFIG_DIR")."
+        return 1
+    }
+
+    cat <<EOF > "$tmp_state_file"
 CURRENT_PHASE="$CURRENT_PHASE"
 CURRENT_PHASE_INDEX="$CURRENT_PHASE_INDEX"
+CURRENT_PHASE_ATTEMPT="$CURRENT_PHASE_ATTEMPT"
+PHASE_ATTEMPT_IN_PROGRESS="$PHASE_ATTEMPT_IN_PROGRESS"
 ITERATION_COUNT="$ITERATION_COUNT"
 SESSION_ID="$SESSION_ID"
 SESSION_ATTEMPT_COUNT="$SESSION_ATTEMPT_COUNT"
@@ -984,13 +1073,23 @@ SESSION_TOKEN_COUNT="$SESSION_TOKEN_COUNT"
 SESSION_COST_CENTS="$SESSION_COST_CENTS"
 LAST_RUN_TOKEN_COUNT="$LAST_RUN_TOKEN_COUNT"
 ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT"
+PHASE_TRANSITION_HISTORY_B64="$history_encoded"
+GIT_IDENTITY_READY="$GIT_IDENTITY_READY"
+GIT_IDENTITY_SOURCE="$GIT_IDENTITY_SOURCE"
 EOF
     # Append SHA-256 checksum to the end
-    if checksum="$(sha256_file_sum "$STATE_FILE")"; then
-        echo "STATE_CHECKSUM=\"$checksum\"" >> "$STATE_FILE"
+    if checksum="$(sha256_file_sum "$tmp_state_file")"; then
+        echo "STATE_CHECKSUM=\"$checksum\"" >> "$tmp_state_file"
     else
         warn "Could not calculate state checksum; continuing without integrity metadata."
     fi
+
+    if ! mv "$tmp_state_file" "$STATE_FILE"; then
+        warn "Could not atomically update state file: $(path_for_display "$STATE_FILE")"
+        rm -f "$tmp_state_file"
+        return 1
+    fi
+    return 0
 }
 
 load_state() {
@@ -998,6 +1097,8 @@ load_state() {
 
     CURRENT_PHASE="plan"
     CURRENT_PHASE_INDEX=0
+    CURRENT_PHASE_ATTEMPT=1
+    PHASE_ATTEMPT_IN_PROGRESS="false"
     ITERATION_COUNT=0
     SESSION_ID=""
     SESSION_ATTEMPT_COUNT=0
@@ -1005,6 +1106,10 @@ load_state() {
     SESSION_COST_CENTS=0
     LAST_RUN_TOKEN_COUNT=0
     ENGINE_OUTPUT_TO_STDOUT="$DEFAULT_ENGINE_OUTPUT_TO_STDOUT"
+    PHASE_TRANSITION_HISTORY=()
+    GIT_IDENTITY_READY="unknown"
+    GIT_IDENTITY_SOURCE="unknown"
+    local phase_transition_history_b64=""
     
     # Verify checksum if present
     if grep -q "STATE_CHECKSUM=" "$STATE_FILE"; then
@@ -1031,6 +1136,8 @@ load_state() {
         case "$key" in
             CURRENT_PHASE) CURRENT_PHASE="$value" ;;
             CURRENT_PHASE_INDEX) is_number "$value" && CURRENT_PHASE_INDEX="$value" ;;
+            CURRENT_PHASE_ATTEMPT) is_number "$value" && CURRENT_PHASE_ATTEMPT="$value" ;;
+            PHASE_ATTEMPT_IN_PROGRESS) is_bool_like "$value" && PHASE_ATTEMPT_IN_PROGRESS="$value" ;;
             ITERATION_COUNT) is_number "$value" && ITERATION_COUNT="$value" ;;
             SESSION_ID) SESSION_ID="$value" ;;
             SESSION_ATTEMPT_COUNT) is_number "$value" && SESSION_ATTEMPT_COUNT="$value" ;;
@@ -1038,6 +1145,9 @@ load_state() {
             SESSION_COST_CENTS) is_number "$value" && SESSION_COST_CENTS="$value" ;;
             LAST_RUN_TOKEN_COUNT) is_number "$value" && LAST_RUN_TOKEN_COUNT="$value" ;;
             ENGINE_OUTPUT_TO_STDOUT) [ -n "$value" ] && ENGINE_OUTPUT_TO_STDOUT="$value" ;;
+            PHASE_TRANSITION_HISTORY_B64) phase_transition_history_b64="$value" ;;
+            GIT_IDENTITY_READY) is_bool_like "$value" && GIT_IDENTITY_READY="$value" ;;
+            GIT_IDENTITY_SOURCE) [ -n "$value" ] && GIT_IDENTITY_SOURCE="$value" ;;
             STATE_CHECKSUM) ;;
             *) ;;
         esac
@@ -1045,6 +1155,22 @@ load_state() {
 
     if ! is_number "$CURRENT_PHASE_INDEX"; then
         CURRENT_PHASE_INDEX=0
+    fi
+    if ! is_number "$CURRENT_PHASE_ATTEMPT" || [ "$CURRENT_PHASE_ATTEMPT" -lt 1 ]; then
+        CURRENT_PHASE_ATTEMPT=1
+    fi
+    if ! is_bool_like "$PHASE_ATTEMPT_IN_PROGRESS"; then
+        PHASE_ATTEMPT_IN_PROGRESS="false"
+    fi
+    if [ -n "$phase_transition_history_b64" ]; then
+        local decoded_phase_history
+        decoded_phase_history="$(state_blob_decode "$phase_transition_history_b64" 2>/dev/null || true)"
+        if [ -n "$decoded_phase_history" ]; then
+            mapfile -t PHASE_TRANSITION_HISTORY <<< "$decoded_phase_history"
+        else
+            PHASE_TRANSITION_HISTORY=()
+            warn "Phase transition history could not be decoded from persisted state."
+        fi
     fi
     return 0
 }
@@ -1400,8 +1526,12 @@ run_startup_operational_probe() {
     local cmd
     local probe_file=""
     local timeout_probe_exit=0
+    local -a required_cmds=(
+        sh sleep mktemp sed awk grep find sort date
+        git seq cut head tail wc tr tee comm cmp
+    )
 
-    for cmd in sh sleep mktemp sed awk grep find sort date; do
+    for cmd in "${required_cmds[@]}"; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             failures+=("missing required command: $cmd")
         fi
@@ -2764,6 +2894,262 @@ phase_manifest_delta_preview() {
     comm -3 "$before_file" "$after_file" | sed 's/^[[:space:]]*//' | head -n "$lines_limit"
 }
 
+git_has_local_changes() {
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! git -C "$PROJECT_DIR" diff --quiet --ignore-submodules -- .; then
+        return 0
+    fi
+    if ! git -C "$PROJECT_DIR" diff --cached --quiet --ignore-submodules -- .; then
+        return 0
+    fi
+    if [ -n "$(git -C "$PROJECT_DIR" ls-files --others --exclude-standard -- . 2>/dev/null | head -n 1)" ]; then
+        return 0
+    fi
+    return 1
+}
+
+detect_git_identity() {
+    GIT_IDENTITY_READY="false"
+    GIT_IDENTITY_SOURCE="unknown"
+
+    if ! command -v git >/dev/null 2>&1; then
+        GIT_IDENTITY_SOURCE="git command unavailable"
+        return 1
+    fi
+
+    local -a repo_scope=()
+    if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        repo_scope=(-C "$PROJECT_DIR")
+    fi
+
+    local committer_ident=""
+    committer_ident="$(git "${repo_scope[@]+"${repo_scope[@]}"}" var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+    if [ -z "$committer_ident" ]; then
+        if [ -n "${GIT_COMMITTER_NAME:-}" ] || [ -n "${GIT_COMMITTER_EMAIL:-}" ] || [ -n "${GIT_AUTHOR_NAME:-}" ] || [ -n "${GIT_AUTHOR_EMAIL:-}" ]; then
+            GIT_IDENTITY_SOURCE="incomplete identity environment variables"
+        else
+            GIT_IDENTITY_SOURCE="git user.name/user.email not configured"
+        fi
+        return 1
+    fi
+
+    if [ -n "${GIT_COMMITTER_NAME:-}" ] && [ -n "${GIT_COMMITTER_EMAIL:-}" ]; then
+        GIT_IDENTITY_SOURCE="environment (GIT_COMMITTER_*)"
+    elif [ -n "${GIT_AUTHOR_NAME:-}" ] && [ -n "${GIT_AUTHOR_EMAIL:-}" ]; then
+        GIT_IDENTITY_SOURCE="environment (GIT_AUTHOR_*)"
+    else
+        local local_name="" local_email="" global_name="" global_email=""
+        if [ "${#repo_scope[@]}" -gt 0 ]; then
+            local_name="$(git -C "$PROJECT_DIR" config --local --get user.name 2>/dev/null || true)"
+            local_email="$(git -C "$PROJECT_DIR" config --local --get user.email 2>/dev/null || true)"
+        fi
+        global_name="$(git config --global --get user.name 2>/dev/null || true)"
+        global_email="$(git config --global --get user.email 2>/dev/null || true)"
+
+        if [ -n "$local_name" ] && [ -n "$local_email" ]; then
+            GIT_IDENTITY_SOURCE="local git config"
+        elif [ -n "$global_name" ] && [ -n "$global_email" ]; then
+            GIT_IDENTITY_SOURCE="global git config"
+        else
+            GIT_IDENTITY_SOURCE="system git config"
+        fi
+    fi
+
+    GIT_IDENTITY_READY="true"
+    return 0
+}
+
+refresh_git_identity_status() {
+    if detect_git_identity; then
+        info "Git identity status: ready (${GIT_IDENTITY_SOURCE})."
+        return 0
+    fi
+    warn "Git identity status: missing (${GIT_IDENTITY_SOURCE})."
+    return 1
+}
+
+ensure_git_repository_initialized() {
+    if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! is_true "$AUTO_INIT_GIT_IF_MISSING"; then
+        warn "No git repository detected and auto-init is disabled."
+        return 0
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        err "Git is required for auto-init but command is not available."
+        log_reason_code "RB_GIT_INIT_FAILED" "git command missing while auto-init-git-if-missing=true"
+        return 1
+    fi
+
+    warn "No git repository detected. Initializing repository in $(path_for_display "$PROJECT_DIR")."
+    if ! git -C "$PROJECT_DIR" init >/dev/null 2>&1; then
+        err "Failed to initialize git repository in $(path_for_display "$PROJECT_DIR")."
+        log_reason_code "RB_GIT_INIT_FAILED" "git init failed in project dir"
+        return 1
+    fi
+
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        err "git init completed but repository validation failed."
+        log_reason_code "RB_GIT_INIT_FAILED" "git init reported success but rev-parse failed"
+        return 1
+    fi
+
+    success "Initialized git repository (no remote configured)."
+    return 0
+}
+
+build_phase_commit_message() {
+    local phase="$1"
+    local next_phase="${2:-$(phase_default_next "$phase")}"
+    local fallback_message
+    fallback_message="$(printf '%s' "${phase}->${next_phase}: gate pass" | tr '[:upper:]' '[:lower:]')"
+
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "$fallback_message"
+        return 0
+    fi
+
+    local paths_file groups_file total_files group_count shown extra
+    local groups_summary=""
+    paths_file="$(mktemp "$CONFIG_DIR/commit-paths.XXXXXX")" || { echo "$fallback_message"; return 0; }
+    groups_file="$(mktemp "$CONFIG_DIR/commit-groups.XXXXXX")" || { rm -f "$paths_file"; echo "$fallback_message"; return 0; }
+
+    if ! git -C "$PROJECT_DIR" diff --cached --name-only -- . > "$paths_file" 2>/dev/null; then
+        rm -f "$paths_file" "$groups_file"
+        echo "$fallback_message"
+        return 0
+    fi
+
+    total_files="$(wc -l < "$paths_file" | tr -d ' ')"
+    if ! is_number "$total_files" || [ "$total_files" -lt 1 ]; then
+        rm -f "$paths_file" "$groups_file"
+        echo "$fallback_message"
+        return 0
+    fi
+
+    awk '
+        {
+            if ($0 ~ /\//) {
+                split($0, a, "/")
+                top=a[1]
+            } else {
+                top="root"
+            }
+            print top
+        }
+    ' "$paths_file" | sort | uniq -c | sort -nr > "$groups_file"
+
+    group_count="$(wc -l < "$groups_file" | tr -d ' ')"
+    shown=0
+    while read -r count group; do
+        [ -n "${group:-}" ] || continue
+        group="$(printf '%s' "$group" | tr '[:upper:]' '[:lower:]')"
+        groups_summary="${groups_summary}${groups_summary:+,}${group}:${count}"
+        shown=$((shown + 1))
+        [ "$shown" -ge 3 ] && break
+    done < "$groups_file"
+
+    extra=$((group_count - shown))
+    if [ "$extra" -gt 0 ]; then
+        groups_summary="${groups_summary},+${extra}g"
+    fi
+
+    rm -f "$paths_file" "$groups_file"
+    if [ -z "$groups_summary" ]; then
+        echo "$fallback_message"
+        return 0
+    fi
+    printf '%s' "${phase}->${next_phase}: ${total_files}f ${groups_summary}" | tr '[:upper:]' '[:lower:]'
+}
+
+prepare_phase_auto_commit_mode() {
+    AUTO_COMMIT_SESSION_ENABLED="false"
+    if ! is_true "$AUTO_COMMIT_ON_PHASE_PASS"; then
+        info "Phase auto-commit is disabled."
+        return 0
+    fi
+
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        warn "Phase auto-commit requested, but project is not a git repository. Disabling auto-commit."
+        return 0
+    fi
+
+    if ! detect_git_identity; then
+        warn "Phase auto-commit requested, but git identity is not ready (${GIT_IDENTITY_SOURCE})."
+        warn "Set git user.name/user.email (or GIT_COMMITTER_* env vars), then restart with --resume."
+        return 0
+    fi
+
+    if git_has_local_changes; then
+        warn "Auto-commit starting from a dirty worktree; first phase commit may include pre-existing local changes."
+    fi
+
+    AUTO_COMMIT_SESSION_ENABLED="true"
+    info "Git identity ready for auto-commit (${GIT_IDENTITY_SOURCE})."
+    info "Phase auto-commit enabled (local commits only; pushes are disabled)."
+}
+
+commit_phase_approved_changes() {
+    local phase="$1"
+    local next_phase="$2"
+
+    if ! is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
+        return 0
+    fi
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        warn "Auto-commit skipped for phase '$phase': not a git repository."
+        return 0
+    fi
+    if ! detect_git_identity; then
+        warn "Auto-commit skipped for phase '$phase': git identity unavailable (${GIT_IDENTITY_SOURCE})."
+        return 0
+    fi
+    if ! git_has_local_changes; then
+        info "Phase $phase gate approved: no local changes to commit."
+        return 0
+    fi
+
+    if ! git -C "$PROJECT_DIR" add -A -- .; then
+        err "Auto-commit failed for phase '$phase': unable to stage changes."
+        return 1
+    fi
+    if git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
+        info "Phase $phase gate approved: nothing staged for commit."
+        return 0
+    fi
+
+    local commit_message commit_sha commit_err_file
+    commit_message="$(build_phase_commit_message "$phase" "$next_phase")"
+    commit_err_file="$(mktemp "$CONFIG_DIR/commit-error.XXXXXX")" || commit_err_file=""
+    if ! git -C "$PROJECT_DIR" commit -m "$commit_message" >"${commit_err_file:-/dev/null}" 2>&1; then
+        if [ -n "$commit_err_file" ] && grep -qiE "author identity unknown|unable to auto-detect email address|please tell me who you are" "$commit_err_file" 2>/dev/null; then
+            GIT_IDENTITY_READY="false"
+            GIT_IDENTITY_SOURCE="git commit reported missing identity"
+            warn "Auto-commit skipped for phase '$phase': git identity is missing."
+            warn "Set git user.name/user.email (or GIT_COMMITTER_* env vars), then restart with --resume."
+            rm -f "$commit_err_file"
+            return 0
+        fi
+        err "Auto-commit failed for phase '$phase'."
+        if [ -n "$commit_err_file" ] && [ -s "$commit_err_file" ]; then
+            tail -n 3 "$commit_err_file" >&2 || true
+        fi
+        rm -f "$commit_err_file"
+        return 1
+    fi
+    rm -f "$commit_err_file"
+
+    commit_sha="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+    info "Phase $phase committed (${commit_sha:-unknown}): $commit_message"
+    return 0
+}
+
 phase_index_from_name() {
     case "$1" in
         plan) echo 0; return 0 ;;
@@ -3872,6 +4258,8 @@ print_session_config_banner() {
     info "run_agent_max_attempts: ${RUN_AGENT_MAX_ATTEMPTS:-0}"
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
+    info "auto_init_git_if_missing: ${AUTO_INIT_GIT_IF_MISSING:-false}"
+    info "auto_commit_on_phase_pass: ${AUTO_COMMIT_ON_PHASE_PASS:-false}"
     info "auto_engine_preference: ${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
     info "codex_endpoint: $(redact_endpoint_for_log "$CODEX_ENDPOINT")"
     info "codex_model: ${CODEX_MODEL:-<default>}"
@@ -3930,7 +4318,9 @@ main() {
 
     acquire_lock || exit 1
 
+    local resume_reentry_pending="false"
     if is_true "$RESUME_REQUESTED" && load_state; then
+        resume_reentry_pending="true"
         success "Resuming mission..."
     else
         save_state
@@ -3976,6 +4366,13 @@ main() {
     setup_phase_prompts
     ensure_gitignore_guardrails
     ensure_project_bootstrap
+    if ! ensure_git_repository_initialized; then
+        release_lock
+        exit 1
+    fi
+    refresh_git_identity_status || true
+    prepare_phase_auto_commit_mode
+    save_state
 
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
     local phase_index=0
@@ -4003,6 +4400,8 @@ main() {
             start_phase_index=0
             CURRENT_PHASE="$start_phase_name"
             CURRENT_PHASE_INDEX="$start_phase_index"
+            CURRENT_PHASE_ATTEMPT=1
+            PHASE_ATTEMPT_IN_PROGRESS="false"
             save_state
         fi
     fi
@@ -4017,10 +4416,21 @@ main() {
         fi
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
+            local reentering_in_progress_phase="false"
             CURRENT_PHASE_INDEX="$phase_index"
             if is_true "$should_exit"; then break 2; fi
             CURRENT_PHASE="$phase"
-            ITERATION_COUNT=$((ITERATION_COUNT + 1))
+            if [ "$resume_reentry_pending" = "true" ] && [ "$phase_index" -eq "$start_phase_index" ] && is_true "$PHASE_ATTEMPT_IN_PROGRESS"; then
+                reentering_in_progress_phase="true"
+                info "Resuming in-progress phase '$phase' at iteration ${ITERATION_COUNT} attempt ${CURRENT_PHASE_ATTEMPT}."
+            else
+                ITERATION_COUNT=$((ITERATION_COUNT + 1))
+            fi
+            if [ "$reentering_in_progress_phase" != "true" ]; then
+                CURRENT_PHASE_ATTEMPT=1
+                PHASE_ATTEMPT_IN_PROGRESS="false"
+            fi
+            resume_reentry_pending="false"
             save_state
 
             local pfile
@@ -4053,11 +4463,20 @@ main() {
             fi
 
             local phase_attempt=1
+            if [ "$reentering_in_progress_phase" = "true" ] && is_number "$CURRENT_PHASE_ATTEMPT" && [ "$CURRENT_PHASE_ATTEMPT" -ge 1 ]; then
+                phase_attempt="$CURRENT_PHASE_ATTEMPT"
+            fi
             local -a cumulative_phase_failures=()
             local phase_next_target="$phase"
             local phase_route="false"
             local phase_route_reason=""
             while [ "$phase_attempt" -le "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; do
+                CURRENT_PHASE="$phase"
+                CURRENT_PHASE_INDEX="$phase_index"
+                CURRENT_PHASE_ATTEMPT="$phase_attempt"
+                PHASE_ATTEMPT_IN_PROGRESS="true"
+                save_state
+
                 local lfile="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.log"
                 local ofile="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.out"
                 local active_prompt="$pfile"
@@ -4079,6 +4498,7 @@ main() {
                 local handoff_validator_fallback=""
                 local phase_warnings_text=""
                 local -a consensus_failures=()
+                local phase_commit_target=""
 
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
@@ -4263,6 +4683,15 @@ main() {
                     fi
                 fi
 
+                if [ "${#phase_failures[@]}" -eq 0 ] && is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
+                    phase_commit_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
+                    [ -n "$phase_commit_target" ] || phase_commit_target="$(phase_default_next "$phase")"
+                    if ! commit_phase_approved_changes "$phase" "$phase_commit_target"; then
+                        phase_failures+=("auto commit failed after $phase gate approval")
+                        phase_failures+=("configure git user.name/user.email or disable auto commit")
+                    fi
+                fi
+
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
                     cumulative_phase_failures=("${phase_failures[@]}")
                     if [ "$consensus_evaluated" = "true" ] && [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
@@ -4270,6 +4699,9 @@ main() {
                         phase_route="true"
                         phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
                         phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        CURRENT_PHASE_ATTEMPT=1
+                        save_state
                         break
                     fi
                     write_gate_feedback "$phase" "${phase_failures[@]}"
@@ -4288,8 +4720,14 @@ main() {
                         warn "Phase $phase blocked after ${PHASE_COMPLETION_MAX_ATTEMPTS} attempts."
                         format_retry_budget_block_reason "$phase" "$((phase_attempt - 1))" "$PHASE_COMPLETION_MAX_ATTEMPTS"
                         should_exit="true"
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        CURRENT_PHASE_ATTEMPT="$PHASE_COMPLETION_MAX_ATTEMPTS"
+                        save_state
                         break
                     fi
+                    CURRENT_PHASE_ATTEMPT="$phase_attempt"
+                    PHASE_ATTEMPT_IN_PROGRESS="true"
+                    save_state
                     if is_true "$PHASE_COMPLETION_RETRY_VERBOSE"; then
                         warn "Phase $phase retrying in ${PHASE_COMPLETION_RETRY_DELAY_SECONDS}s (attempt ${phase_attempt}/${PHASE_COMPLETION_MAX_ATTEMPTS})."
                     fi
@@ -4312,6 +4750,9 @@ main() {
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
+                PHASE_ATTEMPT_IN_PROGRESS="false"
+                CURRENT_PHASE_ATTEMPT=1
+                save_state
 
                 success "Phase $phase completed."
                 break

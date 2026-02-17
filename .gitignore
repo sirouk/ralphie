@@ -1,0 +1,11 @@
+.env
+.env.*
+logs/
+consensus/
+completion_log/
+.ralphie/
+HUMAN_INSTRUCTIONS.md
+research/HUMAN_FEEDBACK.md
+coverage/
+.nyc_output/
+htmlcov/
