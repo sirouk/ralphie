@@ -54,6 +54,7 @@ STACK_SNAPSHOT_FILE="$RESEARCH_DIR/STACK_SNAPSHOT.md"
 CONSENSUS_DIR="$PROJECT_DIR/consensus"
 LOG_DIR="$PROJECT_DIR/logs"
 COMPLETION_LOG_DIR="$PROJECT_DIR/completion_log"
+MARKDOWN_REPAIR_ARTIFACT_DIR="$LOG_DIR/markdown-repair"
 MAPS_DIR="$PROJECT_DIR/maps"
 SUBREPOS_DIR_REL="subrepos"
 AGENT_SOURCE_MAP_REL="maps/agent-source-map.yaml"
@@ -75,6 +76,7 @@ PROMPT_DOCUMENT_FILE="$PROJECT_DIR/PROMPT_document.md"
 PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
 PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
 PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+SESSION_CHANGED_PATHS_FILE="$CONFIG_DIR/session-changed-paths.txt"
 
 # Shared logic for interactive questions and formatting.
 err() { echo -e "\033[1;31m$*\033[0m" >&2; }
@@ -310,6 +312,25 @@ normalize_phase_noop_policy() {
     esac
 }
 
+is_phase_manifest_mode() {
+    case "$(to_lower "${1:-}")" in
+        light|deep) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_phase_manifest_mode() {
+    local mode
+    mode="$(to_lower "${1:-$DEFAULT_PHASE_MANIFEST_MODE}")"
+    case "$mode" in
+        light|deep) echo "$mode" ;;
+        *)
+            warn "Invalid PHASE_MANIFEST_MODE '$mode'. Falling back to '$DEFAULT_PHASE_MANIFEST_MODE'."
+            echo "$DEFAULT_PHASE_MANIFEST_MODE"
+            ;;
+    esac
+}
+
 to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
@@ -328,12 +349,15 @@ is_allowed_config_key() {
         AUTO_COMMIT_ON_PHASE_PASS|CODEX_ENDPOINT|CODEX_USE_RESPONSES_SCHEMA|\
         CODEX_RESPONSES_SCHEMA_FILE|CODEX_THINKING_OVERRIDE|CLAUDE_ENDPOINT|CLAUDE_THINKING_OVERRIDE|\
         RUN_AGENT_MAX_ATTEMPTS|RUN_AGENT_RETRY_DELAY_SECONDS|RUN_AGENT_RETRY_VERBOSE|\
-        ENGINE_OUTPUT_TO_STDOUT|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
+        ENGINE_OUTPUT_TO_STDOUT|ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
         PHASE_COMPLETION_RETRY_DELAY_SECONDS|PHASE_COMPLETION_RETRY_VERBOSE|\
-        MAX_CONSENSUS_ROUTING_ATTEMPTS|PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
+        MAX_CONSENSUS_ROUTING_ATTEMPTS|REQUIRE_LINT_BEFORE_DONE|REQUIRE_DOCUMENT_BEFORE_DONE|\
+        PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
         PHASE_NOOP_POLICY_TEST|PHASE_NOOP_POLICY_REFACTOR|PHASE_NOOP_POLICY_LINT|\
         PHASE_NOOP_POLICY_DOCUMENT|PHASE_NOOP_PROFILE|SESSION_TOKEN_BUDGET|\
         SESSION_TOKEN_RATE_CENTS_PER_MILLION|SESSION_COST_BUDGET_CENTS|AUTO_REPAIR_MARKDOWN_ARTIFACTS|\
+        AUTO_REPAIR_MARKDOWN_DRY_RUN|AUTO_REPAIR_MARKDOWN_BACKUP|AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED|\
+        PHASE_MANIFEST_MODE|\
         SWARM_CONSENSUS_TIMEOUT|CONSENSUS_SCORE_THRESHOLD|ENGINE_HEALTH_MAX_ATTEMPTS|\
         ENGINE_HEALTH_RETRY_DELAY_SECONDS|ENGINE_HEALTH_RETRY_VERBOSE|ENGINE_SMOKE_TEST_TIMEOUT|\
         STARTUP_OPERATIONAL_PROBE|ENGINE_OVERRIDES_BOOTSTRAPPED|NOTIFICATIONS_ENABLED|\
@@ -565,8 +589,8 @@ apply_phase_noop_profile() {
             [ "$PHASE_NOOP_POLICY_BUILD_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_BUILD="hard"
             [ "$PHASE_NOOP_POLICY_TEST_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_TEST="soft"
             [ "$PHASE_NOOP_POLICY_REFACTOR_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_REFACTOR="hard"
-            [ "$PHASE_NOOP_POLICY_LINT_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_LINT="soft"
-            [ "$PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_DOCUMENT="hard"
+            [ "$PHASE_NOOP_POLICY_LINT_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_LINT="hard"
+            [ "$PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_DOCUMENT="soft"
             ;;
         *)
             :
@@ -630,7 +654,7 @@ Core options:
   --session-token-budget N                Max session token budget (0 = unlimited)
   --session-token-rate-cents-per-million N  Cost rate in cents per million tokens
   --session-cost-budget-cents N           Max estimated cost budget in cents (0 = unlimited)
-  --max-phase-completion-attempts N       Max completion-signal retries per phase
+  --max-phase-completion-attempts N       Max completion-signal retries per phase (0=unlimited with stagnation guard)
   --phase-wallclock-limit-seconds N       Wall-clock limit per phase attempt (0 = disabled)
   --phase-completion-retry-delay-seconds N Delay in seconds between completion retries
   --phase-completion-retry-verbose bool   Verbose phase completion retry logging (true|false)
@@ -663,8 +687,13 @@ Additional runtime env knobs:
   RALPHIE_CODEX_THINKING_OVERRIDE        Codex reasoning override: none|minimal|low|medium|high|xhigh
   RALPHIE_CLAUDE_ENDPOINT                Optional ANTHROPIC_BASE_URL override for claude calls
   RALPHIE_CLAUDE_THINKING_OVERRIDE       Claude thinking override: none|off|low|medium|high|xhigh
+  RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS  Kill/retry agent run if no new output for N seconds (0=disabled)
   RALPHIE_AUTO_INIT_GIT_IF_MISSING       Initialize git repo at startup when missing (true|false)
   RALPHIE_AUTO_COMMIT_ON_PHASE_PASS      Auto-commit phase-approved changes (true|false)
+  RALPHIE_PHASE_MANIFEST_MODE            Worktree manifest mode: light|deep
+  RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN   Preview markdown repairs without mutating files (true|false)
+  RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP    Save markdown backup+diff artifacts before mutation (true|false)
+  RALPHIE_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED  Restrict markdown repair targets to this-session changed files
   RALPHIE_STARTUP_OPERATIONAL_PROBE      Run startup operational self-checks (true|false)
   RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED  First-deploy engine override prompt sentinel (true|false)
   RALPHIE_NOTIFICATIONS_ENABLED          Master notifications toggle (true|false)
@@ -683,6 +712,8 @@ Additional runtime env knobs:
   RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES   Reminder cadence (minutes) for sustained incident series
   RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED  First-deploy notification setup prompt sentinel (true|false)
   RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS     Wall-clock limit per phase attempt (seconds, 0=disabled)
+  RALPHIE_REQUIRE_LINT_BEFORE_DONE          Require at least one passed lint phase before terminal done routing
+  RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE      Require at least one passed document phase before terminal done routing
 EOF
 }
 
@@ -751,9 +782,6 @@ parse_args() {
         --max-phase-completion-attempts)
             PHASE_COMPLETION_MAX_ATTEMPTS="$(parse_arg_value "--max-phase-completion-attempts" "${2:-}")"
             require_non_negative_int "PHASE_COMPLETION_MAX_ATTEMPTS" "$PHASE_COMPLETION_MAX_ATTEMPTS"
-            if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -eq 0 ]; then
-                PHASE_COMPLETION_MAX_ATTEMPTS=1
-            fi
             shift 2
             ;;
         --phase-wallclock-limit-seconds)
@@ -941,6 +969,9 @@ parse_args() {
 declare -a RALPHIE_BG_PIDS=()
 INTERRUPT_MENU_ACTIVE="false"
 MARKDOWN_ARTIFACTS_CLEANED_LIST=""
+MARKDOWN_ARTIFACTS_PREVIEW_LIST=""
+MARKDOWN_ARTIFACTS_BACKUP_LIST=""
+TIMEOUT_BINARY_WARNING_EMITTED="false"
 
 # Configuration defaults
 DEFAULT_ENGINE="auto"
@@ -957,20 +988,21 @@ DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup w
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="true"
-DEFAULT_COMMAND_TIMEOUT_SECONDS=600         # CI-safe: 10m per command; set 0 to disable
+DEFAULT_COMMAND_TIMEOUT_SECONDS=0           # Tolerant default: disable command timeouts unless overridden
 DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
 DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
 DEFAULT_RALPHIE_QUALITY_LEVEL="standard"    # minimal|standard|high
-DEFAULT_RUN_AGENT_MAX_ATTEMPTS=3
+DEFAULT_RUN_AGENT_MAX_ATTEMPTS=5
 DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=5
 DEFAULT_RUN_AGENT_RETRY_VERBOSE="true"
+DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS=600  # recycle hung engine runs after prolonged no-output stalls (0=disabled)
 DEFAULT_RESUME_REQUESTED="true"
 DEFAULT_REBOOTSTRAP_REQUESTED="false"
 DEFAULT_STRICT_VALIDATION_NOOP="false"
-DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=2     # CI-safe default; use 3+ for exploratory runs
+DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3     # Lenient default; tighten via flags/presets for CI
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
-DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=2
+DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=4
 DEFAULT_ENGINE_OUTPUT_TO_STDOUT="true"
 ENGINE_OUTPUT_TO_STDOUT_EXPLICIT="false"
 ENGINE_OUTPUT_TO_STDOUT_OVERRIDE=""
@@ -978,8 +1010,8 @@ DEFAULT_PHASE_NOOP_POLICY_PLAN="none"
 DEFAULT_PHASE_NOOP_POLICY_BUILD="hard"
 DEFAULT_PHASE_NOOP_POLICY_TEST="soft"
 DEFAULT_PHASE_NOOP_POLICY_REFACTOR="hard"
-DEFAULT_PHASE_NOOP_POLICY_LINT="soft"
-DEFAULT_PHASE_NOOP_POLICY_DOCUMENT="hard"
+DEFAULT_PHASE_NOOP_POLICY_LINT="hard"
+DEFAULT_PHASE_NOOP_POLICY_DOCUMENT="soft"
 DEFAULT_PHASE_NOOP_PROFILE="balanced"
 PHASE_NOOP_POLICY_PLAN_EXPLICIT=false
 PHASE_NOOP_POLICY_BUILD_EXPLICIT=false
@@ -991,9 +1023,15 @@ DEFAULT_SESSION_TOKEN_BUDGET=0               # 0 means unlimited
 DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
 DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
+DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN="false"  # preview-only remediation mode (no file mutations)
+DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP="true"    # write backup+diff artifacts before markdown mutation
+DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="false" # optional scope limiter for markdown remediation
+DEFAULT_PHASE_MANIFEST_MODE="light"           # light|deep manifest capture strategy
 DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus reviewers
 DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
-DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=3             # attempts before refusing to proceed
+DEFAULT_REQUIRE_LINT_BEFORE_DONE="true"          # terminal guard: require lint pass before done
+DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE="true"      # terminal guard: require document pass before done
+DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=5             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
 DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT=15               # seconds to wait for smoke-test canary response
@@ -1040,12 +1078,15 @@ CLAUDE_THINKING_OVERRIDE="${CLAUDE_THINKING_OVERRIDE:-$DEFAULT_CLAUDE_THINKING_O
 RUN_AGENT_MAX_ATTEMPTS="${RUN_AGENT_MAX_ATTEMPTS:-$DEFAULT_RUN_AGENT_MAX_ATTEMPTS}"
 RUN_AGENT_RETRY_DELAY_SECONDS="${RUN_AGENT_RETRY_DELAY_SECONDS:-$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RUN_AGENT_RETRY_VERBOSE:-$DEFAULT_RUN_AGENT_RETRY_VERBOSE}"
+ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS="${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS}"
 ENGINE_OUTPUT_TO_STDOUT="${ENGINE_OUTPUT_TO_STDOUT:-$DEFAULT_ENGINE_OUTPUT_TO_STDOUT}"
 STRICT_VALIDATION_NOOP="${STRICT_VALIDATION_NOOP:-$DEFAULT_STRICT_VALIDATION_NOOP}"
 PHASE_COMPLETION_MAX_ATTEMPTS="${PHASE_COMPLETION_MAX_ATTEMPTS:-$DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS}"
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${PHASE_COMPLETION_RETRY_VERBOSE:-$DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE}"
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${MAX_CONSENSUS_ROUTING_ATTEMPTS:-$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS}"
+REQUIRE_LINT_BEFORE_DONE="${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
+REQUIRE_DOCUMENT_BEFORE_DONE="${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
 PHASE_NOOP_POLICY_PLAN="${PHASE_NOOP_POLICY_PLAN:-$DEFAULT_PHASE_NOOP_POLICY_PLAN}"
 PHASE_NOOP_POLICY_BUILD="${PHASE_NOOP_POLICY_BUILD:-$DEFAULT_PHASE_NOOP_POLICY_BUILD}"
 PHASE_NOOP_POLICY_TEST="${PHASE_NOOP_POLICY_TEST:-$DEFAULT_PHASE_NOOP_POLICY_TEST}"
@@ -1057,6 +1098,10 @@ SESSION_TOKEN_BUDGET="${SESSION_TOKEN_BUDGET:-$DEFAULT_SESSION_TOKEN_BUDGET}"
 SESSION_TOKEN_RATE_CENTS_PER_MILLION="${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-$DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION}"
 SESSION_COST_BUDGET_CENTS="${SESSION_COST_BUDGET_CENTS:-$DEFAULT_SESSION_COST_BUDGET_CENTS}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
+AUTO_REPAIR_MARKDOWN_DRY_RUN="${AUTO_REPAIR_MARKDOWN_DRY_RUN:-$DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN}"
+AUTO_REPAIR_MARKDOWN_BACKUP="${AUTO_REPAIR_MARKDOWN_BACKUP:-$DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP}"
+AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="${AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED}"
+PHASE_MANIFEST_MODE="${PHASE_MANIFEST_MODE:-$DEFAULT_PHASE_MANIFEST_MODE}"
 SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
 CONSENSUS_SCORE_THRESHOLD="${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
@@ -1098,10 +1143,13 @@ SESSION_COST_BUDGET_CENTS="${RALPHIE_SESSION_COST_BUDGET_CENTS:-$SESSION_COST_BU
 RUN_AGENT_MAX_ATTEMPTS="${RALPHIE_RUN_AGENT_MAX_ATTEMPTS:-$RUN_AGENT_MAX_ATTEMPTS}"
 RUN_AGENT_RETRY_DELAY_SECONDS="${RALPHIE_RUN_AGENT_RETRY_DELAY_SECONDS:-$RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RALPHIE_RUN_AGENT_RETRY_VERBOSE:-$RUN_AGENT_RETRY_VERBOSE}"
+ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS="${RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-$ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS}"
 PHASE_COMPLETION_MAX_ATTEMPTS="${RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS:-$PHASE_COMPLETION_MAX_ATTEMPTS}"
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${RALPHIE_PHASE_COMPLETION_RETRY_VERBOSE:-$PHASE_COMPLETION_RETRY_VERBOSE}"
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS:-$MAX_CONSENSUS_ROUTING_ATTEMPTS}"
+REQUIRE_LINT_BEFORE_DONE="${RALPHIE_REQUIRE_LINT_BEFORE_DONE:-$REQUIRE_LINT_BEFORE_DONE}"
+REQUIRE_DOCUMENT_BEFORE_DONE="${RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE:-$REQUIRE_DOCUMENT_BEFORE_DONE}"
 SWARM_CONSENSUS_TIMEOUT="${RALPHIE_SWARM_CONSENSUS_TIMEOUT:-$SWARM_CONSENSUS_TIMEOUT}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${RALPHIE_ENGINE_HEALTH_MAX_ATTEMPTS:-$ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${RALPHIE_ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
@@ -1123,6 +1171,10 @@ PHASE_NOOP_POLICY_LINT="${RALPHIE_PHASE_NOOP_POLICY_LINT:-$PHASE_NOOP_POLICY_LIN
 PHASE_NOOP_POLICY_DOCUMENT="${RALPHIE_PHASE_NOOP_POLICY_DOCUMENT:-$PHASE_NOOP_POLICY_DOCUMENT}"
 STRICT_VALIDATION_NOOP="${RALPHIE_STRICT_VALIDATION_NOOP:-$STRICT_VALIDATION_NOOP}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${RALPHIE_AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
+AUTO_REPAIR_MARKDOWN_DRY_RUN="${RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN:-$AUTO_REPAIR_MARKDOWN_DRY_RUN}"
+AUTO_REPAIR_MARKDOWN_BACKUP="${RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP:-$AUTO_REPAIR_MARKDOWN_BACKUP}"
+AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="${RALPHIE_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED:-$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED}"
+PHASE_MANIFEST_MODE="${RALPHIE_PHASE_MANIFEST_MODE:-$PHASE_MANIFEST_MODE}"
 AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${RALPHIE_AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD}"
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
 AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
@@ -1199,6 +1251,31 @@ if ! is_bool_like "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD"; then
     AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="true"
 fi
 
+if ! is_number "$ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS" || [ "$ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS" -lt 0 ]; then
+    warn "Invalid ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS '$ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS'. Falling back to '$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS'."
+    ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS="$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS"
+fi
+
+AUTO_REPAIR_MARKDOWN_DRY_RUN="$(to_lower "$AUTO_REPAIR_MARKDOWN_DRY_RUN")"
+if ! is_bool_like "$AUTO_REPAIR_MARKDOWN_DRY_RUN"; then
+    warn "Invalid AUTO_REPAIR_MARKDOWN_DRY_RUN '$AUTO_REPAIR_MARKDOWN_DRY_RUN'. Falling back to '$DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN'."
+    AUTO_REPAIR_MARKDOWN_DRY_RUN="$DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN"
+fi
+
+AUTO_REPAIR_MARKDOWN_BACKUP="$(to_lower "$AUTO_REPAIR_MARKDOWN_BACKUP")"
+if ! is_bool_like "$AUTO_REPAIR_MARKDOWN_BACKUP"; then
+    warn "Invalid AUTO_REPAIR_MARKDOWN_BACKUP '$AUTO_REPAIR_MARKDOWN_BACKUP'. Falling back to '$DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP'."
+    AUTO_REPAIR_MARKDOWN_BACKUP="$DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP"
+fi
+
+AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="$(to_lower "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED")"
+if ! is_bool_like "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"; then
+    warn "Invalid AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED '$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED'. Falling back to '$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED'."
+    AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"
+fi
+
+PHASE_MANIFEST_MODE="$(normalize_phase_manifest_mode "$PHASE_MANIFEST_MODE")"
+
 CODEX_USE_RESPONSES_SCHEMA="$(to_lower "$CODEX_USE_RESPONSES_SCHEMA")"
 if ! is_bool_like "$CODEX_USE_RESPONSES_SCHEMA"; then
     warn "Invalid CODEX_USE_RESPONSES_SCHEMA '$CODEX_USE_RESPONSES_SCHEMA'. Falling back to '$DEFAULT_CODEX_USE_RESPONSES_SCHEMA'."
@@ -1226,6 +1303,18 @@ esac
 if ! is_number "$CONSENSUS_SCORE_THRESHOLD" || [ "$CONSENSUS_SCORE_THRESHOLD" -lt 0 ] || [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
     warn "Invalid CONSENSUS_SCORE_THRESHOLD '$CONSENSUS_SCORE_THRESHOLD'. Falling back to '$DEFAULT_CONSENSUS_SCORE_THRESHOLD'."
     CONSENSUS_SCORE_THRESHOLD="$DEFAULT_CONSENSUS_SCORE_THRESHOLD"
+fi
+
+REQUIRE_LINT_BEFORE_DONE="$(to_lower "$REQUIRE_LINT_BEFORE_DONE")"
+if ! is_bool_like "$REQUIRE_LINT_BEFORE_DONE"; then
+    warn "Invalid REQUIRE_LINT_BEFORE_DONE '$REQUIRE_LINT_BEFORE_DONE'. Falling back to '$DEFAULT_REQUIRE_LINT_BEFORE_DONE'."
+    REQUIRE_LINT_BEFORE_DONE="$DEFAULT_REQUIRE_LINT_BEFORE_DONE"
+fi
+
+REQUIRE_DOCUMENT_BEFORE_DONE="$(to_lower "$REQUIRE_DOCUMENT_BEFORE_DONE")"
+if ! is_bool_like "$REQUIRE_DOCUMENT_BEFORE_DONE"; then
+    warn "Invalid REQUIRE_DOCUMENT_BEFORE_DONE '$REQUIRE_DOCUMENT_BEFORE_DONE'. Falling back to '$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE'."
+    REQUIRE_DOCUMENT_BEFORE_DONE="$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE"
 fi
 
 if ! is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" || [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -lt 0 ]; then
@@ -1371,6 +1460,9 @@ LAST_CONSENSUS_SUMMARY=""
 LAST_CONSENSUS_NEXT_PHASE="done"
 LAST_CONSENSUS_NEXT_PHASE_REASON="no consensus recommendation"
 LAST_CONSENSUS_RESPONDED_VOTES=0
+LAST_CONSENSUS_FAILURE_KIND="none"
+LAST_CONSENSUS_FAILURE_REASON=""
+LAST_DONE_GUARD_REASON=""
 LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
@@ -1567,6 +1659,19 @@ save_state() {
         return 1
     fi
     return 0
+}
+
+save_state_or_exit() {
+    local checkpoint="${1:-unspecified checkpoint}"
+    if save_state; then
+        return 0
+    fi
+
+    err "Failed to persist state at checkpoint: $checkpoint"
+    log_reason_code "RB_STATE_SAVE_FAILED" "state persistence failed at checkpoint: $checkpoint"
+    notify_event "session_error" "state_persist_failed" "checkpoint=$checkpoint" || true
+    release_lock
+    exit 1
 }
 
 load_state() {
@@ -2694,6 +2799,51 @@ notification_event_is_high_signal() {
     esac
 }
 
+phase_attempt_limit_display() {
+    local limit="${1:-0}"
+    if ! is_number "$limit" || [ "$limit" -lt 0 ]; then
+        echo "inf"
+        return 0
+    fi
+    if [ "$limit" -eq 0 ]; then
+        echo "inf"
+        return 0
+    fi
+    echo "$limit"
+}
+
+phase_attempt_within_budget() {
+    local attempt="$1"
+    local limit="$2"
+    if ! is_number "$attempt" || [ "$attempt" -lt 1 ]; then
+        return 1
+    fi
+    if ! is_number "$limit" || [ "$limit" -lt 0 ] || [ "$limit" -eq 0 ]; then
+        return 0
+    fi
+    [ "$attempt" -le "$limit" ]
+}
+
+phase_failure_signature() {
+    local payload=""
+    if [ "$#" -gt 0 ]; then
+        payload="$(printf '%s\n' "$@")"
+    fi
+    if [ -z "$payload" ]; then
+        echo "none"
+        return 0
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$payload" | sha256sum | awk '{print $1}'
+        return 0
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$payload" | shasum -a 256 | awk '{print $1}'
+        return 0
+    fi
+    printf '%s' "$payload" | wc -c | tr -d ' '
+}
+
 render_status_dashboard() {
     local phase="$1"
     local attempt="$2"
@@ -2716,9 +2866,10 @@ render_status_dashboard() {
     printf '\n'
     printf '=== Ralphie Run Status ===\n'
     printf 'Phase: %s | Attempt: %s/%s | Iteration: %s/%s | Session: %s\n' \
-        "$phase" "$attempt" "$attempt_max" "$iter" "$max_iter_display" "$SESSION_ID"
+        "$phase" "$attempt" "$(phase_attempt_limit_display "$attempt_max")" "$iter" "$max_iter_display" "$SESSION_ID"
     printf 'Engine (active/requested): %s (%s) | Consensus timeout: %ss | Phase wallclock: %ss | Cmd timeout: %ss\n' \
         "$ACTIVE_CMD" "$ACTIVE_ENGINE" "$consensus_to" "$wallclock_display" "$cmd_timeout_display"
+    printf 'Idle output watchdog: %ss\n' "$(phase_attempt_limit_display "${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-0}")"
     printf '%s\n' '---------------------------'
 }
 
@@ -4123,6 +4274,93 @@ get_timeout_command() {
     if command -v timeout >/dev/null 2>&1; then echo "timeout"; elif command -v gtimeout >/dev/null 2>&1; then echo "gtimeout"; fi
 }
 
+warn_timeout_binary_unavailable_if_needed() {
+    if [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "true" ]; then
+        return 0
+    fi
+    if ! is_number "${COMMAND_TIMEOUT_SECONDS:-0}" || [ "${COMMAND_TIMEOUT_SECONDS:-0}" -le 0 ]; then
+        return 0
+    fi
+    if [ -n "$(get_timeout_command)" ]; then
+        return 0
+    fi
+
+    TIMEOUT_BINARY_WARNING_EMITTED="true"
+    warn "COMMAND_TIMEOUT_SECONDS=${COMMAND_TIMEOUT_SECONDS} requested, but no timeout wrapper is installed."
+    warn "Install GNU timeout via coreutils (macOS: 'brew install coreutils', Linux: 'apt/yum install coreutils')."
+    warn "Ralphie will continue without hard command timeout limits."
+}
+
+file_size_bytes_safe() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo 0
+        return 0
+    fi
+    wc -c < "$file" 2>/dev/null | tr -d ' ' || echo 0
+}
+
+aggregate_output_bytes() {
+    local total=0
+    local file bytes
+    for file in "$@"; do
+        [ -n "$file" ] || continue
+        bytes="$(file_size_bytes_safe "$file")"
+        if ! is_number "$bytes"; then
+            bytes=0
+        fi
+        total=$((total + bytes))
+    done
+    echo "$total"
+}
+
+wait_for_process_with_idle_output_watchdog() {
+    local pid="$1"
+    local idle_timeout="${2:-0}"
+    local label="${3:-process}"
+    shift 3 || true
+    local -a watch_files=("$@")
+    local now
+    local last_progress
+    local observed_bytes
+    local previous_bytes
+
+    if ! is_number "$idle_timeout" || [ "$idle_timeout" -le 0 ]; then
+        wait "$pid"
+        return $?
+    fi
+
+    previous_bytes="$(aggregate_output_bytes "${watch_files[@]+"${watch_files[@]}"}")"
+    last_progress="$(date +%s 2>/dev/null || echo 0)"
+    is_number "$last_progress" || last_progress=0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        observed_bytes="$(aggregate_output_bytes "${watch_files[@]+"${watch_files[@]}"}")"
+        if is_number "$observed_bytes" && [ "$observed_bytes" -gt "$previous_bytes" ]; then
+            previous_bytes="$observed_bytes"
+            last_progress="$(date +%s 2>/dev/null || echo 0)"
+            is_number "$last_progress" || last_progress=0
+            continue
+        fi
+
+        now="$(date +%s 2>/dev/null || echo 0)"
+        is_number "$now" || now=0
+        if [ "$last_progress" -gt 0 ] && [ "$now" -gt 0 ] && [ $((now - last_progress)) -ge "$idle_timeout" ]; then
+            warn "Idle-output watchdog tripped for ${label}: no new output for ${idle_timeout}s. Recycling process."
+            log_reason_code "RB_IDLE_OUTPUT_WATCHDOG" "idle output watchdog tripped for ${label} (${idle_timeout}s without new output)"
+            kill -TERM "$pid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+    done
+
+    wait "$pid"
+    return $?
+}
+
 run_agent_with_prompt() {
     local prompt_file="$1"
     local log_file="$2"
@@ -4130,6 +4368,7 @@ run_agent_with_prompt() {
     local yolo_effective="$4"
     local attempt_no="${5:-1}"
     local timeout_cmd=""
+    local idle_output_timeout="${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-0}"
     local exit_code=0
     local -a engine_args=()
     local -a codex_prefix=()
@@ -4154,6 +4393,10 @@ run_agent_with_prompt() {
 
     if [ "$COMMAND_TIMEOUT_SECONDS" -gt 0 ]; then
         timeout_cmd="$(get_timeout_command)"
+        warn_timeout_binary_unavailable_if_needed
+    fi
+    if ! is_number "$idle_output_timeout" || [ "$idle_output_timeout" -lt 0 ]; then
+        idle_output_timeout="$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS"
     fi
 
     probe_engine_capabilities
@@ -4235,63 +4478,53 @@ run_agent_with_prompt() {
         if [ "$ACTIVE_ENGINE" = "codex" ]; then
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"
+                    ) &
                 else
-                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"
+                    ) &
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"
+                    ) &
                 else
-                    if "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"
+                    ) &
                 fi
             fi
         else
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"
+                    ) &
                 else
-                    if "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"
+                    ) &
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    if "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"
+                    ) &
                 else
-                    if "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"; then
-                        exit_code=0
-                    else
-                        exit_code=$?
-                    fi
+                    (
+                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"
+                    ) &
                 fi
             fi
+        fi
+        local agent_pid=$!
+        if wait_for_process_with_idle_output_watchdog "$agent_pid" "$idle_output_timeout" "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}" "$log_file" "$output_file"; then
+            exit_code=0
+        else
+            exit_code=$?
         fi
         if [ "$exit_code" -eq 0 ]; then
             charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")"
@@ -4486,6 +4719,8 @@ run_swarm_consensus() {
     LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
     LAST_CONSENSUS_NEXT_PHASE_REASON="insufficient consensus responses"
     LAST_CONSENSUS_RESPONDED_VOTES=0
+    LAST_CONSENSUS_FAILURE_KIND="none"
+    LAST_CONSENSUS_FAILURE_REASON=""
     mkdir -p "$consensus_dir"
 
     local -a prompts=() logs=() outputs=() status_files=()
@@ -4505,6 +4740,8 @@ run_swarm_consensus() {
         LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
         LAST_CONSENSUS_NEXT_PHASE_REASON="no healthy reviewer engines available"
         LAST_CONSENSUS_RESPONDED_VOTES=0
+        LAST_CONSENSUS_FAILURE_KIND="infra"
+        LAST_CONSENSUS_FAILURE_REASON="no healthy reviewer engines available"
         CONSENSUS_NO_ENGINES=true
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
@@ -4611,6 +4848,8 @@ run_swarm_consensus() {
     RALPHIE_BG_PIDS=()
     if [ "$swarm_timed_out" = true ]; then
         log_reason_code "RB_SWARM_TIMEOUT" "consensus reviewers exceeded timeout (${swarm_timeout}s) for stage $stage"
+        LAST_CONSENSUS_FAILURE_KIND="infra"
+        LAST_CONSENSUS_FAILURE_REASON="consensus swarm timeout after ${swarm_timeout}s"
     fi
 
     local total_score=0
@@ -4755,11 +4994,22 @@ run_swarm_consensus() {
     fi
     if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge "$CONSENSUS_SCORE_THRESHOLD" ]; then
         LAST_CONSENSUS_PASS=true
+        LAST_CONSENSUS_FAILURE_KIND="none"
+        LAST_CONSENSUS_FAILURE_REASON=""
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
         return 0
     fi
     LAST_CONSENSUS_PASS=false
+    if [ "$LAST_CONSENSUS_FAILURE_KIND" != "infra" ]; then
+        if [ "$responded_votes" -lt "$required_votes" ]; then
+            LAST_CONSENSUS_FAILURE_KIND="infra"
+            LAST_CONSENSUS_FAILURE_REASON="insufficient reviewer responses ($responded_votes/$required_votes)"
+        else
+            LAST_CONSENSUS_FAILURE_KIND="quality"
+            LAST_CONSENSUS_FAILURE_REASON="consensus HOLD (go_votes=$go_votes/$required_votes, avg_score=$avg_score, threshold=$CONSENSUS_SCORE_THRESHOLD)"
+        fi
+    fi
     ACTIVE_ENGINE="$saved_engine"
     ACTIVE_CMD="$saved_cmd"
     return 1
@@ -4919,10 +5169,76 @@ run_handoff_validation() {
     return 1
 }
 
+path_relative_to_project() {
+    local value="${1:-}"
+    if [ -z "$value" ]; then
+        echo ""
+        return 0
+    fi
+    case "$value" in
+        "$PROJECT_DIR"/*) echo "${value#"$PROJECT_DIR"/}" ;;
+        *) echo "${value#./}" ;;
+    esac
+}
+
+phase_manifest_file_size_and_mtime() {
+    local path="$1"
+    if [ ! -e "$path" ]; then
+        echo "-1 -1"
+        return 0
+    fi
+    if stat -f '%z %m' "$path" >/dev/null 2>&1; then
+        stat -f '%z %m' "$path" 2>/dev/null || echo "-1 -1"
+        return 0
+    fi
+    if stat -c '%s %Y' "$path" >/dev/null 2>&1; then
+        stat -c '%s %Y' "$path" 2>/dev/null || echo "-1 -1"
+        return 0
+    fi
+    echo "-1 -1"
+}
+
+phase_manifest_file_signature() {
+    local rel_path="$1"
+    local mode="$2"
+    local abs_path="$PROJECT_DIR/$rel_path"
+    local type="missing"
+    local size="-1"
+    local mtime="-1"
+    local checksum=""
+    local stat_data=""
+
+    if [ -d "$abs_path" ]; then
+        type="dir"
+    elif [ -f "$abs_path" ]; then
+        type="file"
+    elif [ -e "$abs_path" ]; then
+        type="other"
+    fi
+
+    stat_data="$(phase_manifest_file_size_and_mtime "$abs_path")"
+    size="$(printf '%s' "$stat_data" | awk '{print $1}')"
+    mtime="$(printf '%s' "$stat_data" | awk '{print $2}')"
+    is_number "$size" || size="-1"
+    is_number "$mtime" || mtime="-1"
+
+    if [ "$mode" = "deep" ] && [ "$type" = "file" ]; then
+        checksum="$(sha256_file_sum "$abs_path" 2>/dev/null || echo "unavailable")"
+        printf 'type=%s,size=%s,mtime=%s,hash=%s' "$type" "$size" "$mtime" "$checksum"
+        return 0
+    fi
+    printf 'type=%s,size=%s,mtime=%s' "$type" "$size" "$mtime"
+}
+
 phase_capture_worktree_manifest() {
     local manifest_file="$1"
-    local cached_diff_hash worktree_diff_hash
-    local rel_path abs_path untracked_hash
+    local mode
+    local line
+    local status_code
+    local rel_path
+    local target_path
+    local signature
+
     [ -n "$manifest_file" ] || return 1
     : > "$manifest_file"
 
@@ -4930,23 +5246,21 @@ phase_capture_worktree_manifest() {
         return 1
     fi
 
-    cached_diff_hash="$(git -C "$PROJECT_DIR" diff --cached -- . | sha256_stream_sum 2>/dev/null || echo "unavailable")"
-    worktree_diff_hash="$(git -C "$PROJECT_DIR" diff -- . | sha256_stream_sum 2>/dev/null || echo "unavailable")"
-
+    mode="$(normalize_phase_manifest_mode "$PHASE_MANIFEST_MODE")"
     {
-        printf 'H CACHED_DIFF_SHA %s\n' "$cached_diff_hash"
-        printf 'H WORKTREE_DIFF_SHA %s\n' "$worktree_diff_hash"
-        git -C "$PROJECT_DIR" diff --name-status --cached -- . | sed 's/^/C /'
-        git -C "$PROJECT_DIR" diff --name-status -- . | sed 's/^/W /'
-        while IFS= read -r -d '' rel_path; do
-            abs_path="$PROJECT_DIR/$rel_path"
-            if [ -f "$abs_path" ]; then
-                untracked_hash="$(sha256_file_sum "$abs_path" 2>/dev/null || echo "unavailable")"
-            else
-                untracked_hash="<non-file>"
+        git -C "$PROJECT_DIR" -c core.quotePath=false status --porcelain=v1 --untracked-files=all -- . | \
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            status_code="${line:0:2}"
+            rel_path="${line:3}"
+            target_path="$rel_path"
+            if [[ "$rel_path" == *" -> "* ]]; then
+                target_path="${rel_path##* -> }"
             fi
-            printf 'U %s %s\n' "$untracked_hash" "$rel_path"
-        done < <(git -C "$PROJECT_DIR" ls-files --others --exclude-standard -z -- .)
+            target_path="$(path_relative_to_project "$target_path")"
+            signature="$(phase_manifest_file_signature "$target_path" "$mode")"
+            printf 'P %s %s\t%s\n' "$status_code" "$signature" "$target_path"
+        done
     } | sort > "$manifest_file"
     return 0
 }
@@ -4963,6 +5277,58 @@ phase_manifest_changed() {
         return 1
     fi
     return 0
+}
+
+phase_manifest_extract_path_from_line() {
+    local line="${1:-}"
+    line="${line#$'\t'}"
+    case "$line" in
+        P\ *$'\t'*)
+            printf '%s\n' "${line#*$'\t'}"
+            ;;
+        *)
+            printf '%s\n' ""
+            ;;
+    esac
+}
+
+phase_manifest_changed_paths() {
+    local before_file="$1"
+    local after_file="$2"
+    local line path
+
+    if [ ! -f "$before_file" ] || [ ! -f "$after_file" ]; then
+        return 0
+    fi
+
+    while IFS= read -r line; do
+        path="$(phase_manifest_extract_path_from_line "$line")"
+        [ -n "$path" ] && printf '%s\n' "$path"
+    done < <(comm -3 "$before_file" "$after_file")
+}
+
+record_session_changed_paths_from_manifest() {
+    local before_file="$1"
+    local after_file="$2"
+    local tmp_file
+
+    mkdir -p "$(dirname "$SESSION_CHANGED_PATHS_FILE")"
+    touch "$SESSION_CHANGED_PATHS_FILE"
+    tmp_file="$(mktemp "$CONFIG_DIR/session-changed-paths.XXXXXX")" || return 1
+
+    {
+        cat "$SESSION_CHANGED_PATHS_FILE"
+        phase_manifest_changed_paths "$before_file" "$after_file"
+    } | sed '/^$/d' | sort -u > "$tmp_file"
+
+    mv "$tmp_file" "$SESSION_CHANGED_PATHS_FILE"
+    return 0
+}
+
+session_changed_paths_contains() {
+    local rel_path="$1"
+    [ -f "$SESSION_CHANGED_PATHS_FILE" ] || return 1
+    grep -Fxq -- "$rel_path" "$SESSION_CHANGED_PATHS_FILE" 2>/dev/null
 }
 
 phase_noop_policy() {
@@ -5175,7 +5541,7 @@ build_phase_commit_message() {
                 split($0, a, "/")
                 top=a[1]
             } else {
-                top="root"
+                top="repo"
             }
             print top
         }
@@ -5231,9 +5597,44 @@ prepare_phase_auto_commit_mode() {
     info "Phase auto-commit enabled (local commits only; pushes are disabled)."
 }
 
+collect_manifest_delta_commit_paths() {
+    local manifest_before="$1"
+    local manifest_after="$2"
+    local output_file="$3"
+
+    [ -n "$output_file" ] || return 1
+    : > "$output_file"
+    if [ ! -f "$manifest_before" ] || [ ! -f "$manifest_after" ]; then
+        return 1
+    fi
+    phase_manifest_changed_paths "$manifest_before" "$manifest_after" | sed '/^$/d' | sort -u > "$output_file"
+    [ -s "$output_file" ]
+}
+
+stage_commit_paths_from_file() {
+    local paths_file="$1"
+    local rel_path
+    local staged_any=false
+
+    [ -f "$paths_file" ] || return 1
+    while IFS= read -r rel_path; do
+        [ -n "$rel_path" ] || continue
+        if git -C "$PROJECT_DIR" add -A -- "$rel_path" 2>/dev/null; then
+            staged_any=true
+        else
+            warn "Auto-commit staging skipped path '$rel_path' (path no longer resolvable)."
+        fi
+    done < "$paths_file"
+
+    [ "$staged_any" = true ]
+}
+
 commit_phase_approved_changes() {
     local phase="$1"
     local next_phase="$2"
+    local manifest_before="${3:-}"
+    local manifest_after="${4:-}"
+    local commit_paths_file=""
 
     if ! is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
         return 0
@@ -5251,12 +5652,26 @@ commit_phase_approved_changes() {
         return 0
     fi
 
-    if ! git -C "$PROJECT_DIR" add -A -- .; then
-        err "Auto-commit failed for phase '$phase': unable to stage changes."
-        return 1
+    if ! git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
+        warn "Auto-commit skipped for phase '$phase': pre-staged changes detected; refusing to mix unrelated index state."
+        return 0
+    fi
+
+    commit_paths_file="$(mktemp "$CONFIG_DIR/commit-paths.XXXXXX")" || commit_paths_file=""
+    if [ -z "$commit_paths_file" ] || ! collect_manifest_delta_commit_paths "$manifest_before" "$manifest_after" "$commit_paths_file"; then
+        warn "Auto-commit skipped for phase '$phase': no reliable manifest delta paths were captured for this attempt."
+        rm -f "$commit_paths_file"
+        return 0
+    fi
+
+    if ! stage_commit_paths_from_file "$commit_paths_file"; then
+        info "Phase $phase gate approved: no stageable files detected in phase manifest delta."
+        rm -f "$commit_paths_file"
+        return 0
     fi
     if git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
         info "Phase $phase gate approved: nothing staged for commit."
+        rm -f "$commit_paths_file"
         return 0
     fi
 
@@ -5270,6 +5685,7 @@ commit_phase_approved_changes() {
             warn "Auto-commit skipped for phase '$phase': git identity is missing."
             warn "Set git user.name/user.email (or GIT_COMMITTER_* env vars), then restart with --resume."
             rm -f "$commit_err_file"
+            rm -f "$commit_paths_file"
             return 0
         fi
         err "Auto-commit failed for phase '$phase'."
@@ -5277,9 +5693,11 @@ commit_phase_approved_changes() {
             tail -n 3 "$commit_err_file" >&2 || true
         fi
         rm -f "$commit_err_file"
+        rm -f "$commit_paths_file"
         return 1
     fi
     rm -f "$commit_err_file"
+    rm -f "$commit_paths_file"
 
     commit_sha="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
     info "Phase $phase committed (${commit_sha:-unknown}): $commit_message"
@@ -5327,6 +5745,73 @@ phase_default_next() {
         document) echo "done" ;;
         *) echo "done" ;;
     esac
+}
+
+phase_has_passed_in_history() {
+    local phase="${1:-}"
+    local entry
+
+    case "$phase" in
+        plan|build|test|refactor|lint|document) ;;
+        *) return 1 ;;
+    esac
+
+    if [ "${#PHASE_TRANSITION_HISTORY[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    for entry in "${PHASE_TRANSITION_HISTORY[@]+"${PHASE_TRANSITION_HISTORY[@]}"}"; do
+        if [[ "$entry" == *"${phase}(attempt "* ]] && [[ "$entry" == *"|pass|"* ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+enforce_terminal_done_requirements() {
+    local current_phase="${1:-}"
+    local candidate_next="${2:-done}"
+    local lint_satisfied=false
+    local document_satisfied=false
+    local -a missing_required=()
+    local remap_target=""
+
+    LAST_DONE_GUARD_REASON=""
+    if [ "$candidate_next" != "done" ]; then
+        echo "$candidate_next"
+        return 0
+    fi
+
+    if [ "$current_phase" = "lint" ] || phase_has_passed_in_history "lint"; then
+        lint_satisfied=true
+    fi
+    if [ "$current_phase" = "document" ] || phase_has_passed_in_history "document"; then
+        document_satisfied=true
+    fi
+
+    if is_true "$REQUIRE_LINT_BEFORE_DONE" && [ "$lint_satisfied" != "true" ]; then
+        missing_required+=("lint")
+    fi
+    if is_true "$REQUIRE_DOCUMENT_BEFORE_DONE" && [ "$document_satisfied" != "true" ]; then
+        missing_required+=("document")
+    fi
+
+    if [ "${#missing_required[@]}" -eq 0 ]; then
+        echo "done"
+        return 0
+    fi
+
+    if printf '%s\n' "${missing_required[@]}" | grep -Fxq "lint"; then
+        remap_target="lint"
+    elif printf '%s\n' "${missing_required[@]}" | grep -Fxq "document"; then
+        remap_target="document"
+    else
+        remap_target="${missing_required[0]}"
+    fi
+
+    LAST_DONE_GUARD_REASON="terminal guard remap: done blocked until required phase pass(es): $(join_with_commas "${missing_required[@]+"${missing_required[@]}"}")"
+    echo "$remap_target"
 }
 
 phase_index_or_done() {
@@ -5520,6 +6005,7 @@ markdown_artifacts_are_clean() {
     local leakage_pattern='succeeded in [0-9]+ms:|assistant[[:space:]]+to=|recipient_name[[:space:]]*:|tokens used|mcp startup:'
     local file bad=0
     local files=()
+    local scoped_files=()
 
     [ -f "$PLAN_FILE" ] && files+=("$PLAN_FILE")
     [ -f "$PROJECT_DIR/README.md" ] && files+=("$PROJECT_DIR/README.md")
@@ -5534,6 +6020,16 @@ markdown_artifacts_are_clean() {
     while IFS= read -r file; do
         [ -n "$file" ] && files+=("$file")
     done <<< "$spec_files"
+
+    if is_true "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"; then
+        for file in "${files[@]}"; do
+            [ -f "$file" ] || continue
+            if session_changed_paths_contains "$(path_relative_to_project "$file")"; then
+                scoped_files+=("$file")
+            fi
+        done
+        files=("${scoped_files[@]+"${scoped_files[@]}"}")
+    fi
 
     if [ "${#files[@]}" -gt 0 ]; then
         for file in "${files[@]}"; do
@@ -5558,15 +6054,43 @@ sanitize_markdown_artifact_file() {
 
     local tmp_file
     tmp_file="$(mktemp "$CONFIG_DIR/markdown-clean.XXXXXX")" || return 1
+    local artifact_dir=""
+    local artifact_prefix=""
+    local diff_artifact=""
+    local backup_artifact=""
+    local rel_file=""
+    rel_file="$(path_for_display "$(path_relative_to_project "$file")")"
 
     if awk '
-        $0 ~ /succeeded in [0-9]+ms:/ || $0 ~ /assistant[[:space:]]+to=/ || $0 ~ /recipient_name[[:space:]]*:/ || $0 ~ /tokens used/ || $0 ~ /mcp startup:/ || $0 ~ /\/Users\/[A-Za-z0-9._-]+\// || $0 ~ /\/root\/[A-Za-z0-9._-]+\// || $0 ~ /\/home\/[A-Za-z0-9._-]+\//
-        { next }
+        $0 ~ /succeeded in [0-9][0-9]*ms:/ || $0 ~ /assistant[[:space:]][[:space:]]*to=/ || $0 ~ /recipient_name[[:space:]]*:/ || $0 ~ /tokens used/ || $0 ~ /mcp startup:/ || $0 ~ /\/Users\/[A-Za-z0-9._-]+\// || $0 ~ /\/root\/[A-Za-z0-9._-]+\// || $0 ~ /\/home\/[A-Za-z0-9._-]+\// { next }
         { print }
     ' "$file" > "$tmp_file"; then
         if ! cmp -s "$file" "$tmp_file"; then
+            artifact_dir="$MARKDOWN_REPAIR_ARTIFACT_DIR/$SESSION_ID"
+            mkdir -p "$artifact_dir" 2>/dev/null || artifact_dir="$CONFIG_DIR"
+            artifact_prefix="$(printf '%s' "$rel_file" | tr '/ ' '__' | tr -cd 'A-Za-z0-9._-')"
+            [ -n "$artifact_prefix" ] || artifact_prefix="artifact"
+
+            diff_artifact="$artifact_dir/${artifact_prefix}.diff"
+            diff -u "$file" "$tmp_file" > "$diff_artifact" 2>/dev/null || true
+
+            if is_true "$AUTO_REPAIR_MARKDOWN_DRY_RUN"; then
+                MARKDOWN_ARTIFACTS_CLEANED_LIST="${MARKDOWN_ARTIFACTS_CLEANED_LIST}${MARKDOWN_ARTIFACTS_CLEANED_LIST:+$'\n'}[dry-run] ${rel_file}"
+                MARKDOWN_ARTIFACTS_PREVIEW_LIST="${MARKDOWN_ARTIFACTS_PREVIEW_LIST}${MARKDOWN_ARTIFACTS_PREVIEW_LIST:+$'\n'}$(path_for_display "$diff_artifact")"
+                rm -f "$tmp_file"
+                return 0
+            fi
+
+            if is_true "$AUTO_REPAIR_MARKDOWN_BACKUP"; then
+                backup_artifact="$artifact_dir/${artifact_prefix}.bak"
+                cp "$file" "$backup_artifact" 2>/dev/null || true
+                if [ -f "$backup_artifact" ]; then
+                    MARKDOWN_ARTIFACTS_BACKUP_LIST="${MARKDOWN_ARTIFACTS_BACKUP_LIST}${MARKDOWN_ARTIFACTS_BACKUP_LIST:+$'\n'}$(path_for_display "$backup_artifact")"
+                fi
+            fi
             mv "$tmp_file" "$file"
             MARKDOWN_ARTIFACTS_CLEANED_LIST="${MARKDOWN_ARTIFACTS_CLEANED_LIST}${MARKDOWN_ARTIFACTS_CLEANED_LIST:+$'\n'}$(path_for_display "$file")"
+            MARKDOWN_ARTIFACTS_PREVIEW_LIST="${MARKDOWN_ARTIFACTS_PREVIEW_LIST}${MARKDOWN_ARTIFACTS_PREVIEW_LIST:+$'\n'}$(path_for_display "$diff_artifact")"
             return 0
         fi
         rm -f "$tmp_file"
@@ -5578,8 +6102,11 @@ sanitize_markdown_artifact_file() {
 
 sanitize_markdown_artifacts() {
     MARKDOWN_ARTIFACTS_CLEANED_LIST=""
+    MARKDOWN_ARTIFACTS_PREVIEW_LIST=""
+    MARKDOWN_ARTIFACTS_BACKUP_LIST=""
     local file
     local -a targets=("$PLAN_FILE" "$PROJECT_DIR/README.md")
+    local -a scoped_targets=()
 
     if [ -d "$RESEARCH_DIR" ]; then
         while IFS= read -r -d '' file; do
@@ -5593,6 +6120,18 @@ sanitize_markdown_artifacts() {
         done < <(find "$SPECS_DIR" -maxdepth 4 -type f -name "*.md" -print0)
     fi
 
+    if is_true "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"; then
+        for file in "${targets[@]}"; do
+            [ -f "$file" ] || continue
+            local rel_target
+            rel_target="$(path_relative_to_project "$file")"
+            if session_changed_paths_contains "$rel_target"; then
+                scoped_targets+=("$file")
+            fi
+        done
+        targets=("${scoped_targets[@]+"${scoped_targets[@]}"}")
+    fi
+
     for file in "${targets[@]}"; do
         [ -f "$file" ] || continue
         sanitize_markdown_artifact_file "$file" || true
@@ -5602,7 +6141,17 @@ sanitize_markdown_artifacts() {
 }
 
 markdown_artifact_cleanup_summary() {
-    printf '%s' "$MARKDOWN_ARTIFACTS_CLEANED_LIST"
+    local summary=""
+    if [ -n "$MARKDOWN_ARTIFACTS_CLEANED_LIST" ]; then
+        summary="$MARKDOWN_ARTIFACTS_CLEANED_LIST"
+    fi
+    if [ -n "$MARKDOWN_ARTIFACTS_PREVIEW_LIST" ]; then
+        summary="${summary}${summary:+$'\n'}diff artifacts: ${MARKDOWN_ARTIFACTS_PREVIEW_LIST//$'\n'/, }"
+    fi
+    if [ -n "$MARKDOWN_ARTIFACTS_BACKUP_LIST" ]; then
+        summary="${summary}${summary:+$'\n'}backups: ${MARKDOWN_ARTIFACTS_BACKUP_LIST//$'\n'/, }"
+    fi
+    printf '%s' "$summary"
 }
 
 stack_primary_from_snapshot() {
@@ -6444,12 +6993,13 @@ print_session_config_banner() {
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
     info "session_cost_budget_cents: ${SESSION_COST_BUDGET_CENTS:-0} (0=unlimited)"
     info "session token/cost accounting is heuristic (byte-based estimation, not invoice-accurate)"
-    info "phase_completion_max_attempts: ${PHASE_COMPLETION_MAX_ATTEMPTS:-0}"
+    info "phase_completion_max_attempts: $(phase_attempt_limit_display "${PHASE_COMPLETION_MAX_ATTEMPTS:-0}")"
     info "phase_completion_retry_delay_seconds: ${PHASE_COMPLETION_RETRY_DELAY_SECONDS:-0}"
     info "phase_completion_retry_verbose: ${PHASE_COMPLETION_RETRY_VERBOSE:-false}"
     info "run_agent_max_attempts: ${RUN_AGENT_MAX_ATTEMPTS:-0}"
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
+    info "engine_idle_output_timeout_seconds: $(phase_attempt_limit_display "${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-0}")"
     info "auto_init_git_if_missing: ${AUTO_INIT_GIT_IF_MISSING:-false}"
     info "auto_commit_on_phase_pass: ${AUTO_COMMIT_ON_PHASE_PASS:-false}"
     info "auto_engine_preference: ${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
@@ -6482,9 +7032,15 @@ print_session_config_banner() {
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
     info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
     info "consensus_score_threshold: ${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
+    info "require_lint_before_done: ${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
+    info "require_document_before_done: ${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
+    info "auto_repair_markdown_dry_run: ${AUTO_REPAIR_MARKDOWN_DRY_RUN:-false}"
+    info "auto_repair_markdown_backup: ${AUTO_REPAIR_MARKDOWN_BACKUP:-false}"
+    info "auto_repair_markdown_only_session_changed: ${AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED:-false}"
+    info "phase_manifest_mode: ${PHASE_MANIFEST_MODE:-$DEFAULT_PHASE_MANIFEST_MODE}"
     info "phase noop policies: plan=${PHASE_NOOP_POLICY_PLAN}, build=${PHASE_NOOP_POLICY_BUILD}, test=${PHASE_NOOP_POLICY_TEST}, refactor=${PHASE_NOOP_POLICY_REFACTOR}, lint=${PHASE_NOOP_POLICY_LINT}, document=${PHASE_NOOP_POLICY_DOCUMENT}"
     info "maps_dir: $(path_for_display "$MAPS_DIR")"
     info "subrepos_dir: $(path_for_display "$SUBREPOS_DIR")"
@@ -6499,7 +7055,7 @@ emit_phase_transition_banner() {
     local noop_policy
     noop_policy="$(phase_noop_policy "$phase")"
     info ">>> Entering phase '$phase' <<<"
-    info "phase completion attempts remaining: ${PHASE_COMPLETION_MAX_ATTEMPTS:-0}"
+    info "phase completion attempts remaining: $(phase_attempt_limit_display "${PHASE_COMPLETION_MAX_ATTEMPTS:-0}")"
     if [ "$noop_policy" = "hard" ]; then
         info "worktree mutation policy: hard (attempt must mutate repository contents)"
     elif [ "$noop_policy" = "soft" ]; then
@@ -6531,7 +7087,8 @@ main() {
         resume_reentry_pending="true"
         success "Resuming mission..."
     else
-        save_state
+        rm -f "$SESSION_CHANGED_PATHS_FILE" 2>/dev/null || true
+        save_state_or_exit "session bootstrap initialization"
     fi
     if is_true "$ENGINE_OUTPUT_TO_STDOUT_EXPLICIT"; then
         ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT_OVERRIDE"
@@ -6540,11 +7097,14 @@ main() {
     if ! is_number "$MAX_SESSION_CYCLES" || [ "$MAX_SESSION_CYCLES" -lt 0 ]; then
         MAX_SESSION_CYCLES=0
     fi
-    if ! is_number "$PHASE_COMPLETION_MAX_ATTEMPTS" || [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -lt 1 ]; then
+    if ! is_number "$PHASE_COMPLETION_MAX_ATTEMPTS" || [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -lt 0 ]; then
         PHASE_COMPLETION_MAX_ATTEMPTS=3
     fi
     if ! is_number "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" || [ "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" -lt 0 ]; then
         PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
+    fi
+    if ! is_number "$CONFIDENCE_STAGNATION_LIMIT" || [ "$CONFIDENCE_STAGNATION_LIMIT" -lt 1 ]; then
+        CONFIDENCE_STAGNATION_LIMIT=3
     fi
     if ! is_number "$MAX_CONSENSUS_ROUTING_ATTEMPTS" || [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -lt 0 ]; then
         MAX_CONSENSUS_ROUTING_ATTEMPTS="$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS"
@@ -6555,6 +7115,7 @@ main() {
     if ! is_number "$COMMAND_TIMEOUT_SECONDS" || [ "$COMMAND_TIMEOUT_SECONDS" -lt 0 ]; then
         COMMAND_TIMEOUT_SECONDS="$DEFAULT_COMMAND_TIMEOUT_SECONDS"
     fi
+    warn_timeout_binary_unavailable_if_needed
     if ! is_number "$SWARM_CONSENSUS_TIMEOUT" || [ "$SWARM_CONSENSUS_TIMEOUT" -lt 1 ]; then
         SWARM_CONSENSUS_TIMEOUT="$DEFAULT_SWARM_CONSENSUS_TIMEOUT"
     fi
@@ -6567,7 +7128,7 @@ main() {
         should_exit="true"
     fi
     if is_true "$should_exit"; then
-        save_state
+        save_state_or_exit "session budget preflight failure"
         release_lock
         exit 1
     fi
@@ -6590,7 +7151,7 @@ main() {
     refresh_git_identity_status || true
     prepare_phase_auto_commit_mode
     run_first_deploy_notification_wizard || true
-    save_state
+    save_state_or_exit "post-startup bootstrap"
 
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
     local phase_index=0
@@ -6629,11 +7190,13 @@ main() {
             CURRENT_PHASE_INDEX="$start_phase_index"
             CURRENT_PHASE_ATTEMPT=1
             PHASE_ATTEMPT_IN_PROGRESS="false"
-            save_state
+            save_state_or_exit "resume fallback to plan checkpoint"
         fi
     fi
 
     local consensus_route_count=0
+    local routing_stagnation_signature=""
+    local routing_stagnation_count=0
     local engine_override_bootstrap_checked="false"
     local session_start_notified="false"
     while true; do
@@ -6677,7 +7240,7 @@ main() {
                 PHASE_ATTEMPT_IN_PROGRESS="false"
             fi
             resume_reentry_pending="false"
-            save_state
+            save_state_or_exit "phase entry checkpoint ($phase)"
 
             local pfile
             pfile="$(prompt_file_for_mode "$phase")"
@@ -6707,14 +7270,14 @@ main() {
                     should_exit="true"
                     break
                 fi
-                save_state
+                save_state_or_exit "plan stack discovery checkpoint"
             fi
 
             local phase_attempt=1
             if [ "$reentering_in_progress_phase" = "true" ] && is_number "$CURRENT_PHASE_ATTEMPT" && [ "$CURRENT_PHASE_ATTEMPT" -ge 1 ]; then
                 phase_attempt="$CURRENT_PHASE_ATTEMPT"
             fi
-            if ! is_number "$phase_attempt" || [ "$phase_attempt" -lt 1 ] || [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+            if ! is_number "$phase_attempt" || [ "$phase_attempt" -lt 1 ] || { [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -gt 0 ] && [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; }; then
                 warn "Recovered invalid persisted phase attempt '$phase_attempt' for phase '$phase'; resetting to attempt 1."
                 phase_attempt=1
             fi
@@ -6722,12 +7285,14 @@ main() {
             local phase_next_target="$phase"
             local phase_route="false"
             local phase_route_reason=""
-            while [ "$phase_attempt" -le "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; do
+            local phase_stagnation_signature=""
+            local phase_stagnation_count=0
+            while phase_attempt_within_budget "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS"; do
                 CURRENT_PHASE="$phase"
                 CURRENT_PHASE_INDEX="$phase_index"
                 CURRENT_PHASE_ATTEMPT="$phase_attempt"
                 PHASE_ATTEMPT_IN_PROGRESS="true"
-                save_state
+                save_state_or_exit "phase attempt start checkpoint ($phase attempt $phase_attempt)"
                 phase_attempt_started_at="$(date +%s 2>/dev/null || echo 0)"
 
                 local lfile="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.log"
@@ -6848,6 +7413,7 @@ main() {
                     phase_capture_worktree_manifest "$manifest_after_file" || true
                     if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
                         if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
+                            record_session_changed_paths_from_manifest "$manifest_before_file" "$manifest_after_file" || true
                             phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
                             if [ -n "$phase_delta_preview" ]; then
                                 phase_delta_preview="$(printf '%s' "$phase_delta_preview" | tr '\n' '; ')"
@@ -6927,7 +7493,43 @@ main() {
                     fi
 
                     consensus_evaluated="true"
-                    if ! run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
+                    local consensus_infra_retry_streak=0
+                    local consensus_infra_signature=""
+                    while true; do
+                        if run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
+                            break
+                        fi
+
+                        if [ "$LAST_CONSENSUS_FAILURE_KIND" = "infra" ]; then
+                            local consensus_failure_reason
+                            local consensus_stagnation_limit
+                            consensus_failure_reason="${LAST_CONSENSUS_FAILURE_REASON:-infrastructure failure}"
+                            consensus_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-3}"
+                            is_number "$consensus_stagnation_limit" || consensus_stagnation_limit=3
+                            if [ "$consensus_stagnation_limit" -lt 1 ]; then
+                                consensus_stagnation_limit=1
+                            fi
+
+                            local current_consensus_signature
+                            current_consensus_signature="$(phase_failure_signature "$LAST_CONSENSUS_FAILURE_KIND" "$consensus_failure_reason" "${LAST_CONSENSUS_RESPONDED_VOTES:-0}")"
+                            if [ "$current_consensus_signature" = "$consensus_infra_signature" ]; then
+                                consensus_infra_retry_streak=$((consensus_infra_retry_streak + 1))
+                            else
+                                consensus_infra_signature="$current_consensus_signature"
+                                consensus_infra_retry_streak=1
+                            fi
+
+                            if [ "$consensus_infra_retry_streak" -ge "$consensus_stagnation_limit" ]; then
+                                phase_failures+=("intelligence validation infra failure persisted after ${consensus_infra_retry_streak} retries: $consensus_failure_reason")
+                                break
+                            fi
+
+                            warn "Consensus infrastructure issue detected ($consensus_failure_reason). Retrying consensus without consuming phase attempt."
+                            notify_event "phase_blocked" "hold" "phase=$phase attempt=$phase_attempt reason=consensus_infra_retry retry=$consensus_infra_retry_streak/$consensus_stagnation_limit" || true
+                            sleep "$PHASE_COMPLETION_RETRY_DELAY_SECONDS"
+                            continue
+                        fi
+
                         phase_failures+=("intelligence validation failed after $phase")
                         phase_failures+=("consensus score/verdict: score=${LAST_CONSENSUS_SCORE} pass=${LAST_CONSENSUS_PASS}")
                         mapfile -t consensus_failures < <(collect_phase_retry_failures_from_consensus)
@@ -6937,7 +7539,8 @@ main() {
                         if [ -n "$LAST_CONSENSUS_SUMMARY" ]; then
                             phase_failures+=("consensus summary: $LAST_CONSENSUS_SUMMARY")
                         fi
-                    fi
+                        break
+                    done
                 else
                     if [ "${#phase_failures[@]}" -eq 0 ]; then
                         phase_failures+=("agent execution failed in $phase")
@@ -6947,7 +7550,7 @@ main() {
                 if [ "${#phase_failures[@]}" -eq 0 ] && is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
                     phase_commit_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                     [ -n "$phase_commit_target" ] || phase_commit_target="$(phase_default_next "$phase")"
-                    if ! commit_phase_approved_changes "$phase" "$phase_commit_target"; then
+                    if ! commit_phase_approved_changes "$phase" "$phase_commit_target" "$manifest_before_file" "$manifest_after_file"; then
                         phase_failures+=("auto commit failed after $phase gate approval")
                         phase_failures+=("configure git user.name/user.email or disable auto commit")
                     fi
@@ -6974,12 +7577,12 @@ main() {
                             notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                             PHASE_ATTEMPT_IN_PROGRESS="false"
                             CURRENT_PHASE_ATTEMPT=1
-                            save_state
+                            save_state_or_exit "phase reroute-hold checkpoint ($phase->$phase_next_target)"
                             break
                         fi
                         phase_warnings+=("ignoring non-backtracking reroute recommendation '$phase_route_candidate' while phase '$phase' has unresolved failures")
                     fi
-                    if [ "$phase" = "build" ] && [ "$phase_route" != "true" ] && is_true "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" && [ "$phase_attempt" -ge "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+                    if [ "$phase" = "build" ] && [ "$phase_route" != "true" ] && is_true "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" && [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -gt 0 ] && [ "$phase_attempt" -ge "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
                         local build_consensus_hold_detected="false"
                         local build_hold_reason="consensus HOLD"
                         # Prefer state booleans over log-string matching to detect consensus HOLD.
@@ -7007,7 +7610,7 @@ main() {
                             log_reason_code "RB_BUILD_AUTO_BACKTRACK_TO_PLAN" "$phase attempt $phase_attempt/$PHASE_COMPLETION_MAX_ATTEMPTS rerouted to plan after $build_hold_reason"
                             PHASE_ATTEMPT_IN_PROGRESS="false"
                             CURRENT_PHASE_ATTEMPT=1
-                            save_state
+                            save_state_or_exit "build auto-backtrack checkpoint"
                             break
                         fi
                     fi
@@ -7029,29 +7632,53 @@ main() {
                             log_reason_code "RB_PHASE_WALLCLOCK_EXCEEDED" "phase $phase attempt $phase_attempt exceeded wall-clock limit ${PHASE_WALLCLOCK_LIMIT_SECONDS}s (elapsed ${elapsed}s)"
                             notify_event "phase_blocked" "hold" "phase=$phase wallclock=${PHASE_WALLCLOCK_LIMIT_SECONDS}s elapsed=${elapsed}s" || true
                             PHASE_ATTEMPT_IN_PROGRESS="false"
-                            save_state
+                            save_state_or_exit "phase wallclock guard checkpoint ($phase)"
                             should_exit="true"
                             break
                         fi
                     fi
-                    log_reason_code "RB_PHASE_RETRYABLE_FAIL" "$phase attempt $phase_attempt/$PHASE_COMPLETION_MAX_ATTEMPTS: ${phase_failures[*]}"
+                    local failure_signature
+                    local phase_stagnation_limit
+                    failure_signature="$(phase_failure_signature "${phase_failures[@]+"${phase_failures[@]}"}")"
+                    if [ "$failure_signature" = "$phase_stagnation_signature" ]; then
+                        phase_stagnation_count=$((phase_stagnation_count + 1))
+                    else
+                        phase_stagnation_signature="$failure_signature"
+                        phase_stagnation_count=1
+                    fi
+                    phase_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-3}"
+                    is_number "$phase_stagnation_limit" || phase_stagnation_limit=3
+                    if [ "$phase_stagnation_limit" -lt 1 ]; then
+                        phase_stagnation_limit=1
+                    fi
+
+                    log_reason_code "RB_PHASE_RETRYABLE_FAIL" "$phase attempt $phase_attempt/$(phase_attempt_limit_display "$PHASE_COMPLETION_MAX_ATTEMPTS"): ${phase_failures[*]}"
+                    if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -eq 0 ] && [ "$phase_stagnation_count" -ge "$phase_stagnation_limit" ]; then
+                        warn "Phase $phase stagnated for ${phase_stagnation_count} retries with no material failure signature change; stopping unlimited retry loop."
+                        log_reason_code "RB_PHASE_RETRY_STAGNATION" "phase $phase stagnated after ${phase_stagnation_count} unlimited retries"
+                        notify_event "phase_blocked" "hold" "phase=$phase unlimited retries stagnated after ${phase_stagnation_count} attempts" || true
+                        should_exit="true"
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        save_state_or_exit "phase stagnation checkpoint ($phase)"
+                        break
+                    fi
 
                     phase_attempt=$((phase_attempt + 1))
-                    if [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+                    if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -gt 0 ] && [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
                         warn "Phase $phase blocked after ${PHASE_COMPLETION_MAX_ATTEMPTS} attempts."
                         format_retry_budget_block_reason "$phase" "$((phase_attempt - 1))" "$PHASE_COMPLETION_MAX_ATTEMPTS"
                         notify_event "phase_blocked" "hold" "phase=$phase exhausted completion retries (${PHASE_COMPLETION_MAX_ATTEMPTS})" || true
                         should_exit="true"
                         PHASE_ATTEMPT_IN_PROGRESS="false"
                         CURRENT_PHASE_ATTEMPT="$PHASE_COMPLETION_MAX_ATTEMPTS"
-                        save_state
+                        save_state_or_exit "phase retry budget exhausted checkpoint ($phase)"
                         break
                     fi
                     CURRENT_PHASE_ATTEMPT="$phase_attempt"
                     PHASE_ATTEMPT_IN_PROGRESS="true"
-                    save_state
+                    save_state_or_exit "phase retry scheduling checkpoint ($phase attempt $phase_attempt)"
                     if is_true "$PHASE_COMPLETION_RETRY_VERBOSE"; then
-                        warn "Phase $phase retrying in ${PHASE_COMPLETION_RETRY_DELAY_SECONDS}s (attempt ${phase_attempt}/${PHASE_COMPLETION_MAX_ATTEMPTS})."
+                        warn "Phase $phase retrying in ${PHASE_COMPLETION_RETRY_DELAY_SECONDS}s (attempt ${phase_attempt}/$(phase_attempt_limit_display "$PHASE_COMPLETION_MAX_ATTEMPTS"))."
                     fi
                     sleep "$PHASE_COMPLETION_RETRY_DELAY_SECONDS"
                     continue
@@ -7063,18 +7690,33 @@ main() {
                     done
                 fi
 
-                phase_next_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
-                [ -n "$phase_next_target" ] || phase_next_target="$(phase_default_next "$phase")"
+                local phase_requested_next
+                phase_requested_next="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
+                [ -n "$phase_requested_next" ] || phase_requested_next="$(phase_default_next "$phase")"
+                phase_next_target="$(enforce_terminal_done_requirements "$phase" "$phase_requested_next")"
+                if [ "$phase_next_target" != "$phase_requested_next" ]; then
+                    local done_guard_reason
+                    done_guard_reason="${LAST_DONE_GUARD_REASON:-terminal guard remap}"
+                    warn "Terminal guard remapped next phase: ${phase_requested_next} -> ${phase_next_target} (${done_guard_reason})."
+                    notify_event "phase_decision" "terminal_guard_remap" "phase=$phase requested_next=${phase_requested_next} remapped_next=${phase_next_target} reason=${done_guard_reason}" || true
+                    if [ -n "$phase_route_reason" ]; then
+                        phase_route_reason="${phase_route_reason}; ${done_guard_reason}"
+                    else
+                        phase_route_reason="$done_guard_reason"
+                    fi
+                fi
                 if is_phase_or_done "$phase_next_target" && [ "$phase_next_target" != "$phase" ]; then
                     phase_route="true"
-                    phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                    if [ -z "${phase_route_reason:-}" ]; then
+                        phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                    fi
                 elif [ -z "$phase_route_reason" ]; then
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1
-                save_state
+                save_state_or_exit "phase completion checkpoint ($phase)"
 
                 success "Phase $phase completed."
                 notify_event "phase_complete" "go" "phase=$phase next=${phase_next_target:-unknown} route_reason=${phase_route_reason:-none}" || true
@@ -7094,9 +7736,24 @@ main() {
                 fi
                 if [ "$route_index" -lt "$phase_index" ]; then
                     consensus_route_count=$((consensus_route_count + 1))
+                    local routing_signature
+                    routing_signature="$(phase_failure_signature "$phase" "$phase_next_target" "${phase_route_reason:-none}")"
+                    if [ "$routing_signature" = "$routing_stagnation_signature" ]; then
+                        routing_stagnation_count=$((routing_stagnation_count + 1))
+                    else
+                        routing_stagnation_signature="$routing_signature"
+                        routing_stagnation_count=1
+                    fi
                     if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
                         warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
                         notify_event "session_error" "routing_budget_exceeded" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)" || true
+                        should_exit="true"
+                        break 2
+                    fi
+                    if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -eq 0 ] && [ "$routing_stagnation_count" -ge "$CONFIDENCE_STAGNATION_LIMIT" ]; then
+                        warn "Consensus routing stagnated for ${routing_stagnation_count} backtracks with unchanged route signature."
+                        log_reason_code "RB_ROUTING_STAGNATION" "unlimited routing stagnated after ${routing_stagnation_count} backtracks ($phase->$phase_next_target)"
+                        notify_event "session_error" "routing_stagnation" "unlimited routing stagnated after ${routing_stagnation_count} backtracks" || true
                         should_exit="true"
                         break 2
                     fi
@@ -7128,7 +7785,7 @@ main() {
             CURRENT_PHASE_INDEX="${#phases[@]}"
             CURRENT_PHASE_ATTEMPT=1
             PHASE_ATTEMPT_IN_PROGRESS="false"
-            save_state
+            save_state_or_exit "session completion checkpoint"
             break
         fi
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then
@@ -7141,7 +7798,7 @@ main() {
     if is_true "$should_exit"; then
         notify_event "session_error" "stopped" "session exited before full completion; see $(path_for_display "$REASON_LOG_FILE")" || true
     fi
-    save_state
+    save_state_or_exit "final session checkpoint"
     release_lock
 }
 

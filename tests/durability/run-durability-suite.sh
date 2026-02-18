@@ -855,6 +855,484 @@ EOF
     )
 }
 
+test_unit_idle_output_watchdog_recycles_hung_process() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd log_file out_file rc
+        tmpd="$(mktemp -d /tmp/ralphie-watchdog-unit.XXXXXX)"
+        log_file="$tmpd/agent.log"
+        out_file="$tmpd/agent.out"
+        : > "$log_file"
+        : > "$out_file"
+
+        (
+            printf 'boot\n' >> "$log_file"
+            sleep 5
+            printf 'late\n' >> "$log_file"
+        ) &
+        local worker_pid=$!
+
+        if wait_for_process_with_idle_output_watchdog "$worker_pid" 1 "unit-watchdog" "$log_file" "$out_file"; then
+            return 1
+        else
+            rc=$?
+        fi
+
+        [ "$rc" -eq 124 ]
+        if grep -q '^late$' "$log_file"; then
+            return 1
+        fi
+    )
+}
+
+test_unit_timeout_warning_without_timeout_binary() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local warning_output warning_file
+        COMMAND_TIMEOUT_SECONDS=30
+        TIMEOUT_BINARY_WARNING_EMITTED="false"
+        get_timeout_command() { echo ""; }
+        warning_file="$(mktemp /tmp/ralphie-timeout-warning-unit.XXXXXX)"
+        warn_timeout_binary_unavailable_if_needed >"$warning_file" 2>&1 || true
+        warning_output="$(cat "$warning_file")"
+        rm -f "$warning_file"
+        printf '%s' "$warning_output" | grep -q "no timeout wrapper is installed"
+        printf '%s' "$warning_output" | grep -q "brew install coreutils"
+        [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "true" ]
+    )
+}
+
+test_unit_manifest_modes_light_and_deep() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd manifest_light manifest_deep
+        tmpd="$(mktemp -d /tmp/ralphie-manifest-mode-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        git -C "$PROJECT_DIR" init >/dev/null 2>&1
+        git -C "$PROJECT_DIR" config user.name "Durability Bot"
+        git -C "$PROJECT_DIR" config user.email "durability@example.test"
+        printf 'alpha\n' > "$PROJECT_DIR/sample.txt"
+        git -C "$PROJECT_DIR" add sample.txt
+        git -C "$PROJECT_DIR" commit -m "init" >/dev/null 2>&1
+        printf 'beta\n' > "$PROJECT_DIR/sample.txt"
+
+        manifest_light="$tmpd/light.manifest"
+        manifest_deep="$tmpd/deep.manifest"
+
+        PHASE_MANIFEST_MODE="light"
+        phase_capture_worktree_manifest "$manifest_light"
+        [ -s "$manifest_light" ]
+        grep -q 'type=file' "$manifest_light"
+        if grep -q 'hash=' "$manifest_light"; then
+            return 1
+        fi
+
+        PHASE_MANIFEST_MODE="deep"
+        phase_capture_worktree_manifest "$manifest_deep"
+        [ -s "$manifest_deep" ]
+        grep -q 'hash=' "$manifest_deep"
+    )
+}
+
+test_unit_markdown_repair_dry_run_backup_and_scope() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd readme_file note_file diff_rel diff_path backup_rel backup_path
+        tmpd="$(mktemp -d /tmp/ralphie-md-repair-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        LOG_DIR="$PROJECT_DIR/logs"
+        MARKDOWN_REPAIR_ARTIFACT_DIR="$LOG_DIR/markdown-repair"
+        SESSION_ID="mdrepair_unit"
+        PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+        RESEARCH_DIR="$PROJECT_DIR/research"
+        SPECS_DIR="$PROJECT_DIR/specs"
+        SESSION_CHANGED_PATHS_FILE="$CONFIG_DIR/session-changed-paths.txt"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR" "$LOG_DIR" "$RESEARCH_DIR" "$SPECS_DIR"
+
+        readme_file="$PROJECT_DIR/README.md"
+        note_file="$RESEARCH_DIR/note.md"
+        cat > "$readme_file" <<'EOF'
+line
+assistant to=functions.exec_command
+EOF
+        cat > "$note_file" <<'EOF'
+line
+assistant to=functions.exec_command
+EOF
+        printf 'README.md\n' > "$SESSION_CHANGED_PATHS_FILE"
+
+        AUTO_REPAIR_MARKDOWN_DRY_RUN=true
+        AUTO_REPAIR_MARKDOWN_BACKUP=true
+        AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED=true
+        sanitize_markdown_artifacts
+        grep -q 'assistant to=functions.exec_command' "$readme_file"
+        grep -q 'assistant to=functions.exec_command' "$note_file"
+        printf '%s' "$MARKDOWN_ARTIFACTS_CLEANED_LIST" | grep -q '\[dry-run\] README.md'
+        if printf '%s' "$MARKDOWN_ARTIFACTS_CLEANED_LIST" | grep -q 'note.md'; then
+            return 1
+        fi
+        [ -n "$MARKDOWN_ARTIFACTS_PREVIEW_LIST" ]
+        [ -z "$MARKDOWN_ARTIFACTS_BACKUP_LIST" ]
+        diff_rel="$(printf '%s\n' "$MARKDOWN_ARTIFACTS_PREVIEW_LIST" | head -n 1)"
+        diff_path="$diff_rel"
+        case "$diff_path" in
+            /*) ;;
+            *) diff_path="$PROJECT_DIR/$diff_path" ;;
+        esac
+        [ -f "$diff_path" ]
+
+        AUTO_REPAIR_MARKDOWN_DRY_RUN=false
+        sanitize_markdown_artifacts
+        if grep -q 'assistant to=functions.exec_command' "$readme_file"; then
+            return 1
+        fi
+        grep -q 'assistant to=functions.exec_command' "$note_file"
+        [ -n "$MARKDOWN_ARTIFACTS_BACKUP_LIST" ]
+        backup_rel="$(printf '%s\n' "$MARKDOWN_ARTIFACTS_BACKUP_LIST" | head -n 1)"
+        backup_path="$backup_rel"
+        case "$backup_path" in
+            /*) ;;
+            *) backup_path="$PROJECT_DIR/$backup_path" ;;
+        esac
+        [ -f "$backup_path" ]
+    )
+}
+
+test_unit_save_state_or_exit_enforces_stop() {
+    (
+        set -euo pipefail
+        local rc=0
+        if (
+            set -euo pipefail
+            # shellcheck source=/dev/null
+            source "$RALPHIE_FILE"
+            assert_unit_runtime_isolated
+            save_state() { return 1; }
+            release_lock() { :; }
+            notify_event() { return 0; }
+            save_state_or_exit "unit checkpoint"
+        ); then
+            return 1
+        else
+            rc=$?
+        fi
+        [ "$rc" -eq 1 ]
+    )
+}
+
+test_unit_auto_commit_scoped_to_manifest_delta() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd manifest_before manifest_after
+        tmpd="$(mktemp -d /tmp/ralphie-autocommit-scope-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        LOG_DIR="$PROJECT_DIR/logs"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR" "$LOG_DIR"
+
+        git -C "$PROJECT_DIR" init >/dev/null 2>&1
+        git -C "$PROJECT_DIR" config user.name "Durability Bot"
+        git -C "$PROJECT_DIR" config user.email "durability@example.test"
+        printf 'base\n' > "$PROJECT_DIR/phase.txt"
+        printf 'base\n' > "$PROJECT_DIR/legacy.txt"
+        git -C "$PROJECT_DIR" add phase.txt legacy.txt
+        git -C "$PROJECT_DIR" commit -m "init" >/dev/null 2>&1
+
+        printf 'legacy-dirty\n' >> "$PROJECT_DIR/legacy.txt"
+        manifest_before="$tmpd/manifest.before"
+        manifest_after="$tmpd/manifest.after"
+        PHASE_MANIFEST_MODE="light"
+        phase_capture_worktree_manifest "$manifest_before"
+
+        printf 'phase-change\n' >> "$PROJECT_DIR/phase.txt"
+        phase_capture_worktree_manifest "$manifest_after"
+
+        AUTO_COMMIT_SESSION_ENABLED=true
+        AUTO_COMMIT_ON_PHASE_PASS=true
+        export GIT_AUTHOR_NAME="Durability Bot"
+        export GIT_AUTHOR_EMAIL="durability@example.test"
+        export GIT_COMMITTER_NAME="Durability Bot"
+        export GIT_COMMITTER_EMAIL="durability@example.test"
+
+        commit_phase_approved_changes "build" "test" "$manifest_before" "$manifest_after"
+
+        git -C "$PROJECT_DIR" show --name-only --pretty=format: HEAD > "$tmpd/head-files.txt"
+        grep -q '^phase.txt$' "$tmpd/head-files.txt"
+        if grep -q '^legacy.txt$' "$tmpd/head-files.txt"; then
+            return 1
+        fi
+        local subject
+        subject="$(git -C "$PROJECT_DIR" log -1 --pretty=%s)"
+        if printf '%s' "$subject" | grep -qi 'root:'; then
+            return 1
+        fi
+        printf '%s' "$subject" | grep -qi 'repo:1'
+        git -C "$PROJECT_DIR" diff --name-only -- . | grep -q '^legacy.txt$'
+    )
+}
+
+test_integration_consensus_infra_retry_without_attempt_decrement() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS=2
+export RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS=0
+export CONFIDENCE_STAGNATION_LIMIT=3
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+__agent_calls=0
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    __agent_calls=$((__agent_calls + 1))
+    printf 'agent-call-%s\n' "$__agent_calls" >> agent-calls.log
+    printf 'ok\n' > "$log_file"
+    printf 'ok\n' > "$output_file"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+__plan_consensus_calls=0
+run_swarm_consensus() {
+    local stage="$1"
+    local base="${stage%-gate}"
+    if [ "$base" = "plan" ] && [ "$__plan_consensus_calls" -lt 2 ]; then
+        __plan_consensus_calls=$((__plan_consensus_calls + 1))
+        LAST_CONSENSUS_SCORE=0
+        LAST_CONSENSUS_PASS=false
+        LAST_CONSENSUS_RESPONDED_VOTES=0
+        LAST_CONSENSUS_SUMMARY="transient reviewer outage"
+        LAST_CONSENSUS_NEXT_PHASE="build"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="infra retry"
+        LAST_CONSENSUS_FAILURE_KIND="infra"
+        LAST_CONSENSUS_FAILURE_REASON="reviewer transport timeout"
+        CONSENSUS_NO_ENGINES=true
+        return 1
+    fi
+    LAST_CONSENSUS_SCORE=95
+    LAST_CONSENSUS_PASS=true
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_SUMMARY="consensus pass"
+    LAST_CONSENSUS_NEXT_PHASE="$(phase_default_next "$base")"
+    LAST_CONSENSUS_NEXT_PHASE_REASON="pass"
+    LAST_CONSENSUS_FAILURE_KIND="none"
+    LAST_CONSENSUS_FAILURE_REASON=""
+    CONSENSUS_NO_ENGINES=false
+    return 0
+}
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
+grep -q "Retrying consensus without consuming phase attempt" "$PWD/run.out" "$PWD/run.err"
+grep -q "All phases completed. Session done." "$PWD/run.out"
+[ "$(wc -l < "$PWD/agent-calls.log" | tr -d ' ')" -eq 6 ]
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
+test_integration_unlimited_phase_attempts_stagnation_guard() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS=0
+export RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS=0
+export CONFIDENCE_STAGNATION_LIMIT=2
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+__agent_calls=0
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    __agent_calls=$((__agent_calls + 1))
+    printf 'agent-call-%s\n' "$__agent_calls" >> agent-calls.log
+    printf 'forced failure\n' > "$log_file"
+    printf '' > "$output_file"
+    return 1
+}
+run_handoff_validation() { return 1; }
+run_swarm_consensus() { return 1; }
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err" || true
+grep -q "stagnated for" "$PWD/run.out" "$PWD/run.err"
+grep -q "RB_PHASE_RETRY_STAGNATION" "$PWD/.ralphie/reasons.log"
+[ "$(wc -l < "$PWD/agent-calls.log" | tr -d ' ')" -eq 2 ]
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
+test_integration_unlimited_routing_stagnation_guard() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS=0
+export CONFIDENCE_STAGNATION_LIMIT=2
+export RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS=0
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    printf 'ok\n' > "$log_file"
+    printf 'ok\n' > "$output_file"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+run_swarm_consensus() {
+    local stage="$1"
+    local base="${stage%-gate}"
+    LAST_CONSENSUS_SCORE=95
+    LAST_CONSENSUS_PASS=true
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_SUMMARY="routing loop stub"
+    if [ "$base" = "build" ]; then
+        LAST_CONSENSUS_NEXT_PHASE="plan"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="loop"
+    else
+        LAST_CONSENSUS_NEXT_PHASE="$(phase_default_next "$base")"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="forward"
+    fi
+    return 0
+}
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err" || true
+grep -q "routing stagnated" "$PWD/run.out" "$PWD/run.err"
+grep -q "RB_ROUTING_STAGNATION" "$PWD/.ralphie/reasons.log"
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
+test_integration_terminal_done_guard_requires_lint_and_document() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_REQUIRE_LINT_BEFORE_DONE=true
+export RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE=true
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    local phase_name
+    phase_name="$(basename "$log_file" | cut -d'_' -f1)"
+    printf '%s\n' "$phase_name" >> "$PWD/phases.log"
+    printf 'ok\n' > "$log_file"
+    printf 'ok\n' > "$output_file"
+    printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+run_swarm_consensus() {
+    local stage="$1"
+    local base="${stage%-gate}"
+    LAST_CONSENSUS_SCORE=95
+    LAST_CONSENSUS_PASS=true
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_SUMMARY="terminal done guard stub"
+    case "$base" in
+        test|lint|document)
+            LAST_CONSENSUS_NEXT_PHASE="done"
+            LAST_CONSENSUS_NEXT_PHASE_REASON="reviewers said done"
+            ;;
+        *)
+            LAST_CONSENSUS_NEXT_PHASE="$(phase_default_next "$base")"
+            LAST_CONSENSUS_NEXT_PHASE_REASON="forward"
+            ;;
+    esac
+    return 0
+}
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
+grep -q "Terminal guard remapped next phase: done -> lint" "$PWD/run.out" "$PWD/run.err"
+grep -q "Terminal guard remapped next phase: done -> document" "$PWD/run.out" "$PWD/run.err"
+grep -q ">>> Entering phase 'lint' <<<" "$PWD/run.out"
+grep -q ">>> Entering phase 'document' <<<" "$PWD/run.out"
+grep -q "All phases completed. Session done." "$PWD/run.out"
+grep -q 'CURRENT_PHASE="done"' "$PWD/.ralphie/state.env"
+if grep -q '^refactor$' "$PWD/phases.log"; then
+    exit 1
+fi
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
 test_integration_happy_path() {
     local ws
     ws="$(make_workspace)"
@@ -895,7 +1373,8 @@ MSG
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
 run_swarm_consensus() {
-    local stage="$1" base="${stage%-gate}"
+    local stage="$1"
+    local base="${stage%-gate}"
     LAST_CONSENSUS_SCORE=92
     LAST_CONSENSUS_PASS=true
     LAST_CONSENSUS_RESPONDED_VOTES=3
@@ -1072,7 +1551,8 @@ run_agent_with_prompt() {
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
 run_swarm_consensus() {
-    local stage="$1" base="${stage%-gate}"
+    local stage="$1"
+    local base="${stage%-gate}"
     LAST_CONSENSUS_SCORE=90
     LAST_CONSENSUS_PASS=true
     LAST_CONSENSUS_RESPONDED_VOTES=3
@@ -1113,7 +1593,8 @@ run_agent_with_prompt() {
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
 run_swarm_consensus() {
-    local stage="$1" base="${stage%-gate}"
+    local stage="$1"
+    local base="${stage%-gate}"
     LAST_CONSENSUS_SCORE=90
     LAST_CONSENSUS_PASS=true
     LAST_CONSENSUS_RESPONDED_VOTES=3
@@ -1180,7 +1661,17 @@ main() {
     run_case "unit_bootstrap_accept_gate_and_no_change_guard" test_unit_bootstrap_accept_gate_and_no_change_guard
     run_case "unit_bootstrap_accept_blocked_no_change_guard" test_unit_bootstrap_accept_blocked_no_change_guard
     run_case "unit_append_bootstrap_context_includes_arch_and_tech" test_unit_append_bootstrap_context_includes_arch_and_tech
+    run_case "unit_idle_output_watchdog_recycles_hung_process" test_unit_idle_output_watchdog_recycles_hung_process
+    run_case "unit_timeout_warning_without_timeout_binary" test_unit_timeout_warning_without_timeout_binary
+    run_case "unit_manifest_modes_light_and_deep" test_unit_manifest_modes_light_and_deep
+    run_case "unit_markdown_repair_dry_run_backup_and_scope" test_unit_markdown_repair_dry_run_backup_and_scope
+    run_case "unit_save_state_or_exit_enforces_stop" test_unit_save_state_or_exit_enforces_stop
+    run_case "unit_auto_commit_scoped_to_manifest_delta" test_unit_auto_commit_scoped_to_manifest_delta
     run_case "integration_happy_path" test_integration_happy_path
+    run_case "integration_consensus_infra_retry_without_attempt_decrement" test_integration_consensus_infra_retry_without_attempt_decrement
+    run_case "integration_unlimited_phase_attempts_stagnation_guard" test_integration_unlimited_phase_attempts_stagnation_guard
+    run_case "integration_unlimited_routing_stagnation_guard" test_integration_unlimited_routing_stagnation_guard
+    run_case "integration_terminal_done_guard_requires_lint_and_document" test_integration_terminal_done_guard_requires_lint_and_document
     run_case "integration_forward_reroute_guard" test_integration_forward_reroute_guard
     run_case "integration_resume_done_short_circuit" test_integration_resume_done_short_circuit
     run_case "integration_lock_contention" test_integration_lock_contention

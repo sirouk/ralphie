@@ -143,166 +143,28 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--phase-noop-policy-document hard|soft|none`
 - `--max-iterations N`
 
-Equivalent environment variables in `.ralphie/config.env`:
-`MAX_SESSION_CYCLES`, `SESSION_TOKEN_BUDGET`, `SESSION_TOKEN_RATE_CENTS_PER_MILLION`,
-`SESSION_COST_BUDGET_CENTS`, `PHASE_COMPLETION_MAX_ATTEMPTS`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS`,
-`PHASE_COMPLETION_RETRY_VERBOSE`, `MAX_CONSENSUS_ROUTING_ATTEMPTS`, `RUN_AGENT_MAX_ATTEMPTS`,
-`RUN_AGENT_RETRY_DELAY_SECONDS`, `RUN_AGENT_RETRY_VERBOSE`, `SWARM_CONSENSUS_TIMEOUT`,
-`AUTO_REPAIR_MARKDOWN_ARTIFACTS`, `STRICT_VALIDATION_NOOP`, `RALPHIE_ENGINE_OUTPUT_TO_STDOUT`,
-`RALPHIE_STARTUP_OPERATIONAL_PROBE`,
-`RALPHIE_CONSENSUS_SCORE_THRESHOLD`,
-`RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED`,
-`RALPHIE_NOTIFICATIONS_ENABLED`, `RALPHIE_NOTIFY_TELEGRAM_ENABLED`,
-`TG_BOT_TOKEN`, `TG_CHAT_ID`,
-`RALPHIE_NOTIFY_DISCORD_ENABLED`, `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`,
-`RALPHIE_NOTIFY_TTS_ENABLED`, `CHUTES_API_KEY`,
-`RALPHIE_NOTIFY_TTS_STYLE`,
-`RALPHIE_NOTIFY_CHUTES_TTS_URL`, `RALPHIE_NOTIFY_CHUTES_VOICE`, `RALPHIE_NOTIFY_CHUTES_SPEED`,
-`RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS`, `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES`,
-`RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED`,
-`RALPHIE_AUTO_INIT_GIT_IF_MISSING`,
-`RALPHIE_AUTO_COMMIT_ON_PHASE_PASS`,
-`RALPHIE_AUTO_ENGINE_PREFERENCE`,
-`RALPHIE_CODEX_ENDPOINT`, `RALPHIE_CODEX_USE_RESPONSES_SCHEMA`, `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE`,
-`RALPHIE_CODEX_THINKING_OVERRIDE`, `RALPHIE_CLAUDE_ENDPOINT`, `RALPHIE_CLAUDE_THINKING_OVERRIDE`,
-`CODEX_MODEL`, `CLAUDE_MODEL`,
-`PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
-`PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
-`PHASE_NOOP_PROFILE`,
-`MAX_ITERATIONS`,
-`COMMAND_TIMEOUT_SECONDS`,
-`PHASE_WALLCLOCK_LIMIT_SECONDS`.
+For persistent behavior across runs, place overrides in `.ralphie/config.env`.
+Ralphie supports both CLI flags and environment/config keys, but this README intentionally avoids mirroring the full key surface to prevent drift.
 
-`RESUME_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_RESUME_REQUESTED=true|false` (default: true).
-`REBOOTSTRAP_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_REBOOTSTRAP_REQUESTED=true|false`.
+Operator guidance:
 
-`PHASE_NOOP_PROFILE` can be supplied via `.ralphie/config.env` as `RALPHIE_PHASE_NOOP_PROFILE=balanced|strict|read-only-first|custom`.
+- Use CLI flags for run-scoped overrides.
+- Use `.ralphie/config.env` for stable project/operator defaults.
+- Treat `./ralphie.sh --help` as the source of truth for supported options and compatibility aliases.
+- Use the startup config banner as the source of truth for effective values after config/env/CLI precedence.
 
-Phase no-op profile precedence: `--phase-noop-profile` / `RALPHIE_PHASE_NOOP_PROFILE` set the profile, and any explicitly passed `--phase-noop-policy-*` flags override profile defaults for that phase.
-
-### Engine, Inference, Model, and Thinking Controls (Optional)
-
-All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` uses built-in defaults.
-
-- `RALPHIE_ENGINE=auto` selects engine automatically.
-- `RALPHIE_AUTO_ENGINE_PREFERENCE=codex|claude` controls which engine AUTO prefers first.
-- `CODEX_MODEL` and `CLAUDE_MODEL` are optional. Leave empty to use each binary's configured/default model.
-- `RALPHIE_CODEX_ENDPOINT` is optional. Leave empty to avoid overriding `OPENAI_BASE_URL`.
-- `RALPHIE_CLAUDE_ENDPOINT` is optional. Leave empty to avoid overriding `ANTHROPIC_BASE_URL`.
-- `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=true|false` controls codex `--output-schema` usage.
-- `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE` is only used when schema mode is enabled.
-- `RALPHIE_CODEX_THINKING_OVERRIDE=none|minimal|low|medium|high|xhigh` controls codex reasoning effort.
-- `RALPHIE_CLAUDE_THINKING_OVERRIDE=none|off|low|medium|high|xhigh` controls claude thinking behavior.
-- `RALPHIE_AUTO_INIT_GIT_IF_MISSING=true|false` initializes a local git repository at startup when missing.
-- `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true|false` controls phase-gated local commits (no push).
-- `RALPHIE_STARTUP_OPERATIONAL_PROBE=true|false` controls startup operational self-checks.
-- `RALPHIE_CONSENSUS_SCORE_THRESHOLD=0..100` sets minimum average score for consensus and handoff pass.
-- `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true|false` controls whether the first-deploy engine override wizard should run.
-- `RALPHIE_NOTIFICATIONS_ENABLED=true|false` is the master notification toggle.
-- `RALPHIE_NOTIFY_TELEGRAM_ENABLED=true|false` enables Telegram bot notifications (requires `TG_BOT_TOKEN` and `TG_CHAT_ID`).
-- `RALPHIE_NOTIFY_DISCORD_ENABLED=true|false` enables Discord webhook notifications (requires `RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`).
-- `RALPHIE_NOTIFY_TTS_ENABLED=true|false` enables Chutes TTS voice notifications over Telegram/Discord (requires `CHUTES_API_KEY`).
-- `RALPHIE_NOTIFY_TTS_STYLE=standard|friendly|ralph_wiggum` controls the spoken narration format for TTS updates (this is text style, not a voice id).
-- `RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=N` suppresses duplicate notification events for `N` seconds.
-- `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=N` sends reminders every `N` minutes for sustained incident series.
-- `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true|false` controls whether the first-deploy notification wizard should run.
-
-Current defaults (developer-friendly, resumable):
-
-- `RALPHIE_ENGINE=auto`
-- `RALPHIE_AUTO_ENGINE_PREFERENCE=codex`
-- `COMMAND_TIMEOUT_SECONDS=600` (0 disables)
-- `SWARM_CONSENSUS_TIMEOUT=240`
-- `PHASE_COMPLETION_MAX_ATTEMPTS=2`
-- `PHASE_WALLCLOCK_LIMIT_SECONDS=0` (disabled)
-- `AUTO_PLAN_BACKFILL_ON_IDLE_BUILD=true`
-- `AUTO_INIT_GIT_IF_MISSING=true`
-- `AUTO_COMMIT_ON_PHASE_PASS=true`
-- `RALPHIE_CODEX_ENDPOINT=""`
-- `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false`
-- `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=""`
-- `CODEX_MODEL=""`
-- `RALPHIE_CODEX_THINKING_OVERRIDE=high`
-- `RALPHIE_CLAUDE_ENDPOINT=""`
-- `CLAUDE_MODEL=""`
-- `RALPHIE_CLAUDE_THINKING_OVERRIDE=high`
-
-Presets (set via `config.env` or env vars):
-- **CI_SAFE**: `PHASE_COMPLETION_MAX_ATTEMPTS=2`, `PHASE_WALLCLOCK_LIMIT_SECONDS=900`, `COMMAND_TIMEOUT_SECONDS=600`, `SWARM_CONSENSUS_TIMEOUT=240`.
-- **IMPATIENT**: `PHASE_COMPLETION_MAX_ATTEMPTS=1`, `PHASE_WALLCLOCK_LIMIT_SECONDS=300`, `COMMAND_TIMEOUT_SECONDS=300`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS=5`, `SWARM_CONSENSUS_TIMEOUT=180`.
-- **LEGACY_LENIENT**: `PHASE_COMPLETION_MAX_ATTEMPTS=3`, `PHASE_WALLCLOCK_LIMIT_SECONDS=0`, `COMMAND_TIMEOUT_SECONDS=0`, `SWARM_CONSENSUS_TIMEOUT=600`.
-- `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`
-- `RALPHIE_CONSENSUS_SCORE_THRESHOLD=70`
-- `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false`
-- `RALPHIE_NOTIFICATIONS_ENABLED=false`
-- `RALPHIE_NOTIFY_TELEGRAM_ENABLED=false`
-- `RALPHIE_NOTIFY_DISCORD_ENABLED=false`
-- `RALPHIE_NOTIFY_TTS_ENABLED=false`
-- `RALPHIE_NOTIFY_TTS_STYLE=ralph_wiggum`
-- `RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak`
-- `RALPHIE_NOTIFY_CHUTES_VOICE=am_puck`
-- `RALPHIE_NOTIFY_CHUTES_SPEED=1.24`
-- `RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90`
-- `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=10`
-- `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`
-
-Example `.ralphie/config.env`:
-
-```bash
-RALPHIE_ENGINE=auto
-RALPHIE_AUTO_ENGINE_PREFERENCE=codex
-RALPHIE_AUTO_INIT_GIT_IF_MISSING=true
-RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true
-
-RALPHIE_CODEX_ENDPOINT=
-RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false
-RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=
-CODEX_MODEL=
-RALPHIE_CODEX_THINKING_OVERRIDE=high
-
-RALPHIE_CLAUDE_ENDPOINT=
-CLAUDE_MODEL=
-RALPHIE_CLAUDE_THINKING_OVERRIDE=high
-RALPHIE_STARTUP_OPERATIONAL_PROBE=true
-RALPHIE_CONSENSUS_SCORE_THRESHOLD=70
-RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false
-
-RALPHIE_NOTIFICATIONS_ENABLED=false
-RALPHIE_NOTIFY_TELEGRAM_ENABLED=false
-TG_BOT_TOKEN=
-TG_CHAT_ID=
-RALPHIE_NOTIFY_DISCORD_ENABLED=false
-RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL=
-RALPHIE_NOTIFY_TTS_ENABLED=false
-RALPHIE_NOTIFY_TTS_STYLE=ralph_wiggum
-CHUTES_API_KEY=
-RALPHIE_NOTIFY_CHUTES_TTS_URL=https://chutes-kokoro.chutes.ai/speak
-RALPHIE_NOTIFY_CHUTES_VOICE=am_puck
-RALPHIE_NOTIFY_CHUTES_SPEED=1.24
-RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90
-RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=10
-RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false
-```
+Phase no-op profile precedence: explicit per-phase policy flags win over profile-derived policy values.
 
 Supported no-op profiles:
-- `balanced` (default): plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`.
+- `balanced` (default): plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`hard`, document=`soft`.
 - `strict`: all phases (`plan`, `build`, `test`, `refactor`, `lint`, `document`) `hard`.
 - `read-only-first`: plan=`none`, build=`hard`, test=`soft`, refactor=`none`, lint=`soft`, document=`none`.
 - `custom`: only explicit per-phase flags apply.
 
-Defaults:
-- `max-session-cycles`: `0` (unlimited)
-- `session token budget`: `0` (unlimited)
-- `session cost budget`: `0` (unlimited)
-- `max-phase-completion-attempts`: `3`
-- `max-consensus-routing-attempts`: `2`
-- `run-agent-max-attempts`: `3`
-- `auto-init-git-if-missing`: `true`
-- `auto-commit-on-phase-pass`: `true` (local commit only; no push)
-- `engine-output-to-stdout`: `true`
-- `SWARM_CONSENSUS_TIMEOUT`: `600`
-- `phase-noop default policy`: plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`soft`, document=`hard`
-- `resume`: enabled by default (`--resume`)
+Behavior summary:
+- `0` values for retry/routing budgets are treated as unlimited loops with stagnation guards.
+- Resume remains enabled by default (`--resume`).
+- Terminal routing to `done` is guarded: lint and document must each pass at least once before completion.
 
 ## Interrupt Controls
 
@@ -343,18 +205,18 @@ Build transitions require the snapshot and clean artifact checks to pass.
 - Ralphie never runs `git push`.
 - At startup, Ralphie checks whether a valid git commit identity is available (`git var GIT_COMMITTER_IDENT`) and records that status in resumable state.
 - If identity is missing, auto-commit is disabled for the run and a clear warning is shown up front.
-- After configuring identity (`git config user.name/user.email` or `GIT_COMMITTER_*` env vars), restart with `--resume`; Ralphie re-checks identity and auto-commit can resume.
-- If the run starts from a dirty worktree, the first phase commit may include those pre-existing local changes.
+- After configuring identity (`git config user.name/user.email` or equivalent git identity environment), restart with `--resume`; Ralphie re-checks identity and auto-commit can resume.
+- Commits are scoped to files touched in the current phase manifest delta; pre-staged index content is skipped to avoid accidental mixed commits.
 
 ## Git Repository Bootstrap
 
 - By default, Ralphie initializes a git repository at startup when one is missing.
-- This behavior is controlled by `RALPHIE_AUTO_INIT_GIT_IF_MISSING` (or `--auto-init-git-if-missing`).
+- This behavior is configurable through the startup options surface.
 - If git is unavailable and auto-init is enabled, startup fails early.
 
 ## Startup Operational Probe
 
-- When `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`, Ralphie validates core runtime dependencies before the loop starts.
+- When startup operational probing is enabled, Ralphie validates core runtime dependencies before the loop starts.
 - This includes command availability checks for core shell tooling and git workflow commands (`git`, `seq`, `cut`, `head`, `tail`, `wc`, `tr`, `tee`, `comm`, `cmp`, plus base shell utilities).
 - It also validates writable state storage and timeout wrapper behavior.
 
@@ -367,18 +229,18 @@ Build transitions require the snapshot and clean artifact checks to pass.
   - Claude endpoint/model/thinking settings
 - It only offers Codex/Claude override prompts for engines that passed health checks in that run.
 - Selections are persisted to `.ralphie/config.env`.
-- Completion state is stored in `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true` to avoid repeated prompting.
-- To re-run the wizard later, set `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false` in config.
+- Completion state is stored via a bootstrap sentinel to avoid repeated prompting.
+- To re-run the wizard later, reset that sentinel in `.ralphie/config.env` (see `--help` for the exact key).
 
 ## First-Deploy Notification Wizard
 
 - On first interactive run, Ralphie can prompt once for notification setup.
 - Supported channels:
-  - Telegram bot messages (`TG_BOT_TOKEN`, `TG_CHAT_ID`)
-  - Discord webhook (`RALPHIE_NOTIFY_DISCORD_WEBHOOK_URL`)
-  - Optional Chutes TTS voice attachments for Telegram/Discord (`CHUTES_API_KEY`)
+  - Telegram bot messages
+  - Discord webhook
+  - Optional Chutes TTS voice attachments for Telegram/Discord
 - The wizard includes quick setup guidance, auto-chat-id discovery for Telegram via `getUpdates`, and sends test messages during setup.
-- The wizard can also configure anti-spam cadence (`RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS`, `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES`).
+- The wizard can also configure anti-spam cadence for duplicate suppression and incident reminders.
 - Notification events are standardized:
   - `session_start`
   - `phase_decision`
@@ -388,8 +250,8 @@ Build transitions require the snapshot and clean artifact checks to pass.
   - `session_error`
 - Notification policy is high-signal only. Repeated incidents are suppressed and re-notified on reminder cadence.
 - Selections are persisted to `.ralphie/config.env`.
-- Completion state is stored in `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true`.
-- To re-run later, set `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=false`.
+- Completion state is stored via a bootstrap sentinel.
+- To re-run later, reset that sentinel in `.ralphie/config.env` (see `--help` for the exact key).
 
 ## Notification Reliability Guarantees
 
@@ -419,14 +281,9 @@ Ralphie now includes a GitHub Actions workflow at `.github/workflows/durability-
 
 ### Live smoke secrets/vars
 
-- Codex live smoke:
-  - Secret: `OPENAI_API_KEY`
-  - Optional secret: `OPENAI_BASE_URL`
-  - Optional repo variable: `LIVE_SMOKE_CODEX_MODEL` (default: `gpt-4.1-mini`)
-- Claude live smoke:
-  - Secret: `ANTHROPIC_API_KEY`
-  - Optional secret: `ANTHROPIC_BASE_URL`
-  - Optional repo variable: `LIVE_SMOKE_CLAUDE_MODEL` (default: `claude-3-5-haiku-latest`)
+- Configure provider API credentials for the engine you want to smoke-test.
+- Optional endpoint/model overrides are supported for both engines.
+- Use `.github/workflows/durability-ci.yml` and `tests/durability/run-live-smoke.sh --help` for the exact key names and current defaults.
 
 Live smoke is manual by default because it uses real provider credentials and can incur usage cost.
 
