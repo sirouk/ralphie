@@ -108,7 +108,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 
 ## Runtime Configuration (CLI + `config.env`)
 
-`ralphie.sh` supports explicit session/retry budgets plus optional cost accounting.
+`ralphie.sh` supports explicit session/retry budgets plus optional cost accounting. Defaults favor resumability and developer autonomy; CI presets are provided for stricter caps.
 
 ### CLI Flags
 
@@ -120,6 +120,7 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 - `--session-token-rate-cents-per-million N`  
 - `--session-cost-budget-cents N`  
 - `--max-phase-completion-attempts N`  
+- `--phase-wallclock-limit-seconds N`  
 - `--phase-completion-retry-delay-seconds N`  
 - `--phase-completion-retry-verbose true|false`  
 - `--max-consensus-routing-attempts N`  
@@ -168,7 +169,9 @@ Equivalent environment variables in `.ralphie/config.env`:
 `PHASE_NOOP_POLICY_PLAN`, `PHASE_NOOP_POLICY_BUILD`, `PHASE_NOOP_POLICY_TEST`,
 `PHASE_NOOP_POLICY_REFACTOR`, `PHASE_NOOP_POLICY_LINT`, `PHASE_NOOP_POLICY_DOCUMENT`,
 `PHASE_NOOP_PROFILE`,
-`MAX_ITERATIONS`.
+`MAX_ITERATIONS`,
+`COMMAND_TIMEOUT_SECONDS`,
+`PHASE_WALLCLOCK_LIMIT_SECONDS`.
 
 `RESUME_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_RESUME_REQUESTED=true|false` (default: true).
 `REBOOTSTRAP_REQUESTED` can be supplied via `.ralphie/config.env` as `RALPHIE_REBOOTSTRAP_REQUESTED=true|false`.
@@ -204,12 +207,17 @@ All inference-shaping knobs are optional. If you do not set them, `ralphie.sh` u
 - `RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=N` sends reminders every `N` minutes for sustained incident series.
 - `RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true|false` controls whether the first-deploy notification wizard should run.
 
-Current defaults are:
+Current defaults (developer-friendly, resumable):
 
 - `RALPHIE_ENGINE=auto`
 - `RALPHIE_AUTO_ENGINE_PREFERENCE=codex`
-- `RALPHIE_AUTO_INIT_GIT_IF_MISSING=true`
-- `RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=true`
+- `COMMAND_TIMEOUT_SECONDS=600` (0 disables)
+- `SWARM_CONSENSUS_TIMEOUT=240`
+- `PHASE_COMPLETION_MAX_ATTEMPTS=2`
+- `PHASE_WALLCLOCK_LIMIT_SECONDS=0` (disabled)
+- `AUTO_PLAN_BACKFILL_ON_IDLE_BUILD=true`
+- `AUTO_INIT_GIT_IF_MISSING=true`
+- `AUTO_COMMIT_ON_PHASE_PASS=true`
 - `RALPHIE_CODEX_ENDPOINT=""`
 - `RALPHIE_CODEX_USE_RESPONSES_SCHEMA=false`
 - `RALPHIE_CODEX_RESPONSES_SCHEMA_FILE=""`
@@ -218,6 +226,11 @@ Current defaults are:
 - `RALPHIE_CLAUDE_ENDPOINT=""`
 - `CLAUDE_MODEL=""`
 - `RALPHIE_CLAUDE_THINKING_OVERRIDE=high`
+
+Presets (set via `config.env` or env vars):
+- **CI_SAFE**: `PHASE_COMPLETION_MAX_ATTEMPTS=2`, `PHASE_WALLCLOCK_LIMIT_SECONDS=900`, `COMMAND_TIMEOUT_SECONDS=600`, `SWARM_CONSENSUS_TIMEOUT=240`.
+- **IMPATIENT**: `PHASE_COMPLETION_MAX_ATTEMPTS=1`, `PHASE_WALLCLOCK_LIMIT_SECONDS=300`, `COMMAND_TIMEOUT_SECONDS=300`, `PHASE_COMPLETION_RETRY_DELAY_SECONDS=5`, `SWARM_CONSENSUS_TIMEOUT=180`.
+- **LEGACY_LENIENT**: `PHASE_COMPLETION_MAX_ATTEMPTS=3`, `PHASE_WALLCLOCK_LIMIT_SECONDS=0`, `COMMAND_TIMEOUT_SECONDS=0`, `SWARM_CONSENSUS_TIMEOUT=600`.
 - `RALPHIE_STARTUP_OPERATIONAL_PROBE=true`
 - `RALPHIE_CONSENSUS_SCORE_THRESHOLD=70`
 - `RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=false`

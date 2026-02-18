@@ -341,7 +341,7 @@ is_allowed_config_key() {
         NOTIFY_TTS_ENABLED|NOTIFY_TTS_STYLE|NOTIFY_CHUTES_TTS_URL|NOTIFY_CHUTES_VOICE|NOTIFY_CHUTES_SPEED|\
         NOTIFY_EVENT_DEDUP_WINDOW_SECONDS|NOTIFY_INCIDENT_REMINDER_MINUTES|\
         NOTIFICATION_WIZARD_BOOTSTRAPPED|TG_BOT_TOKEN|TG_CHAT_ID|CHUTES_API_KEY|\
-        CODEX_ENGINE_CMD|CLAUDE_ENGINE_CMD|CODEX_MODEL|CLAUDE_MODEL)
+        CODEX_ENGINE_CMD|CLAUDE_ENGINE_CMD|CODEX_MODEL|CLAUDE_MODEL|PHASE_WALLCLOCK_LIMIT_SECONDS)
             return 0
             ;;
         *)
@@ -406,6 +406,12 @@ load_config_file_safe() {
         key="${BASH_REMATCH[1]}"
         raw_value="${BASH_REMATCH[2]}"
         raw_value="$(printf '%s' "$raw_value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+        # Backward-compatibility aliases for legacy config keys.
+        case "$key" in
+            AUTO_UPDATE_ENABLED) key="AUTO_UPDATE" ;;
+            AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD) key="AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" ;;
+        esac
 
         # Prevent config files from mutating critical shell interpreter behavior.
         case "$key" in
@@ -625,6 +631,7 @@ Core options:
   --session-token-rate-cents-per-million N  Cost rate in cents per million tokens
   --session-cost-budget-cents N           Max estimated cost budget in cents (0 = unlimited)
   --max-phase-completion-attempts N       Max completion-signal retries per phase
+  --phase-wallclock-limit-seconds N       Wall-clock limit per phase attempt (0 = disabled)
   --phase-completion-retry-delay-seconds N Delay in seconds between completion retries
   --phase-completion-retry-verbose bool   Verbose phase completion retry logging (true|false)
   --max-consensus-routing-attempts N      Max adaptive consensus reroutes per run (0=unlimited)
@@ -675,6 +682,7 @@ Additional runtime env knobs:
   RALPHIE_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS  Suppress duplicate notification events within N seconds
   RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES   Reminder cadence (minutes) for sustained incident series
   RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED  First-deploy notification setup prompt sentinel (true|false)
+  RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS     Wall-clock limit per phase attempt (seconds, 0=disabled)
 EOF
 }
 
@@ -740,19 +748,24 @@ parse_args() {
                 require_non_negative_int "SESSION_COST_BUDGET_CENTS" "$SESSION_COST_BUDGET_CENTS"
                 shift 2
                 ;;
-            --max-phase-completion-attempts)
-                PHASE_COMPLETION_MAX_ATTEMPTS="$(parse_arg_value "--max-phase-completion-attempts" "${2:-}")"
-                require_non_negative_int "PHASE_COMPLETION_MAX_ATTEMPTS" "$PHASE_COMPLETION_MAX_ATTEMPTS"
-                if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -eq 0 ]; then
-                    PHASE_COMPLETION_MAX_ATTEMPTS=1
-                fi
-                shift 2
-                ;;
-            --phase-completion-retry-delay-seconds)
-                PHASE_COMPLETION_RETRY_DELAY_SECONDS="$(parse_arg_value "--phase-completion-retry-delay-seconds" "${2:-}")"
-                require_non_negative_int "PHASE_COMPLETION_RETRY_DELAY_SECONDS" "$PHASE_COMPLETION_RETRY_DELAY_SECONDS"
-                shift 2
-                ;;
+        --max-phase-completion-attempts)
+            PHASE_COMPLETION_MAX_ATTEMPTS="$(parse_arg_value "--max-phase-completion-attempts" "${2:-}")"
+            require_non_negative_int "PHASE_COMPLETION_MAX_ATTEMPTS" "$PHASE_COMPLETION_MAX_ATTEMPTS"
+            if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -eq 0 ]; then
+                PHASE_COMPLETION_MAX_ATTEMPTS=1
+            fi
+            shift 2
+            ;;
+        --phase-wallclock-limit-seconds)
+            PHASE_WALLCLOCK_LIMIT_SECONDS="$(parse_arg_value "--phase-wallclock-limit-seconds" "${2:-}")"
+            require_non_negative_int "PHASE_WALLCLOCK_LIMIT_SECONDS" "$PHASE_WALLCLOCK_LIMIT_SECONDS"
+            shift 2
+            ;;
+        --phase-completion-retry-delay-seconds)
+            PHASE_COMPLETION_RETRY_DELAY_SECONDS="$(parse_arg_value "--phase-completion-retry-delay-seconds" "${2:-}")"
+            require_non_negative_int "PHASE_COMPLETION_RETRY_DELAY_SECONDS" "$PHASE_COMPLETION_RETRY_DELAY_SECONDS"
+            shift 2
+            ;;
             --phase-completion-retry-verbose)
                 PHASE_COMPLETION_RETRY_VERBOSE="$(parse_arg_value "--phase-completion-retry-verbose" "${2:-}")"
                 if ! is_bool_like "$PHASE_COMPLETION_RETRY_VERBOSE"; then
@@ -944,17 +957,17 @@ DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup w
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="true"
-DEFAULT_COMMAND_TIMEOUT_SECONDS=0 # 0 means disabled
-DEFAULT_MAX_ITERATIONS=0          # 0 means infinite
-DEFAULT_MAX_SESSION_CYCLES=0      # 0 means infinite across all phases
-DEFAULT_RALPHIE_QUALITY_LEVEL="standard" # minimal|standard|high
+DEFAULT_COMMAND_TIMEOUT_SECONDS=600         # CI-safe: 10m per command; set 0 to disable
+DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
+DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
+DEFAULT_RALPHIE_QUALITY_LEVEL="standard"    # minimal|standard|high
 DEFAULT_RUN_AGENT_MAX_ATTEMPTS=3
 DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=5
 DEFAULT_RUN_AGENT_RETRY_VERBOSE="true"
 DEFAULT_RESUME_REQUESTED="true"
 DEFAULT_REBOOTSTRAP_REQUESTED="false"
 DEFAULT_STRICT_VALIDATION_NOOP="false"
-DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3 # bounded retries per phase (0 = one attempt)
+DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=2     # CI-safe default; use 3+ for exploratory runs
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
 DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=2
@@ -978,7 +991,7 @@ DEFAULT_SESSION_TOKEN_BUDGET=0               # 0 means unlimited
 DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
 DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
-DEFAULT_SWARM_CONSENSUS_TIMEOUT=600             # max seconds for all reviewers in a consensus round
+DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus reviewers
 DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
 DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=3             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
@@ -997,6 +1010,11 @@ DEFAULT_NOTIFY_CHUTES_SPEED="1.24"
 DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90       # suppress duplicate notification events in a short window
 DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES=10        # reminder cadence for ongoing incident series
 DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED="false"  # first-deploy notification setup prompt sentinel
+DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS=0            # Default: disabled; enable for CI with presets below
+# Preset hints (not enforced):
+#   CI_SAFE: PHASE_COMPLETION_MAX_ATTEMPTS=2, PHASE_WALLCLOCK_LIMIT_SECONDS=900, COMMAND_TIMEOUT_SECONDS=600, SWARM_CONSENSUS_TIMEOUT=240
+#   IMPATIENT: PHASE_COMPLETION_MAX_ATTEMPTS=1, PHASE_WALLCLOCK_LIMIT_SECONDS=300, COMMAND_TIMEOUT_SECONDS=300, PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
+#   LEGACY_LENIENT: PHASE_COMPLETION_MAX_ATTEMPTS=3, PHASE_WALLCLOCK_LIMIT_SECONDS=0, COMMAND_TIMEOUT_SECONDS=0, SWARM_CONSENSUS_TIMEOUT=600
 
 # Load configuration from environment or file.
 COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-$DEFAULT_COMMAND_TIMEOUT_SECONDS}"
@@ -1004,6 +1022,7 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-$DEFAULT_MAX_ITERATIONS}"
 MAX_SESSION_CYCLES="${MAX_SESSION_CYCLES:-$DEFAULT_MAX_SESSION_CYCLES}"
 YOLO="${YOLO:-$DEFAULT_YOLO}"
 AUTO_UPDATE="${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE}"
+PHASE_WALLCLOCK_LIMIT_SECONDS="${PHASE_WALLCLOCK_LIMIT_SECONDS:-$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS}"
 RALPHIE_QUALITY_LEVEL="${RALPHIE_QUALITY_LEVEL:-$DEFAULT_RALPHIE_QUALITY_LEVEL}"
 SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
 CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
@@ -1094,6 +1113,7 @@ ENGINE_OUTPUT_TO_STDOUT="${RALPHIE_ENGINE_OUTPUT_TO_STDOUT:-$ENGINE_OUTPUT_TO_ST
 YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
+PHASE_WALLCLOCK_LIMIT_SECONDS="${RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS:-$PHASE_WALLCLOCK_LIMIT_SECONDS}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
 PHASE_NOOP_POLICY_PLAN="${RALPHIE_PHASE_NOOP_POLICY_PLAN:-$PHASE_NOOP_POLICY_PLAN}"
 PHASE_NOOP_POLICY_BUILD="${RALPHIE_PHASE_NOOP_POLICY_BUILD:-$PHASE_NOOP_POLICY_BUILD}"
@@ -1103,6 +1123,7 @@ PHASE_NOOP_POLICY_LINT="${RALPHIE_PHASE_NOOP_POLICY_LINT:-$PHASE_NOOP_POLICY_LIN
 PHASE_NOOP_POLICY_DOCUMENT="${RALPHIE_PHASE_NOOP_POLICY_DOCUMENT:-$PHASE_NOOP_POLICY_DOCUMENT}"
 STRICT_VALIDATION_NOOP="${RALPHIE_STRICT_VALIDATION_NOOP:-$STRICT_VALIDATION_NOOP}"
 AUTO_REPAIR_MARKDOWN_ARTIFACTS="${RALPHIE_AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$AUTO_REPAIR_MARKDOWN_ARTIFACTS}"
+AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${RALPHIE_AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD}"
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
 AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
 AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_PHASE_PASS}"
@@ -1172,6 +1193,12 @@ if ! is_bool_like "$AUTO_INIT_GIT_IF_MISSING"; then
     AUTO_INIT_GIT_IF_MISSING="$DEFAULT_AUTO_INIT_GIT_IF_MISSING"
 fi
 
+AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="$(to_lower "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD")"
+if ! is_bool_like "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD"; then
+    warn "Invalid AUTO_PLAN_BACKFILL_ON_IDLE_BUILD '$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD'. Falling back to 'true'."
+    AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="true"
+fi
+
 CODEX_USE_RESPONSES_SCHEMA="$(to_lower "$CODEX_USE_RESPONSES_SCHEMA")"
 if ! is_bool_like "$CODEX_USE_RESPONSES_SCHEMA"; then
     warn "Invalid CODEX_USE_RESPONSES_SCHEMA '$CODEX_USE_RESPONSES_SCHEMA'. Falling back to '$DEFAULT_CODEX_USE_RESPONSES_SCHEMA'."
@@ -1199,6 +1226,11 @@ esac
 if ! is_number "$CONSENSUS_SCORE_THRESHOLD" || [ "$CONSENSUS_SCORE_THRESHOLD" -lt 0 ] || [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
     warn "Invalid CONSENSUS_SCORE_THRESHOLD '$CONSENSUS_SCORE_THRESHOLD'. Falling back to '$DEFAULT_CONSENSUS_SCORE_THRESHOLD'."
     CONSENSUS_SCORE_THRESHOLD="$DEFAULT_CONSENSUS_SCORE_THRESHOLD"
+fi
+
+if ! is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" || [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -lt 0 ]; then
+    warn "Invalid PHASE_WALLCLOCK_LIMIT_SECONDS '$PHASE_WALLCLOCK_LIMIT_SECONDS'. Falling back to '$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS'."
+    PHASE_WALLCLOCK_LIMIT_SECONDS="$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS"
 fi
 
 ENGINE_OVERRIDES_BOOTSTRAPPED="$(to_lower "$ENGINE_OVERRIDES_BOOTSTRAPPED")"
@@ -1343,6 +1375,7 @@ LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
 PHASE_TRANSITION_HISTORY=()
+CONSENSUS_NO_ENGINES=false
 CURRENT_PHASE_ATTEMPT=1
 PHASE_ATTEMPT_IN_PROGRESS="false"
 AUTO_COMMIT_SESSION_ENABLED="false"
@@ -2659,6 +2692,34 @@ notification_event_is_high_signal() {
         notification_setup|session_start|phase_decision|phase_complete|phase_blocked|session_done|session_error) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+render_status_dashboard() {
+    local phase="$1"
+    local attempt="$2"
+    local attempt_max="$3"
+    local iter="$4"
+    local max_iter_display
+    local wallclock_display
+    local cmd_timeout_display
+    local consensus_to="$SWARM_CONSENSUS_TIMEOUT"
+
+    max_iter_display="$MAX_ITERATIONS"
+    [ "$MAX_ITERATIONS" -eq 0 ] && max_iter_display="inf"
+
+    wallclock_display="${PHASE_WALLCLOCK_LIMIT_SECONDS:-0}"
+    [ "$wallclock_display" -eq 0 ] && wallclock_display="inf"
+
+    cmd_timeout_display="${COMMAND_TIMEOUT_SECONDS:-0}"
+    [ "$cmd_timeout_display" -eq 0 ] && cmd_timeout_display="inf"
+
+    printf '\n'
+    printf '=== Ralphie Run Status ===\n'
+    printf 'Phase: %s | Attempt: %s/%s | Iteration: %s/%s | Session: %s\n' \
+        "$phase" "$attempt" "$attempt_max" "$iter" "$max_iter_display" "$SESSION_ID"
+    printf 'Engine (active/requested): %s (%s) | Consensus timeout: %ss | Phase wallclock: %ss | Cmd timeout: %ss\n' \
+        "$ACTIVE_CMD" "$ACTIVE_ENGINE" "$consensus_to" "$wallclock_display" "$cmd_timeout_display"
+    printf '%s\n' '---------------------------'
 }
 
 notification_reset_incident_series() {
@@ -4401,6 +4462,7 @@ run_swarm_consensus() {
     count="$(get_reviewer_count)"
     parallel="$(get_parallel_reviewer_count)"
     local base_stage="${stage%-gate}"
+    CONSENSUS_NO_ENGINES=false
     local default_next_phase
     local next_phase_vote_plan=0
     local next_phase_vote_build=0
@@ -4443,6 +4505,7 @@ run_swarm_consensus() {
         LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
         LAST_CONSENSUS_NEXT_PHASE_REASON="no healthy reviewer engines available"
         LAST_CONSENSUS_RESPONDED_VOTES=0
+        CONSENSUS_NO_ENGINES=true
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
         return 1
@@ -5383,6 +5446,17 @@ htmlcov/
 EOF
 }
 
+gitignore_has_entry() {
+    local gitignore_file="$1"
+    local entry="$2"
+    local escaped_entry
+
+    [ -f "$gitignore_file" ] || return 1
+    escaped_entry="$(printf '%s' "$entry" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')"
+    # Tolerate trailing inline comments so existing entries like "logs/ # keep" don't get duplicated.
+    grep -qE "^[[:space:]]*${escaped_entry}[[:space:]]*(#.*)?$" "$gitignore_file"
+}
+
 gitignore_missing_required_entries() {
     local gitignore_file="$PROJECT_DIR/.gitignore"
     local entry
@@ -5395,7 +5469,7 @@ gitignore_missing_required_entries() {
     required_entries="$(gitignore_required_entries)"
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
-        if ! grep -qxF "$entry" "$gitignore_file"; then
+        if ! gitignore_has_entry "$gitignore_file" "$entry"; then
             echo "$entry"
         fi
     done <<< "$required_entries"
@@ -5413,7 +5487,7 @@ ensure_gitignore_guardrails() {
     local entry
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
-        if ! grep -qxF "$entry" "$gitignore_file" 2>/dev/null; then
+        if ! gitignore_has_entry "$gitignore_file" "$entry"; then
             echo "$entry" >> "$gitignore_file"
             added=true
         fi
@@ -5750,6 +5824,9 @@ plan_is_semantically_actionable() {
     if grep -qiE '(^|#{1,6}[[:space:]]*)(validation|verification|acceptance criteria|success criteria|definition of done|readiness|qa|testing)\b|^[[:space:]]*(validation|verification|acceptance criteria|success criteria|definition of done|readiness|qa|testing)[[:space:]]*:' "$plan_file" 2>/dev/null; then
         has_validation=true
     fi
+    if ! is_true "$has_validation" && grep -qiE '^[[:space:]]*-[[:space:]]\[[ xX✓✔☑☒]\][[:space:]].*\b(validation|verify|verification|acceptance|success criteria|definition of done|readiness|qa|testing|test|smoke|gate)\b' "$plan_file" 2>/dev/null; then
+        has_validation=true
+    fi
     task_count="$(plan_task_count "$plan_file")"
 
     if is_true "$has_goal" && is_true "$has_validation" && [ "${task_count:-0}" -ge 1 ]; then
@@ -5765,7 +5842,7 @@ plan_task_count() {
         return 0
     fi
     local count
-    count="$(grep -cE '^[[:space:]]*([0-9]+\.[[:space:]]|-[[:space:]]\[[ x]\][[:space:]]|-[[:space:]](Run|Add|Update|Implement|Fix|Verify|Test|Document|Research|Decide|Refactor|Remove|Deprecate)[[:space:]])' "$plan_file" 2>/dev/null || true)"
+    count="$(grep -cE '^[[:space:]]*([0-9]+\.[[:space:]]|-[[:space:]]\[[ xX✓✔☑☒]\][[:space:]]|-[[:space:]](Run|Add|Update|Implement|Fix|Verify|Test|Document|Research|Decide|Refactor|Remove|Deprecate)[[:space:]])' "$plan_file" 2>/dev/null || true)"
     if ! is_number "$count"; then
         count="0"
     fi
@@ -5795,6 +5872,9 @@ write_gate_feedback() {
 
 check_build_prerequisites() {
     local -a missing=()
+    # Re-apply guardrails on every build-gate check so retries self-heal if
+    # prior phase edits removed required .gitignore entries.
+    ensure_gitignore_guardrails
     mapfile -t missing < <(collect_build_prerequisites_issues)
     if [ "${#missing[@]}" -gt 0 ]; then
         warn "Build prerequisites are incomplete:"
@@ -6274,6 +6354,9 @@ build_phase_prompt_with_feedback() {
                 [ -n "$blocker" ] || continue
                 echo "- $blocker"
             done
+            if [ "$phase" = "plan" ] && printf '%s\n' "${failures[@]}" | grep -qi "plan is not semantically actionable"; then
+                echo "- Plan gate contract: include an explicit Goal section, an Acceptance Criteria/Validation section, and actionable checklist tasks ('- [ ]')."
+            fi
         fi
         echo "- Preserve existing work; only generate missing/repairable artifacts and rerun this phase."
         echo "- Provide a concise completion recap with changed artifacts and residual risks."
@@ -6645,6 +6728,7 @@ main() {
                 CURRENT_PHASE_ATTEMPT="$phase_attempt"
                 PHASE_ATTEMPT_IN_PROGRESS="true"
                 save_state
+                phase_attempt_started_at="$(date +%s 2>/dev/null || echo 0)"
 
                 local lfile="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.log"
                 local ofile="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.out"
@@ -6656,7 +6740,7 @@ main() {
                 local bootstrap_prompt_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.bootstrap.prompt.md"
                 local previous_attempt_output_hash=""
                 local previous_attempt_output_file=""
-                local phase_noop_mode manifest_before_file manifest_after_file
+                local phase_noop_mode manifest_before_file manifest_after_file phase_attempt_started_at
                 phase_noop_mode="$(phase_noop_policy "$phase")"
                 local phase_delta_preview=""
                 local handoff_validator_prompt="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.prompt.md"
@@ -6672,6 +6756,7 @@ main() {
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
                 phase_capture_worktree_manifest "$manifest_before_file" || true
+                render_status_dashboard "$phase" "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS" "$ITERATION_COUNT"
 
                 if [ "$phase_attempt" -gt 1 ]; then
                     local previous_attempt_file="$COMPLETION_LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_$((phase_attempt - 1)).out"
@@ -6870,6 +6955,11 @@ main() {
 
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
                     cumulative_phase_failures=("${phase_failures[@]}")
+                    if is_true "$CONSENSUS_NO_ENGINES"; then
+                        warn "Consensus unavailable: no healthy reviewer engines; will retry within phase budget."
+                        log_reason_code "RB_CONSENSUS_ENGINES_UNAVAILABLE" "no healthy reviewer engines for consensus in phase $phase"
+                        notify_event "phase_blocked" "hold" "phase=$phase attempt=$phase_attempt reason=consensus_engines_unavailable" || true
+                    fi
                     if [ "$consensus_evaluated" = "true" ] && [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -gt 0 ] && is_phase_or_done "$LAST_CONSENSUS_NEXT_PHASE" && [ "$LAST_CONSENSUS_NEXT_PHASE" != "$phase" ]; then
                         local phase_route_candidate phase_route_candidate_index
                         phase_route_candidate="$LAST_CONSENSUS_NEXT_PHASE"
@@ -6889,6 +6979,38 @@ main() {
                         fi
                         phase_warnings+=("ignoring non-backtracking reroute recommendation '$phase_route_candidate' while phase '$phase' has unresolved failures")
                     fi
+                    if [ "$phase" = "build" ] && [ "$phase_route" != "true" ] && is_true "$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" && [ "$phase_attempt" -ge "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+                        local build_consensus_hold_detected="false"
+                        local build_hold_reason="consensus HOLD"
+                        # Prefer state booleans over log-string matching to detect consensus HOLD.
+                        if [ "$consensus_evaluated" != "true" ]; then
+                            build_consensus_hold_detected="true"
+                            build_hold_reason="consensus not run"
+                        elif is_true "$CONSENSUS_NO_ENGINES"; then
+                            build_consensus_hold_detected="true"
+                            build_hold_reason="no reviewer engines available"
+                        elif [ "$LAST_CONSENSUS_PASS" = "false" ]; then
+                            build_consensus_hold_detected="true"
+                            build_hold_reason="consensus HOLD"
+                        elif printf '%s\n' "${phase_failures[@]}" | grep -qiE '^consensus score/verdict: .*pass=false'; then
+                            build_consensus_hold_detected="true"
+                            build_hold_reason="consensus HOLD (log)"
+                        fi
+                        if is_true "$build_consensus_hold_detected"; then
+                            phase_next_target="plan"
+                            phase_route="true"
+                            phase_route_reason="auto-backtrack: build exhausted retries on $build_hold_reason; refreshing plan scope"
+                            phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                            write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting build -> plan"
+                            warn "Build retries exhausted ($build_hold_reason); auto-backtracking to plan for scope refresh."
+                            notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
+                            log_reason_code "RB_BUILD_AUTO_BACKTRACK_TO_PLAN" "$phase attempt $phase_attempt/$PHASE_COMPLETION_MAX_ATTEMPTS rerouted to plan after $build_hold_reason"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            CURRENT_PHASE_ATTEMPT=1
+                            save_state
+                            break
+                        fi
+                    fi
                     write_gate_feedback "$phase" "${phase_failures[@]}"
                     for issue in "${phase_failures[@]}"; do
                         warn "$issue"
@@ -6897,6 +7019,20 @@ main() {
                         for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                             info "note: $issue"
                         done
+                    fi
+                    if is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" && [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -gt 0 ] && is_number "${phase_attempt_started_at:-0}" && [ "${phase_attempt_started_at:-0}" -gt 0 ]; then
+                        local now elapsed
+                        now="$(date +%s 2>/dev/null || echo 0)"
+                        elapsed=$(( now - phase_attempt_started_at ))
+                        if [ "$elapsed" -ge "$PHASE_WALLCLOCK_LIMIT_SECONDS" ]; then
+                            warn "Phase $phase wall-clock guard (${PHASE_WALLCLOCK_LIMIT_SECONDS}s) tripped on attempt $phase_attempt; stopping retries."
+                            log_reason_code "RB_PHASE_WALLCLOCK_EXCEEDED" "phase $phase attempt $phase_attempt exceeded wall-clock limit ${PHASE_WALLCLOCK_LIMIT_SECONDS}s (elapsed ${elapsed}s)"
+                            notify_event "phase_blocked" "hold" "phase=$phase wallclock=${PHASE_WALLCLOCK_LIMIT_SECONDS}s elapsed=${elapsed}s" || true
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            save_state
+                            should_exit="true"
+                            break
+                        fi
                     fi
                     log_reason_code "RB_PHASE_RETRYABLE_FAIL" "$phase attempt $phase_attempt/$PHASE_COMPLETION_MAX_ATTEMPTS: ${phase_failures[*]}"
 
