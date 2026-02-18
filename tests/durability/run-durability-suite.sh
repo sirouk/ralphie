@@ -94,7 +94,9 @@ run_case() {
     local rc=0
     TOTAL_COUNT=$((TOTAL_COUNT + 1))
     info "Running: $name"
-    if ! "$@"; then
+    if "$@"; then
+        rc=0
+    else
         rc=$?
     fi
 
@@ -395,6 +397,461 @@ EOF
         run_stack_discovery
         [ -f "$STACK_SNAPSHOT_FILE" ]
         grep -q '^## Project Stack Ranking' "$STACK_SNAPSHOT_FILE"
+    )
+}
+
+test_unit_bootstrap_dense_reflection_and_personas() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local token dense_line dense_line_manual
+        local -a persona_lines=()
+        local -a persona_assessments=()
+        local -a persona_blockers=()
+        local -a missing_loose=()
+        local -a missing_strict=()
+        local assessment
+        local tmpd_valid
+
+        token="$(bootstrap_dense_token $'Goal line\nwith\tspaces' "fallback" 30)"
+        [ "$token" = "Goal_line_with_spaces" ]
+        [ "$(bootstrap_dense_token "" "fallback_value" 30)" = "fallback_value" ]
+
+        dense_line="$(bootstrap_dense_reflection_line "existing" "Ship API quickly" "no cloud vendor lockin" "phase gates pass" "true" "svc+cli" "go+postgres")"
+        printf '%s' "$dense_line" | grep -q 'g=Ship_API_quickly'
+        printf '%s' "$dense_line" | grep -q '|tp=existing|'
+        printf '%s' "$dense_line" | grep -q '|ar=svc+cli|'
+        printf '%s' "$dense_line" | grep -q '|st=go+postgres|'
+        printf '%s' "$dense_line" | grep -q '|b=ab$'
+
+        dense_line_manual="$(bootstrap_dense_reflection_line "existing" "Ship API quickly" "no cloud vendor lockin" "phase gates pass" "false" "svc+cli" "go+postgres")"
+        printf '%s' "$dense_line_manual" | grep -q '|b=mb$'
+
+        mapfile -t persona_lines < <(bootstrap_persona_feedback_lines "existing" "Ship API quickly" "no cloud vendor lockin" "phase gates pass" "true" "svc+cli" "go+postgres")
+        [ "${#persona_lines[@]}" -eq 6 ]
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Architect>'
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Skeptic>'
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Execution>'
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Safety>'
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Operations>'
+        printf '%s\n' "${persona_lines[@]}" | grep -q '^Quality>'
+
+        mapfile -t missing_loose < <(
+            bootstrap_schema_missing_fields_from_values \
+                "existing" \
+                "brief" \
+                "No explicit constraints provided." \
+                "No explicit success criteria provided." \
+                "true" \
+                "No explicit structure preference provided." \
+                "No explicit technology preference provided." \
+                "true" \
+                "false"
+        )
+        [ "${#missing_loose[@]}" -eq 0 ]
+
+        mapfile -t missing_strict < <(
+            bootstrap_schema_missing_fields_from_values \
+                "existing" \
+                "brief" \
+                "No explicit constraints provided." \
+                "No explicit success criteria provided." \
+                "true" \
+                "No explicit structure preference provided." \
+                "No explicit technology preference provided." \
+                "true" \
+                "true"
+        )
+        printf '%s\n' "${missing_strict[@]}" | grep -q '^constraints$'
+        printf '%s\n' "${missing_strict[@]}" | grep -q '^success_criteria$'
+        printf '%s\n' "${missing_strict[@]}" | grep -q '^architecture_shape$'
+        printf '%s\n' "${missing_strict[@]}" | grep -q '^technology_choices$'
+
+        mapfile -t persona_assessments < <(
+            bootstrap_persona_assessment_lines \
+                "existing" \
+                "brief" \
+                "No explicit constraints provided." \
+                "No explicit success criteria provided." \
+                "true" \
+                "No explicit structure preference provided." \
+                "No explicit technology preference provided."
+        )
+        [ "${#persona_assessments[@]}" -eq 6 ]
+        for assessment in "${persona_assessments[@]}"; do
+            printf '%s' "$assessment" | grep -q 'persona='
+            printf '%s' "$assessment" | grep -q 'risk='
+            printf '%s' "$assessment" | grep -q 'confidence='
+            printf '%s' "$assessment" | grep -q 'blocking='
+            printf '%s' "$assessment" | grep -q 'recommendation='
+            [ -n "$(bootstrap_persona_field "$assessment" "persona" "")" ]
+        done
+        mapfile -t persona_blockers < <(bootstrap_persona_blocking_names "${persona_assessments[@]}")
+        [ "${#persona_blockers[@]}" -gt 0 ]
+
+        tmpd_valid="$(mktemp -d /tmp/ralphie-bootstrap-validity-unit.XXXXXX)"
+        PROJECT_BOOTSTRAP_FILE="$tmpd_valid/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$tmpd_valid/project-goals.md"
+
+        write_bootstrap_context_file \
+            "existing" \
+            "brief" \
+            "true" \
+            "true" \
+            "No explicit constraints provided." \
+            "No explicit success criteria provided." \
+            "false" \
+            "" \
+            "No explicit structure preference provided." \
+            "No explicit technology preference provided."
+        if bootstrap_context_is_valid; then
+            return 1
+        fi
+
+        write_bootstrap_context_file \
+            "existing" \
+            "brief" \
+            "true" \
+            "false" \
+            "No explicit constraints provided." \
+            "No explicit success criteria provided." \
+            "false" \
+            "" \
+            "No explicit structure preference provided." \
+            "No explicit technology preference provided."
+        bootstrap_context_is_valid
+    )
+}
+
+test_unit_bootstrap_alignment_loop_modify_rerun_dismiss() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd queue_file
+
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-loop-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        CONFIG_FILE="$CONFIG_DIR/config.env"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+        queue_file="$tmpd/read-queue.txt"
+        cat > "$queue_file" <<'EOF'
+m
+tech
+r
+d
+EOF
+
+        REBOOTSTRAP_REQUESTED=true
+
+        is_tty_input_available() { return 0; }
+        prompt_yes_no() {
+            local prompt="$1"
+            case "$prompt" in
+                "Is this a new project (no established implementation yet)?") echo "false" ;;
+                "Paste a project goals document/URL block now?") echo "false" ;;
+                "Proceed automatically from PLAN -> BUILD when all gates pass") echo "true" ;;
+                *) echo "false" ;;
+            esac
+            return 0
+        }
+        prompt_optional_line() {
+            local prompt="$1"
+            local default="${2:-}"
+            case "$prompt" in
+                "What is the primary objective for this session (single line)") echo "ship_bootstrap_alignment" ;;
+                "Key constraints or non-goals (single line, optional)") echo "no_vendor_lockin" ;;
+                "Success criteria / definition of done (single line, optional)") echo "plan_solid_and_agreed" ;;
+                "Project goals document URL (optional)") echo "https://example.test/goals" ;;
+                "Preferred project structure / architecture (single line, optional)") echo "svc_cli_modular" ;;
+                "Preferred technology choices (single line, optional)") echo "python_fastapi_sqlite" ;;
+                "Technology choices (single line)") echo "go_gin_postgres" ;;
+                "Add or correct context before rerun (optional)") echo "extra_loop_context" ;;
+                *) echo "$default" ;;
+            esac
+        }
+        prompt_read_line() {
+            local _prompt="$1"
+            local default="${2:-}"
+            local value="$default"
+            if [ -f "$queue_file" ] && [ -s "$queue_file" ]; then
+                value="$(head -n 1 "$queue_file")"
+                tail -n +2 "$queue_file" > "${queue_file}.tmp" || true
+                mv "${queue_file}.tmp" "$queue_file"
+            fi
+            echo "$value"
+        }
+        prompt_multiline_block() {
+            local _prompt="$1"
+            local default="${2:-}"
+            printf '%s' "$default"
+        }
+
+        ensure_project_bootstrap
+
+        [ -f "$PROJECT_BOOTSTRAP_FILE" ]
+        [ -f "$PROJECT_GOALS_FILE" ]
+        grep -q '^project_type: existing$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^build_consent: true$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^objective: ship_bootstrap_alignment$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^constraints: no_vendor_lockin$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^success_criteria: plan_solid_and_agreed$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^architecture_shape: svc_cli_modular$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^technology_choices: go_gin_postgres$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^interactive_prompted: true$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q 'extra_loop_context' "$PROJECT_GOALS_FILE"
+    )
+}
+
+test_unit_bootstrap_accept_gate_and_no_change_guard() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd action_queue_file clarifier_queue_file
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-guard-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        CONFIG_FILE="$CONFIG_DIR/config.env"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        action_queue_file="$tmpd/action-queue.txt"
+        clarifier_queue_file="$tmpd/clarifier-queue.txt"
+        cat > "$action_queue_file" <<'EOF'
+a
+r
+r
+d
+EOF
+        cat > "$clarifier_queue_file" <<'EOF'
+guarded_objective_round1
+avoid_vendor_lockin_round1
+done_signal_round1
+guarded_objective_round2
+avoid_vendor_lockin_round2
+done_signal_round2
+EOF
+
+        REBOOTSTRAP_REQUESTED=true
+
+        is_tty_input_available() { return 0; }
+        prompt_yes_no() {
+            local prompt="$1"
+            case "$prompt" in
+                "Is this a new project (no established implementation yet)?") echo "false" ;;
+                "Paste a project goals document/URL block now?") echo "false" ;;
+                "Proceed automatically from PLAN -> BUILD when all gates pass") echo "true" ;;
+                *) echo "false" ;;
+            esac
+            return 0
+        }
+        prompt_optional_line() {
+            local prompt="$1"
+            local default="${2:-}"
+            local value=""
+            case "$prompt" in
+                "What is the primary objective for this session (single line)") echo "brief" ;;
+                "Key constraints or non-goals (single line, optional)") echo "No explicit constraints provided." ;;
+                "Success criteria / definition of done (single line, optional)") echo "starter" ;;
+                "Project goals document URL (optional)") echo "https://example.test/goals" ;;
+                "Preferred project structure / architecture (single line, optional)") echo "svc_cli_modular" ;;
+                "Preferred technology choices (single line, optional)") echo "bash_tools" ;;
+                "Add or correct context before rerun (optional)") echo "" ;;
+                "Clarify primary user/workflow (single line)"|"Clarify highest risk/non-goal (single line)"|"Clarify measurable done signal (single line)")
+                    value="$default"
+                    if [ -f "$clarifier_queue_file" ] && [ -s "$clarifier_queue_file" ]; then
+                        value="$(head -n 1 "$clarifier_queue_file")"
+                        tail -n +2 "$clarifier_queue_file" > "${clarifier_queue_file}.tmp" || true
+                        mv "${clarifier_queue_file}.tmp" "$clarifier_queue_file"
+                    fi
+                    echo "$value"
+                    ;;
+                *)
+                    echo "$default"
+                    ;;
+            esac
+        }
+        prompt_read_line() {
+            local _prompt="$1"
+            local default="${2:-}"
+            local value="$default"
+            if [ -f "$action_queue_file" ] && [ -s "$action_queue_file" ]; then
+                value="$(head -n 1 "$action_queue_file")"
+                tail -n +2 "$action_queue_file" > "${action_queue_file}.tmp" || true
+                mv "${action_queue_file}.tmp" "$action_queue_file"
+            fi
+            echo "$value"
+        }
+        prompt_multiline_block() {
+            local _prompt="$1"
+            local default="${2:-}"
+            printf '%s' "$default"
+        }
+
+        ensure_project_bootstrap
+
+        [ -f "$PROJECT_BOOTSTRAP_FILE" ]
+        grep -q '^objective: guarded_objective_round2$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^constraints: avoid_vendor_lockin_round2$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^success_criteria: done_signal_round2$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^architecture_shape: svc_cli_modular$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^technology_choices: bash_tools$' "$PROJECT_BOOTSTRAP_FILE"
+    )
+}
+
+test_unit_bootstrap_accept_blocked_no_change_guard() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd action_queue_file clarifier_queue_file
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-accept-nochange-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        CONFIG_FILE="$CONFIG_DIR/config.env"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        action_queue_file="$tmpd/action-queue.txt"
+        clarifier_queue_file="$tmpd/clarifier-queue.txt"
+        cat > "$action_queue_file" <<'EOF'
+a
+a
+d
+EOF
+        cat > "$clarifier_queue_file" <<'EOF'
+__KEEP_DEFAULT__
+__KEEP_DEFAULT__
+__KEEP_DEFAULT__
+__KEEP_DEFAULT__
+__KEEP_DEFAULT__
+__KEEP_DEFAULT__
+guard_fixed_objective
+guard_fixed_constraints
+guard_fixed_success
+EOF
+
+        REBOOTSTRAP_REQUESTED=true
+
+        is_tty_input_available() { return 0; }
+        prompt_yes_no() {
+            local prompt="$1"
+            case "$prompt" in
+                "Is this a new project (no established implementation yet)?") echo "false" ;;
+                "Paste a project goals document/URL block now?") echo "false" ;;
+                "Proceed automatically from PLAN -> BUILD when all gates pass") echo "true" ;;
+                *) echo "false" ;;
+            esac
+            return 0
+        }
+        prompt_optional_line() {
+            local prompt="$1"
+            local default="${2:-}"
+            case "$prompt" in
+                "What is the primary objective for this session (single line)") echo "guard_base_objective" ;;
+                "Key constraints or non-goals (single line, optional)") echo "No explicit constraints provided." ;;
+                "Success criteria / definition of done (single line, optional)") echo "guard_base_success" ;;
+                "Project goals document URL (optional)") echo "https://example.test/goals" ;;
+                "Preferred project structure / architecture (single line, optional)") echo "svc_cli_modular" ;;
+                "Preferred technology choices (single line, optional)") echo "bash_tools" ;;
+                "Clarify primary user/workflow (single line)"|"Clarify highest risk/non-goal (single line)"|"Clarify measurable done signal (single line)")
+                    local value="$default"
+                    if [ -f "$clarifier_queue_file" ] && [ -s "$clarifier_queue_file" ]; then
+                        value="$(head -n 1 "$clarifier_queue_file")"
+                        tail -n +2 "$clarifier_queue_file" > "${clarifier_queue_file}.tmp" || true
+                        mv "${clarifier_queue_file}.tmp" "$clarifier_queue_file"
+                    fi
+                    if [ "$value" = "__KEEP_DEFAULT__" ]; then
+                        value="$default"
+                    fi
+                    echo "$value"
+                    ;;
+                *)
+                    echo "$default"
+                    ;;
+            esac
+        }
+        prompt_read_line() {
+            local _prompt="$1"
+            local default="${2:-}"
+            local value="$default"
+            if [ -f "$action_queue_file" ] && [ -s "$action_queue_file" ]; then
+                value="$(head -n 1 "$action_queue_file")"
+                tail -n +2 "$action_queue_file" > "${action_queue_file}.tmp" || true
+                mv "${action_queue_file}.tmp" "$action_queue_file"
+            fi
+            echo "$value"
+        }
+        prompt_multiline_block() {
+            local _prompt="$1"
+            local default="${2:-}"
+            printf '%s' "$default"
+        }
+
+        ensure_project_bootstrap
+
+        [ -f "$PROJECT_BOOTSTRAP_FILE" ]
+        grep -q '^objective: guard_fixed_objective$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^constraints: guard_fixed_constraints$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^success_criteria: guard_fixed_success$' "$PROJECT_BOOTSTRAP_FILE"
+    )
+}
+
+test_unit_append_bootstrap_context_includes_arch_and_tech() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd source_prompt target_prompt
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-prompt-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        write_bootstrap_context_file \
+            "existing" \
+            "tight_scope_objective" \
+            "true" \
+            "true" \
+            "no_rewrite" \
+            "all_gates_green" \
+            "true" \
+            "https://example.test/goals" \
+            "hex_arch" \
+            "rust_axum_postgres"
+        write_project_goals_file "goal block line"
+
+        source_prompt="$tmpd/source-plan.md"
+        target_prompt="$tmpd/target-plan.md"
+        cat > "$source_prompt" <<'EOF'
+# Base Prompt
+EOF
+
+        append_bootstrap_context_to_plan_prompt "$source_prompt" "$target_prompt"
+
+        [ -f "$target_prompt" ]
+        grep -q 'Preferred architecture / structure: hex_arch' "$target_prompt"
+        grep -q 'Preferred technology choices: rust_axum_postgres' "$target_prompt"
+        grep -q 'Project Goals Document (User-Provided)' "$target_prompt"
     )
 }
 
@@ -718,6 +1175,11 @@ main() {
     run_case "unit_tts_narration_styles" test_unit_tts_narration_styles
     run_case "unit_notify_discord_text_fallback_on_tts_failure" test_unit_notify_discord_text_fallback_on_tts_failure
     run_case "unit_stack_discovery" test_unit_stack_discovery
+    run_case "unit_bootstrap_dense_reflection_and_personas" test_unit_bootstrap_dense_reflection_and_personas
+    run_case "unit_bootstrap_alignment_loop_modify_rerun_dismiss" test_unit_bootstrap_alignment_loop_modify_rerun_dismiss
+    run_case "unit_bootstrap_accept_gate_and_no_change_guard" test_unit_bootstrap_accept_gate_and_no_change_guard
+    run_case "unit_bootstrap_accept_blocked_no_change_guard" test_unit_bootstrap_accept_blocked_no_change_guard
+    run_case "unit_append_bootstrap_context_includes_arch_and_tech" test_unit_append_bootstrap_context_includes_arch_and_tech
     run_case "integration_happy_path" test_integration_happy_path
     run_case "integration_forward_reroute_guard" test_integration_forward_reroute_guard
     run_case "integration_resume_done_short_circuit" test_integration_resume_done_short_circuit

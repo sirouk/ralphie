@@ -1817,27 +1817,150 @@ bootstrap_prompt_value() {
     ' "$PROJECT_BOOTSTRAP_FILE"
 }
 
-bootstrap_context_is_valid() {
-    local project_type objective build_consent interactive_prompted
-    project_type="$(bootstrap_prompt_value "project_type" 2>/dev/null || true)"
-    objective="$(bootstrap_prompt_value "objective" 2>/dev/null || true)"
-    build_consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null || true)"
-    interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+bootstrap_required_text_value_is_set() {
+    local value="${1:-}"
+    local normalized=""
 
-    if [ -z "$project_type" ] || [ -z "$objective" ] || [ -z "$build_consent" ] || [ -z "$interactive_prompted" ]; then
-        return 1
-    fi
+    normalized="$(sanitize_text_for_log "$value")"
+    [ -n "$normalized" ] || return 1
+
+    case "$(to_lower "$normalized")" in
+        no\ explicit*|unspecified*|none|none\ stated|na|n/a|-)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+bootstrap_text_value_is_present() {
+    local value="${1:-}"
+    local normalized=""
+    normalized="$(sanitize_text_for_log "$value")"
+    [ -n "$normalized" ]
+}
+
+bootstrap_schema_missing_fields_from_values() {
+    local project_type="${1:-}"
+    local objective="${2:-}"
+    local constraints="${3:-}"
+    local success_criteria="${4:-}"
+    local build_consent="${5:-}"
+    local architecture_shape="${6:-}"
+    local technology_choices="${7:-}"
+    local interactive_prompted="${8:-}"
+    local strict_mode="${9:-false}"
+
     case "$project_type" in
         new|existing) ;;
-        *) return 1 ;;
+        *) echo "project_type" ;;
     esac
-    if ! is_bool_like "$build_consent"; then
-        return 1
+
+    if is_true "$strict_mode"; then
+        bootstrap_required_text_value_is_set "$objective" || echo "objective"
+        bootstrap_required_text_value_is_set "$constraints" || echo "constraints"
+        bootstrap_required_text_value_is_set "$success_criteria" || echo "success_criteria"
+        bootstrap_required_text_value_is_set "$architecture_shape" || echo "architecture_shape"
+        bootstrap_required_text_value_is_set "$technology_choices" || echo "technology_choices"
+    else
+        bootstrap_text_value_is_present "$objective" || echo "objective"
+        bootstrap_text_value_is_present "$constraints" || echo "constraints"
+        bootstrap_text_value_is_present "$success_criteria" || echo "success_criteria"
+        bootstrap_text_value_is_present "$architecture_shape" || echo "architecture_shape"
+        bootstrap_text_value_is_present "$technology_choices" || echo "technology_choices"
     fi
-    if ! is_bool_like "$interactive_prompted"; then
-        return 1
+    is_bool_like "$build_consent" || echo "build_consent"
+
+    if [ -n "$interactive_prompted" ]; then
+        is_bool_like "$interactive_prompted" || echo "interactive_prompted"
     fi
-    return 0
+}
+
+bootstrap_schema_missing_fields_from_file() {
+    local strict_mode="${1:-false}"
+    local project_type objective constraints success_criteria build_consent architecture_shape technology_choices interactive_prompted
+
+    project_type="$(bootstrap_prompt_value "project_type" 2>/dev/null || true)"
+    objective="$(bootstrap_prompt_value "objective" 2>/dev/null || true)"
+    constraints="$(bootstrap_prompt_value "constraints" 2>/dev/null || true)"
+    success_criteria="$(bootstrap_prompt_value "success_criteria" 2>/dev/null || true)"
+    build_consent="$(bootstrap_prompt_value "build_consent" 2>/dev/null || true)"
+    architecture_shape="$(bootstrap_prompt_value "architecture_shape" 2>/dev/null || true)"
+    technology_choices="$(bootstrap_prompt_value "technology_choices" 2>/dev/null || true)"
+    interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+
+    bootstrap_schema_missing_fields_from_values \
+        "$project_type" \
+        "$objective" \
+        "$constraints" \
+        "$success_criteria" \
+        "$build_consent" \
+        "$architecture_shape" \
+        "$technology_choices" \
+        "$interactive_prompted" \
+        "$strict_mode"
+}
+
+bootstrap_alignment_state_fingerprint() {
+    local project_type="${1:-}"
+    local objective="${2:-}"
+    local constraints="${3:-}"
+    local success_criteria="${4:-}"
+    local build_consent="${5:-}"
+    local architecture_shape="${6:-}"
+    local technology_choices="${7:-}"
+    local goals_text="${8:-}"
+    local payload checksum
+
+    payload="$(
+        cat <<EOF
+project_type=$project_type
+objective=$objective
+constraints=$constraints
+success_criteria=$success_criteria
+build_consent=$build_consent
+architecture_shape=$architecture_shape
+technology_choices=$technology_choices
+goals_text=$goals_text
+EOF
+    )"
+
+    if checksum="$(printf '%s' "$payload" | sha256_stream_sum 2>/dev/null)"; then
+        printf '%s' "$checksum"
+        return 0
+    fi
+
+    printf '%s' "$(bootstrap_dense_token "$payload" "state" 96)"
+}
+
+bootstrap_clamp_percent() {
+    local value="${1:-0}"
+    if ! is_number "$value"; then
+        echo 0
+        return 0
+    fi
+    if [ "$value" -lt 0 ]; then
+        echo 0
+        return 0
+    fi
+    if [ "$value" -gt 100 ]; then
+        echo 100
+        return 0
+    fi
+    echo "$value"
+}
+
+bootstrap_context_is_valid() {
+    local interactive_prompted=""
+    local strict_mode="false"
+    local -a missing_fields=()
+
+    interactive_prompted="$(bootstrap_prompt_value "interactive_prompted" 2>/dev/null || true)"
+    if is_true "$interactive_prompted"; then
+        strict_mode="true"
+    fi
+
+    mapfile -t missing_fields < <(bootstrap_schema_missing_fields_from_file "$strict_mode")
+    [ "${#missing_fields[@]}" -eq 0 ]
 }
 
 write_bootstrap_context_file() {
@@ -1849,6 +1972,8 @@ write_bootstrap_context_file() {
     local success_criteria="${6:-All required phase gates pass and deliverables match project objectives.}"
     local goals_doc_present="${7:-false}"
     local goals_doc_url="${8:-}"
+    local architecture_shape="${9:-No explicit structure preference provided.}"
+    local technology_choices="${10:-No explicit technology preference provided.}"
 
     cat > "$PROJECT_BOOTSTRAP_FILE" <<EOF
 # Ralphie Project Bootstrap
@@ -1857,6 +1982,8 @@ build_consent: $build_consent
 objective: $objective
 constraints: $constraints
 success_criteria: $success_criteria
+architecture_shape: $architecture_shape
+technology_choices: $technology_choices
 goals_document_present: $goals_doc_present
 goals_document_url: $goals_doc_url
 interactive_prompted: $interactive_source
@@ -1879,8 +2006,235 @@ $goals_text
 EOF
 }
 
+bootstrap_dense_token() {
+    local raw_value="${1:-}"
+    local fallback="${2:-na}"
+    local max_len="${3:-42}"
+    local value=""
+
+    if ! is_number "$max_len" || [ "$max_len" -lt 8 ]; then
+        max_len=42
+    fi
+
+    value="$(sanitize_text_for_log "$raw_value")"
+    [ -n "$value" ] || value="$fallback"
+    value="$(printf '%s' "$value" | sed 's/[[:space:]]\+/_/g')"
+    if [ "${#value}" -gt "$max_len" ]; then
+        value="${value:0:$max_len}"
+    fi
+    printf '%s' "$value"
+}
+
+bootstrap_dense_reflection_line() {
+    local project_type="${1:-existing}"
+    local objective="${2:-}"
+    local constraints="${3:-}"
+    local success_criteria="${4:-}"
+    local build_consent="${5:-true}"
+    local architecture_shape="${6:-}"
+    local technology_choices="${7:-}"
+    local build_mode="mb"
+
+    if is_true "$build_consent"; then
+        build_mode="ab"
+    fi
+
+    printf 'g=%s|tp=%s|ok=%s|ng=%s|ar=%s|st=%s|b=%s' \
+        "$(bootstrap_dense_token "$objective" "unspecified_goal" 64)" \
+        "$(bootstrap_dense_token "$project_type" "existing" 12)" \
+        "$(bootstrap_dense_token "$success_criteria" "unspecified_done" 56)" \
+        "$(bootstrap_dense_token "$constraints" "none" 52)" \
+        "$(bootstrap_dense_token "$architecture_shape" "unspecified_arch" 42)" \
+        "$(bootstrap_dense_token "$technology_choices" "unspecified_tech" 42)" \
+        "$build_mode"
+}
+
+bootstrap_persona_assessment_lines() {
+    local project_type="${1:-existing}"
+    local objective="${2:-}"
+    local constraints="${3:-}"
+    local success_criteria="${4:-}"
+    local build_consent="${5:-true}"
+    local architecture_shape="${6:-}"
+    local technology_choices="${7:-}"
+    local -a missing_fields=()
+    local missing_count=0
+    local missing_csv="none"
+    local obj_token constr_token success_token
+    local obj_len constr_len success_len
+    local base_risk=20
+    local has_missing_objective=false
+    local has_missing_constraints=false
+    local has_missing_success=false
+    local has_missing_arch=false
+    local has_missing_tech=false
+    local missing_objective_weight=0
+    local missing_constraints_weight=0
+    local missing_success_weight=0
+    local missing_arch_weight=0
+    local missing_tech_weight=0
+    local field
+    local common_unknowns="none"
+
+    mapfile -t missing_fields < <(
+        bootstrap_schema_missing_fields_from_values \
+            "$project_type" \
+            "$objective" \
+            "$constraints" \
+            "$success_criteria" \
+            "$build_consent" \
+            "$architecture_shape" \
+            "$technology_choices" \
+            "" \
+            "true"
+    )
+    missing_count="${#missing_fields[@]}"
+    if [ "$missing_count" -gt 0 ]; then
+        missing_csv=""
+        for field in "${missing_fields[@]}"; do
+            [ -n "$field" ] || continue
+            missing_csv="${missing_csv}${missing_csv:+,}${field}"
+        done
+        [ -n "$missing_csv" ] || missing_csv="none"
+    fi
+
+    case ",$missing_csv," in *",objective,"*) has_missing_objective=true ;; esac
+    case ",$missing_csv," in *",constraints,"*) has_missing_constraints=true ;; esac
+    case ",$missing_csv," in *",success_criteria,"*) has_missing_success=true ;; esac
+    case ",$missing_csv," in *",architecture_shape,"*) has_missing_arch=true ;; esac
+    case ",$missing_csv," in *",technology_choices,"*) has_missing_tech=true ;; esac
+    [ "$has_missing_objective" = "true" ] && missing_objective_weight=1
+    [ "$has_missing_constraints" = "true" ] && missing_constraints_weight=1
+    [ "$has_missing_success" = "true" ] && missing_success_weight=1
+    [ "$has_missing_arch" = "true" ] && missing_arch_weight=1
+    [ "$has_missing_tech" = "true" ] && missing_tech_weight=1
+
+    obj_token="$(bootstrap_dense_token "$objective" "unspecified_goal" 42)"
+    constr_token="$(bootstrap_dense_token "$constraints" "none" 34)"
+    success_token="$(bootstrap_dense_token "$success_criteria" "unspecified_done" 38)"
+    obj_len="${#obj_token}"
+    constr_len="${#constr_token}"
+    success_len="${#success_token}"
+
+    [ "$obj_len" -lt 20 ] && base_risk=$((base_risk + 12))
+    [ "$constr_len" -lt 16 ] && base_risk=$((base_risk + 10))
+    [ "$success_len" -lt 16 ] && base_risk=$((base_risk + 10))
+    base_risk=$((base_risk + missing_count * 12))
+    if ! is_true "$build_consent"; then
+        base_risk=$((base_risk + 5))
+    fi
+
+    if [ "$missing_count" -gt 0 ]; then
+        common_unknowns="missing:${missing_csv}"
+    elif [ "$obj_len" -lt 20 ]; then
+        common_unknowns="objective_too_brief"
+    fi
+
+    bootstrap_emit_persona_assessment() {
+        local persona="$1"
+        local risk="$2"
+        local focus="$3"
+        local confidence blocking recommendation unknowns
+
+        risk="$(bootstrap_clamp_percent "$risk")"
+        confidence="$(bootstrap_clamp_percent "$((100 - risk))")"
+        blocking="false"
+        if [ "$risk" -ge 80 ] || [ "$missing_count" -gt 0 ]; then
+            blocking="true"
+        fi
+        recommendation="proceed"
+        [ "$blocking" = "true" ] && recommendation="revise"
+        unknowns="$(bootstrap_dense_token "$common_unknowns" "none" 60)"
+
+        printf '%s\n' "persona=${persona}|risk=${risk}|confidence=${confidence}|blocking=${blocking}|unknowns=${unknowns}|recommendation=${recommendation}|focus=${focus}"
+    }
+
+    bootstrap_emit_persona_assessment "Architect" "$((base_risk + missing_arch_weight * 18))" "structure_scope_fit"
+    bootstrap_emit_persona_assessment "Skeptic" "$((base_risk + 12))" "ambiguity_risk_scan"
+    bootstrap_emit_persona_assessment "Execution" "$((base_risk + missing_success_weight * 18 + missing_objective_weight * 10))" "deliverable_route"
+    bootstrap_emit_persona_assessment "Safety" "$((base_risk + missing_constraints_weight * 16))" "guardrails_compliance"
+    bootstrap_emit_persona_assessment "Operations" "$((base_risk + missing_arch_weight * 10 + missing_tech_weight * 12))" "rollback_runtime"
+    bootstrap_emit_persona_assessment "Quality" "$((base_risk + missing_success_weight * 15 + missing_objective_weight * 12))" "acceptance_bar"
+}
+
+bootstrap_persona_field() {
+    local line="${1:-}"
+    local key="${2:-}"
+    local default="${3:-}"
+    local part
+    local -a parts=()
+
+    [ -n "$line" ] || { echo "$default"; return 0; }
+    [ -n "$key" ] || { echo "$default"; return 0; }
+
+    IFS='|' read -r -a parts <<< "$line"
+    for part in "${parts[@]}"; do
+        if [[ "$part" == "$key="* ]]; then
+            echo "${part#*=}"
+            return 0
+        fi
+    done
+    echo "$default"
+}
+
+bootstrap_persona_display_line() {
+    local assessment="${1:-}"
+    local persona risk confidence blocking recommendation unknowns focus blocking_label
+
+    persona="$(bootstrap_persona_field "$assessment" "persona" "Persona")"
+    risk="$(bootstrap_persona_field "$assessment" "risk" "0")"
+    confidence="$(bootstrap_persona_field "$assessment" "confidence" "0")"
+    blocking="$(bootstrap_persona_field "$assessment" "blocking" "false")"
+    recommendation="$(bootstrap_persona_field "$assessment" "recommendation" "proceed")"
+    unknowns="$(bootstrap_persona_field "$assessment" "unknowns" "none")"
+    focus="$(bootstrap_persona_field "$assessment" "focus" "none")"
+    blocking_label="n"
+    [ "$blocking" = "true" ] && blocking_label="y"
+
+    printf '%s\n' "${persona}>r=${risk},c=${confidence},blk=${blocking_label},rec=${recommendation},unk=${unknowns},fx=${focus}" | cut -c 1-220
+}
+
+bootstrap_persona_blocking_names() {
+    local assessment persona blocking
+    for assessment in "$@"; do
+        [ -n "$assessment" ] || continue
+        persona="$(bootstrap_persona_field "$assessment" "persona" "")"
+        blocking="$(bootstrap_persona_field "$assessment" "blocking" "false")"
+        if [ "$blocking" = "true" ] && [ -n "$persona" ]; then
+            echo "$persona"
+        fi
+    done
+}
+
+bootstrap_persona_feedback_lines() {
+    local project_type="${1:-existing}"
+    local objective="${2:-}"
+    local constraints="${3:-}"
+    local success_criteria="${4:-}"
+    local build_consent="${5:-true}"
+    local architecture_shape="${6:-}"
+    local technology_choices="${7:-}"
+    local assessment
+    local -a assessments=()
+
+    mapfile -t assessments < <(
+        bootstrap_persona_assessment_lines \
+            "$project_type" \
+            "$objective" \
+            "$constraints" \
+            "$success_criteria" \
+            "$build_consent" \
+            "$architecture_shape" \
+            "$technology_choices"
+    )
+    for assessment in "${assessments[@]}"; do
+        [ -n "$assessment" ] || continue
+        bootstrap_persona_display_line "$assessment"
+    done
+}
+
 ensure_project_bootstrap() {
-    local project_type objective build_consent interactive_source constraints success_criteria goals_text goals_doc_url
+    local project_type objective build_consent interactive_source constraints success_criteria goals_text goals_doc_url architecture_shape technology_choices
     project_type="existing"
     objective="Improve project with a deterministic, evidence-first implementation path."
     build_consent="true"
@@ -1889,6 +2243,8 @@ ensure_project_bootstrap() {
     success_criteria="All required phase gates pass and deliverables match project objectives."
     goals_text=""
     goals_doc_url=""
+    architecture_shape="No explicit structure preference provided."
+    technology_choices="No explicit technology preference provided."
 
     mkdir -p "$(dirname "$PROJECT_BOOTSTRAP_FILE")"
     local existing_project_type=""
@@ -1898,6 +2254,8 @@ ensure_project_bootstrap() {
     local existing_constraints=""
     local existing_success_criteria=""
     local existing_goals_doc_url=""
+    local existing_architecture_shape=""
+    local existing_technology_choices=""
     local needs_prompt="false"
 
     if [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
@@ -1908,6 +2266,8 @@ ensure_project_bootstrap() {
         existing_constraints="$(bootstrap_prompt_value "constraints" 2>/dev/null || true)"
         existing_success_criteria="$(bootstrap_prompt_value "success_criteria" 2>/dev/null || true)"
         existing_goals_doc_url="$(bootstrap_prompt_value "goals_document_url" 2>/dev/null || true)"
+        existing_architecture_shape="$(bootstrap_prompt_value "architecture_shape" 2>/dev/null || true)"
+        existing_technology_choices="$(bootstrap_prompt_value "technology_choices" 2>/dev/null || true)"
 
         if [ -n "$existing_project_type" ]; then
             project_type="$existing_project_type"
@@ -1926,6 +2286,12 @@ ensure_project_bootstrap() {
         fi
         if [ -n "$existing_goals_doc_url" ]; then
             goals_doc_url="$existing_goals_doc_url"
+        fi
+        if [ -n "$existing_architecture_shape" ]; then
+            architecture_shape="$existing_architecture_shape"
+        fi
+        if [ -n "$existing_technology_choices" ]; then
+            technology_choices="$existing_technology_choices"
         fi
         if [ "$existing_interactive_prompted" = "true" ]; then
             interactive_source="true"
@@ -1967,11 +2333,200 @@ ensure_project_bootstrap() {
                 goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
             fi
 
+            architecture_shape="$(prompt_optional_line "Preferred project structure / architecture (single line, optional)" "$architecture_shape")"
+            technology_choices="$(prompt_optional_line "Preferred technology choices (single line, optional)" "$technology_choices")"
+
             if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "y")" = "true" ]; then
                 build_consent="true"
             else
                 build_consent="false"
             fi
+
+            local alignment_round=0
+            local alignment_max_rounds=12
+            local no_change_rounds=0
+
+            while true; do
+                local alignment_action modify_target extra_context
+                local schema_field needs_arch_clarifier needs_tech_clarifier
+                local round_state_before round_state_after
+                local persona_assessment persona_display
+                local -a schema_missing_fields=()
+                local -a persona_assessments=()
+                local -a blocking_personas=()
+                alignment_round=$((alignment_round + 1))
+                round_state_before="$(bootstrap_alignment_state_fingerprint "$project_type" "$objective" "$constraints" "$success_criteria" "$build_consent" "$architecture_shape" "$technology_choices" "$goals_text")"
+
+                mapfile -t schema_missing_fields < <(
+                    bootstrap_schema_missing_fields_from_values \
+                        "$project_type" \
+                        "$objective" \
+                        "$constraints" \
+                        "$success_criteria" \
+                        "$build_consent" \
+                        "$architecture_shape" \
+                        "$technology_choices" \
+                        "" \
+                        "true"
+                )
+                mapfile -t persona_assessments < <(
+                    bootstrap_persona_assessment_lines \
+                        "$project_type" \
+                        "$objective" \
+                        "$constraints" \
+                        "$success_criteria" \
+                        "$build_consent" \
+                        "$architecture_shape" \
+                        "$technology_choices"
+                )
+                mapfile -t blocking_personas < <(bootstrap_persona_blocking_names "${persona_assessments[@]+"${persona_assessments[@]}"}")
+
+                info "Bootstrap alignment reflection (ultra concise):"
+                info "  $(bootstrap_dense_reflection_line "$project_type" "$objective" "$constraints" "$success_criteria" "$build_consent" "$architecture_shape" "$technology_choices")"
+                info "Persona inputs (dense):"
+                for persona_assessment in "${persona_assessments[@]}"; do
+                    [ -n "$persona_assessment" ] || continue
+                    persona_display="$(bootstrap_persona_display_line "$persona_assessment")"
+                    [ -n "$persona_display" ] && info "  - $persona_display"
+                done
+                if [ "${#schema_missing_fields[@]}" -gt 0 ]; then
+                    info "Schema gaps: $(join_with_commas "${schema_missing_fields[@]+"${schema_missing_fields[@]}"}")"
+                fi
+                if [ "${#blocking_personas[@]}" -gt 0 ]; then
+                    info "Persona blockers: $(join_with_commas "${blocking_personas[@]+"${blocking_personas[@]}"}")"
+                fi
+
+                alignment_action="$(to_lower "$(prompt_read_line "Alignment action [a=accept,m=modify,r=rerun,d=dismiss] (round ${alignment_round}/${alignment_max_rounds}): " "a")")"
+                case "$alignment_action" in
+                    a|accept|ok|yes|y|"")
+                        if [ "${#schema_missing_fields[@]}" -gt 0 ] || [ "${#blocking_personas[@]}" -gt 0 ]; then
+                            warn "Accept blocked: missing fields=$(join_with_commas "${schema_missing_fields[@]+"${schema_missing_fields[@]}"}"), blockers=$(join_with_commas "${blocking_personas[@]+"${blocking_personas[@]}"}")."
+                            info "Focused clarifiers required before accept:"
+                            objective="$(prompt_optional_line "Clarify primary user/workflow (single line)" "$objective")"
+                            constraints="$(prompt_optional_line "Clarify highest risk/non-goal (single line)" "$constraints")"
+                            success_criteria="$(prompt_optional_line "Clarify measurable done signal (single line)" "$success_criteria")"
+                            needs_arch_clarifier="false"
+                            needs_tech_clarifier="false"
+                            for schema_field in "${schema_missing_fields[@]}"; do
+                                case "$schema_field" in
+                                    architecture_shape) needs_arch_clarifier="true" ;;
+                                    technology_choices) needs_tech_clarifier="true" ;;
+                                    *) ;;
+                                esac
+                            done
+                            if [ "$needs_arch_clarifier" = "true" ]; then
+                                architecture_shape="$(prompt_optional_line "Clarify target structure/architecture (single line)" "$architecture_shape")"
+                            fi
+                            if [ "$needs_tech_clarifier" = "true" ]; then
+                                technology_choices="$(prompt_optional_line "Clarify target technology choices (single line)" "$technology_choices")"
+                            fi
+                        fi
+                        [ "${#schema_missing_fields[@]}" -eq 0 ] && [ "${#blocking_personas[@]}" -eq 0 ] && break
+                        ;;
+                    d|dismiss|skip|good_enough)
+                        info "Alignment loop dismissed as good enough."
+                        break
+                        ;;
+                    r|rerun|again|loop)
+                        extra_context="$(prompt_optional_line "Add or correct context before rerun (optional)" "")"
+                        if [ -n "$extra_context" ]; then
+                            goals_text="${goals_text}${goals_text:+$'\n'}$extra_context"
+                        fi
+                        ;;
+                    m|modify|edit)
+                        modify_target="$(to_lower "$(prompt_read_line "Modify field [goal|constraints|success|arch|tech|goals|type|build|all]: " "goal")")"
+                        case "$modify_target" in
+                            goal|objective)
+                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")"
+                                ;;
+                            constraints|constraint|non-goals|nongoals)
+                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")"
+                                ;;
+                            success|done|criteria|success_criteria)
+                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")"
+                                ;;
+                            arch|architecture|structure)
+                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")"
+                                ;;
+                            tech|stack|technology|technology_choices)
+                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")"
+                                ;;
+                            goals|goals_doc|goals_document)
+                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
+                                ;;
+                            type|project_type)
+                                if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" = "true" ]; then
+                                    project_type="new"
+                                else
+                                    project_type="existing"
+                                fi
+                                ;;
+                            build|build_consent|autobuild)
+                                if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" = "true" ]; then
+                                    build_consent="true"
+                                else
+                                    build_consent="false"
+                                fi
+                                ;;
+                            all)
+                                if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" = "true" ]; then
+                                    project_type="new"
+                                else
+                                    project_type="existing"
+                                fi
+                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")"
+                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")"
+                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")"
+                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")"
+                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")"
+                                goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")"
+                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
+                                if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" = "true" ]; then
+                                    build_consent="true"
+                                else
+                                    build_consent="false"
+                                fi
+                                ;;
+                            *)
+                                warn "Unknown field '$modify_target'."
+                                ;;
+                        esac
+                        ;;
+                    *)
+                        warn "Unknown alignment action '$alignment_action'."
+                        ;;
+                esac
+
+                round_state_after="$(bootstrap_alignment_state_fingerprint "$project_type" "$objective" "$constraints" "$success_criteria" "$build_consent" "$architecture_shape" "$technology_choices" "$goals_text")"
+                if [ "$round_state_after" = "$round_state_before" ]; then
+                    no_change_rounds=$((no_change_rounds + 1))
+                else
+                    no_change_rounds=0
+                fi
+
+                if [ "$alignment_round" -ge "$alignment_max_rounds" ] || [ "$no_change_rounds" -ge 2 ]; then
+                    local guard_reason
+                    guard_reason="max_rounds"
+                    if [ "$no_change_rounds" -ge 2 ]; then
+                        guard_reason="no_change"
+                    fi
+                    if [ "$alignment_round" -ge "$alignment_max_rounds" ] && [ "$no_change_rounds" -ge 2 ]; then
+                        guard_reason="max_rounds+no_change"
+                    fi
+                    warn "Alignment loop guard triggered ($guard_reason). Asking focused clarifiers."
+                    objective="$(prompt_optional_line "Clarify primary user/workflow (single line)" "$objective")"
+                    constraints="$(prompt_optional_line "Clarify highest risk/non-goal (single line)" "$constraints")"
+                    success_criteria="$(prompt_optional_line "Clarify measurable done signal (single line)" "$success_criteria")"
+                    if ! bootstrap_required_text_value_is_set "$architecture_shape"; then
+                        architecture_shape="$(prompt_optional_line "Clarify target structure/architecture (single line)" "$architecture_shape")"
+                    fi
+                    if ! bootstrap_required_text_value_is_set "$technology_choices"; then
+                        technology_choices="$(prompt_optional_line "Clarify target technology choices (single line)" "$technology_choices")"
+                    fi
+                    alignment_round=0
+                    no_change_rounds=0
+                fi
+            done
             info "Project bootstrap captured from interactive input."
         fi
     fi
@@ -1981,6 +2536,8 @@ ensure_project_bootstrap() {
         info "   - project_type: $project_type"
         info "   - objective: $objective"
         info "   - build_consent: $build_consent"
+        info "   - architecture_shape: $architecture_shape"
+        info "   - technology_choices: $technology_choices"
         return 0
     fi
 
@@ -1989,7 +2546,7 @@ ensure_project_bootstrap() {
     fi
 
     write_project_goals_file "$goals_text"
-    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source" "$constraints" "$success_criteria" "$([ -s "$PROJECT_GOALS_FILE" ] && echo true || echo false)" "$goals_doc_url"
+    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source" "$constraints" "$success_criteria" "$([ -s "$PROJECT_GOALS_FILE" ] && echo true || echo false)" "$goals_doc_url" "$architecture_shape" "$technology_choices"
     info "Captured project bootstrap context: $(path_for_display "$PROJECT_BOOTSTRAP_FILE")"
     if [ -s "$PROJECT_GOALS_FILE" ]; then
         info "Captured project goals document: $(path_for_display "$PROJECT_GOALS_FILE")"
@@ -2000,7 +2557,7 @@ ensure_project_bootstrap() {
 append_bootstrap_context_to_plan_prompt() {
     local source_prompt="$1"
     local target_prompt="$2"
-    local project_type objective build_consent constraints success_criteria goals_doc_url
+    local project_type objective build_consent constraints success_criteria goals_doc_url architecture_shape technology_choices
 
     if [ ! -f "$source_prompt" ]; then
         warn "Plan prompt source missing: $(path_for_display "$source_prompt")"
@@ -2018,6 +2575,8 @@ append_bootstrap_context_to_plan_prompt() {
     constraints="$(bootstrap_prompt_value "constraints")"
     success_criteria="$(bootstrap_prompt_value "success_criteria")"
     goals_doc_url="$(bootstrap_prompt_value "goals_document_url")"
+    architecture_shape="$(bootstrap_prompt_value "architecture_shape")"
+    technology_choices="$(bootstrap_prompt_value "technology_choices")"
 
     cat > "$target_prompt" <<EOF
 $(cat "$source_prompt")
@@ -2027,6 +2586,8 @@ $(cat "$source_prompt")
 - Objective: ${objective:-unspecified}
 - Constraints / non-goals: ${constraints:-none stated}
 - Success criteria: ${success_criteria:-none stated}
+- Preferred architecture / structure: ${architecture_shape:-none stated}
+- Preferred technology choices: ${technology_choices:-none stated}
 - Goals document URL: ${goals_doc_url:-not provided}
 - Build consent after plan: ${build_consent:-true}
 
