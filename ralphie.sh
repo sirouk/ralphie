@@ -1742,6 +1742,13 @@ load_state() {
     if ! is_number "$CURRENT_PHASE_INDEX"; then
         CURRENT_PHASE_INDEX=0
     fi
+    CURRENT_PHASE="$(normalize_phase_name "$CURRENT_PHASE")"
+    local derived_phase_index
+    derived_phase_index="$(phase_index_or_done "$CURRENT_PHASE" 2>/dev/null || echo 0)"
+    if is_number "$derived_phase_index" && [ "$derived_phase_index" -ge 0 ] && [ "$derived_phase_index" -ne "$CURRENT_PHASE_INDEX" ]; then
+        warn "Persisted state mismatch: CURRENT_PHASE='$CURRENT_PHASE' but CURRENT_PHASE_INDEX='$CURRENT_PHASE_INDEX'. Correcting index to '$derived_phase_index'."
+        CURRENT_PHASE_INDEX="$derived_phase_index"
+    fi
     if ! is_number "$CURRENT_PHASE_ATTEMPT" || [ "$CURRENT_PHASE_ATTEMPT" -lt 1 ]; then
         CURRENT_PHASE_ATTEMPT=1
     fi
@@ -4687,9 +4694,85 @@ run_swarm_reviewer() {
     return "$attempt_exit"
 }
 
+build_consensus_evidence_context() {
+    local phase="$1"
+    local attempt="$2"
+    local output_file="$3"
+    local log_file="$4"
+    local handoff_output_file="$5"
+    local handoff_status_file="$6"
+    local manifest_before_file="$7"
+    local manifest_after_file="$8"
+    local delta_preview="$9"
+    local warning_text="${10}"
+    local previous_output="${11}"
+    local prior_output_display="none"
+
+    [ -f "$previous_output" ] && prior_output_display="$(path_for_display "$previous_output")"
+
+    {
+        echo "Current phase artifacts:"
+        echo "- phase: $phase"
+        echo "- attempt: $attempt"
+        echo "- completion output: $(path_for_display "$output_file")"
+        echo "- execution log: $(path_for_display "$log_file")"
+        echo "- handoff status: $(path_for_display "$handoff_status_file")"
+        echo "- handoff output: $(path_for_display "$handoff_output_file")"
+        echo "- previous completion output: $prior_output_display"
+        echo "- manifest before: $(path_for_display "$manifest_before_file")"
+        echo "- manifest after: $(path_for_display "$manifest_after_file")"
+        echo ""
+        echo "Worktree delta preview:"
+        if [ -n "$delta_preview" ]; then
+            while IFS= read -r delta_line; do
+                [ -n "$delta_line" ] || continue
+                echo "- $delta_line"
+            done <<< "$delta_preview"
+        else
+            echo "- no visible delta preview"
+        fi
+        echo ""
+        echo "Phase warnings:"
+        if [ -n "$warning_text" ]; then
+            printf '%s\n' "$warning_text" | sed 's/^/- /'
+        else
+            echo "- none"
+        fi
+        echo ""
+        echo "Completion output snippet:"
+        if [ -f "$output_file" ]; then
+            sed -n '1,120p' "$output_file"
+        else
+            echo "- not available"
+        fi
+        echo ""
+        echo "Execution log tail:"
+        if [ -f "$log_file" ]; then
+            tail -n 40 "$log_file"
+        else
+            echo "- not available"
+        fi
+        echo ""
+        echo "Handoff validator status:"
+        if [ -f "$handoff_status_file" ]; then
+            sed -n '1,20p' "$handoff_status_file"
+        else
+            echo "- not available"
+        fi
+        echo ""
+        echo "Handoff validator output snippet:"
+        if [ -f "$handoff_output_file" ]; then
+            sed -n '1,60p' "$handoff_output_file"
+        else
+            echo "- not available"
+        fi
+    }
+}
+
 run_swarm_consensus() {
     local stage="$1"
     local history_context="${2:-}"
+    local evidence_context="${3:-}"
     local count
     local parallel
     count="$(get_reviewer_count)"
@@ -4807,7 +4890,7 @@ run_swarm_consensus() {
 
         {
             echo "# Consensus Review: $stage"
-            consensus_prompt_for_stage "$base_stage" "$history_context" "$(consensus_reviewer_persona "$base_stage" "$i")"
+            consensus_prompt_for_stage "$base_stage" "$history_context" "$evidence_context" "$(consensus_reviewer_persona "$base_stage" "$i")"
         } > "${prompts[$((i - 1))]}"
     done
 
@@ -5776,6 +5859,20 @@ phase_default_next() {
         lint) echo "document" ;;
         document) echo "done" ;;
         *) echo "done" ;;
+    esac
+}
+
+phase_default_previous() {
+    local phase="$1"
+    case "$phase" in
+        plan) echo "plan" ;;
+        build) echo "plan" ;;
+        test) echo "build" ;;
+        refactor) echo "test" ;;
+        lint) echo "refactor" ;;
+        document) echo "lint" ;;
+        done) echo "document" ;;
+        *) echo "plan" ;;
     esac
 }
 
@@ -6813,7 +6910,8 @@ setup_phase_prompts() {
 consensus_prompt_for_stage() {
     local stage="${1%-gate}"
     local loop_context="${2:-}"
-    local reviewer_persona="${3:-}"
+    local evidence_context="${3:-}"
+    local reviewer_persona="${4:-}"
     local next_phase_choices="plan|build|test|refactor|lint|document|done"
     if [ -n "$loop_context" ] && [ "$loop_context" != "no transitions yet" ]; then
         echo "Recent phase path context:"
@@ -6824,7 +6922,13 @@ consensus_prompt_for_stage() {
         echo "Reviewer Persona: $reviewer_persona"
         echo ""
     fi
+    if [ -n "$evidence_context" ]; then
+        echo "Evidence context from this attempt:"
+        echo "$evidence_context"
+        echo ""
+    fi
     echo "Use this transition history to decide whether to continue, backtrack, or stop."
+    echo "Ground your verdict in the supplied artifacts and snippets; only claim missing evidence when those artifacts are unavailable or contradictory."
     echo ""
     case "$stage" in
         plan)
@@ -7258,8 +7362,8 @@ main() {
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
             local reentering_in_progress_phase="false"
-            CURRENT_PHASE_INDEX="$phase_index"
             if is_true "$should_exit"; then break 2; fi
+            CURRENT_PHASE_INDEX="$phase_index"
             CURRENT_PHASE="$phase"
             if [ "$resume_reentry_pending" = "true" ] && [ "$phase_index" -eq "$start_phase_index" ] && is_true "$PHASE_ATTEMPT_IN_PROGRESS"; then
                 reentering_in_progress_phase="true"
@@ -7347,6 +7451,7 @@ main() {
                 local handoff_validator_primary=""
                 local handoff_validator_fallback=""
                 local phase_warnings_text=""
+                local consensus_evidence_context=""
                 local -a consensus_failures=()
                 local phase_commit_target=""
 
@@ -7541,8 +7646,20 @@ main() {
                     consensus_evaluated="true"
                     local consensus_infra_retry_streak=0
                     local consensus_infra_signature=""
+                    consensus_evidence_context="$(build_consensus_evidence_context \
+                        "$phase" \
+                        "$phase_attempt" \
+                        "$ofile" \
+                        "$lfile" \
+                        "$handoff_validator_out" \
+                        "$handoff_validator_status" \
+                        "$manifest_before_file" \
+                        "$manifest_after_file" \
+                        "$phase_delta_preview" \
+                        "$phase_warnings_text" \
+                        "$previous_attempt_output_file")"
                     while true; do
-                        if run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)"; then
+                        if run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)" "$consensus_evidence_context"; then
                             break
                         fi
 
@@ -7711,8 +7828,27 @@ main() {
 
                     phase_attempt=$((phase_attempt + 1))
                     if [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -gt 0 ] && [ "$phase_attempt" -gt "$PHASE_COMPLETION_MAX_ATTEMPTS" ]; then
+                        local auto_backtrack_target=""
+                        local exhausted_attempt_count="$((phase_attempt - 1))"
+                        if [ "$phase_route" != "true" ] && [ "$phase" != "plan" ]; then
+                            auto_backtrack_target="$(phase_default_previous "$phase")"
+                        fi
+                        if [ -n "$auto_backtrack_target" ] && [ "$auto_backtrack_target" != "$phase" ]; then
+                            phase_next_target="$auto_backtrack_target"
+                            phase_route="true"
+                            phase_route_reason="auto-backtrack: $phase exhausted retries (${exhausted_attempt_count}/${PHASE_COMPLETION_MAX_ATTEMPTS}); rerouting to $auto_backtrack_target for blocker resolution"
+                            phase_transition_history_append "$phase" "$exhausted_attempt_count" "$phase_next_target" "hold" "$phase_route_reason"
+                            write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting $phase -> $phase_next_target"
+                            warn "Phase $phase exhausted retries (${exhausted_attempt_count}/${PHASE_COMPLETION_MAX_ATTEMPTS}); auto-backtracking to $phase_next_target."
+                            notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$exhausted_attempt_count rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
+                            log_reason_code "RB_PHASE_AUTO_BACKTRACK_RETRY_EXHAUSTED" "$phase attempt $exhausted_attempt_count/$PHASE_COMPLETION_MAX_ATTEMPTS rerouted to $phase_next_target after retry exhaustion"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            CURRENT_PHASE_ATTEMPT=1
+                            save_state_or_exit "phase retry exhaustion auto-backtrack checkpoint ($phase->$phase_next_target)"
+                            break
+                        fi
                         warn "Phase $phase blocked after ${PHASE_COMPLETION_MAX_ATTEMPTS} attempts."
-                        format_retry_budget_block_reason "$phase" "$((phase_attempt - 1))" "$PHASE_COMPLETION_MAX_ATTEMPTS"
+                        format_retry_budget_block_reason "$phase" "$exhausted_attempt_count" "$PHASE_COMPLETION_MAX_ATTEMPTS"
                         notify_event "phase_blocked" "hold" "phase=$phase exhausted completion retries (${PHASE_COMPLETION_MAX_ATTEMPTS})" || true
                         should_exit="true"
                         PHASE_ATTEMPT_IN_PROGRESS="false"
