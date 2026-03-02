@@ -4727,12 +4727,38 @@ run_swarm_consensus() {
     local -a primary_cmds=() fallback_cmds=() summary_lines=()
     local claude_available=false
     local codex_available=false
+    local reviewer_engine_request="${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
+    local reviewer_engine_policy="mixed:auto"
+    local pinned_reviewer_cmd=""
     if [ "$CODEX_HEALTHY" = "true" ] && command -v "$CODEX_CMD" >/dev/null 2>&1; then
         codex_available=true
     fi
     if [ "$CLAUDE_HEALTHY" = "true" ] && command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
         claude_available=true
     fi
+    reviewer_engine_request="$(to_lower "$reviewer_engine_request")"
+    if [ "$reviewer_engine_request" = "codex" ] || [ "$reviewer_engine_request" = "claude" ]; then
+        reviewer_engine_policy="pinned:${reviewer_engine_request}"
+        if [ "$reviewer_engine_request" = "codex" ] && [ "$codex_available" = "true" ]; then
+            pinned_reviewer_cmd="$CODEX_CMD"
+        elif [ "$reviewer_engine_request" = "claude" ] && [ "$claude_available" = "true" ]; then
+            pinned_reviewer_cmd="$CLAUDE_CMD"
+        else
+            warn "Consensus reviewers are pinned to '$reviewer_engine_request', but that engine is unavailable."
+            LAST_CONSENSUS_SCORE=0
+            LAST_CONSENSUS_PASS=false
+            LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
+            LAST_CONSENSUS_NEXT_PHASE_REASON="pinned reviewer engine unavailable"
+            LAST_CONSENSUS_RESPONDED_VOTES=0
+            LAST_CONSENSUS_FAILURE_KIND="infra"
+            LAST_CONSENSUS_FAILURE_REASON="pinned reviewer engine '$reviewer_engine_request' unavailable"
+            CONSENSUS_NO_ENGINES=true
+            ACTIVE_ENGINE="$saved_engine"
+            ACTIVE_CMD="$saved_cmd"
+            return 1
+        fi
+    fi
+    info "Consensus reviewer policy: $reviewer_engine_policy"
     if [ "$claude_available" = false ] && [ "$codex_available" = false ]; then
         warn "No healthy reviewer engines available for consensus."
         LAST_CONSENSUS_SCORE=0
@@ -4753,17 +4779,23 @@ run_swarm_consensus() {
         local primary_cmd="$CLAUDE_CMD"
         local fallback_cmd=""
 
-        if [ "$claude_available" = false ] && [ "$codex_available" = true ]; then
-            primary_cmd="$CODEX_CMD"
-        elif [ "$claude_available" = true ] && [ "$codex_available" = true ] && [ $(( (i - 1) % 2 )) -eq 0 ]; then
-            primary_cmd="$CODEX_CMD"
-        fi
+        if [ -n "$pinned_reviewer_cmd" ]; then
+            # Explicit engine pinning means reviewer personas must stay on the selected engine.
+            primary_cmd="$pinned_reviewer_cmd"
+            fallback_cmd=""
+        else
+            if [ "$claude_available" = false ] && [ "$codex_available" = true ]; then
+                primary_cmd="$CODEX_CMD"
+            elif [ "$claude_available" = true ] && [ "$codex_available" = true ] && [ $(( (i - 1) % 2 )) -eq 0 ]; then
+                primary_cmd="$CODEX_CMD"
+            fi
 
-        if [ "$primary_cmd" = "$CODEX_CMD" ] && [ "$claude_available" = true ]; then
-            fallback_cmd="$CLAUDE_CMD"
-        fi
-        if [ "$primary_cmd" = "$CLAUDE_CMD" ] && [ "$codex_available" = true ]; then
-            fallback_cmd="$CODEX_CMD"
+            if [ "$primary_cmd" = "$CODEX_CMD" ] && [ "$claude_available" = true ]; then
+                fallback_cmd="$CLAUDE_CMD"
+            fi
+            if [ "$primary_cmd" = "$CLAUDE_CMD" ] && [ "$codex_available" = true ]; then
+                fallback_cmd="$CODEX_CMD"
+            fi
         fi
 
         prompts+=("$consensus_dir/reviewer_${i}_prompt.md")
@@ -7446,12 +7478,26 @@ main() {
                         "$phase_warnings_text" \
                         "$previous_attempt_output_file"
 
-                    if [ "${ACTIVE_ENGINE}" = "codex" ]; then
-                        handoff_validator_primary="$CLAUDE_CMD"
-                        handoff_validator_fallback="$CODEX_CMD"
-                    else
+                    local handoff_engine_request="${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
+                    handoff_engine_request="$(to_lower "$handoff_engine_request")"
+                    if [ "$handoff_engine_request" = "codex" ]; then
                         handoff_validator_primary="$CODEX_CMD"
-                        handoff_validator_fallback="$CLAUDE_CMD"
+                        handoff_validator_fallback=""
+                        info "Handoff reviewer policy: pinned:codex"
+                    elif [ "$handoff_engine_request" = "claude" ]; then
+                        handoff_validator_primary="$CLAUDE_CMD"
+                        handoff_validator_fallback=""
+                        info "Handoff reviewer policy: pinned:claude"
+                    else
+                        if [ "${ACTIVE_ENGINE}" = "codex" ]; then
+                            handoff_validator_primary="$CLAUDE_CMD"
+                            handoff_validator_fallback="$CODEX_CMD"
+                            info "Handoff reviewer policy: mixed:auto (active=codex, primary=claude, fallback=codex)"
+                        else
+                            handoff_validator_primary="$CODEX_CMD"
+                            handoff_validator_fallback="$CLAUDE_CMD"
+                            info "Handoff reviewer policy: mixed:auto (active=claude, primary=codex, fallback=claude)"
+                        fi
                     fi
 
                     if [ "$handoff_validator_primary" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
