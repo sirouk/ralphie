@@ -352,6 +352,7 @@ is_allowed_config_key() {
         ENGINE_OUTPUT_TO_STDOUT|ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
         PHASE_COMPLETION_RETRY_DELAY_SECONDS|PHASE_COMPLETION_RETRY_VERBOSE|\
         MAX_CONSENSUS_ROUTING_ATTEMPTS|REQUIRE_LINT_BEFORE_DONE|REQUIRE_DOCUMENT_BEFORE_DONE|\
+        REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE|\
         PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
         PHASE_NOOP_POLICY_TEST|PHASE_NOOP_POLICY_REFACTOR|PHASE_NOOP_POLICY_LINT|\
         PHASE_NOOP_POLICY_DOCUMENT|PHASE_NOOP_PROFILE|SESSION_TOKEN_BUDGET|\
@@ -676,6 +677,7 @@ Core options:
   --phase-noop-policy-refactor hard|soft|none Phase worktree mutation policy for refactor
   --phase-noop-policy-lint hard|soft|none  Phase worktree mutation policy for lint
   --phase-noop-policy-document hard|soft|none  Phase worktree mutation policy for document
+  --require-plan-backlog-clear-before-done bool  Block terminal done while local unchecked plan tasks remain
   --help, -h                             Show this help and exit
 
 All options may also be set through config.env (eg. SESSION_TOKEN_BUDGET, MAX_SESSION_CYCLES, etc).
@@ -714,6 +716,7 @@ Additional runtime env knobs:
   RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS     Wall-clock limit per phase attempt (seconds, 0=disabled)
   RALPHIE_REQUIRE_LINT_BEFORE_DONE          Require at least one passed lint phase before terminal done routing
   RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE      Require at least one passed document phase before terminal done routing
+  RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE  Require local plan backlog to be clear before terminal done routing
 EOF
 }
 
@@ -951,6 +954,14 @@ parse_args() {
                 PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT=true
                 shift 2
                 ;;
+            --require-plan-backlog-clear-before-done)
+                REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="$(parse_arg_value "--require-plan-backlog-clear-before-done" "${2:-}")"
+                if ! is_bool_like "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"; then
+                    err "Invalid boolean value for --require-plan-backlog-clear-before-done: $REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"
+                    exit 1
+                fi
+                shift 2
+                ;;
             --max-iterations)
                 MAX_ITERATIONS="$(parse_arg_value "--max-iterations" "${2:-}")"
                 require_non_negative_int "MAX_ITERATIONS" "$MAX_ITERATIONS"
@@ -1031,6 +1042,7 @@ DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus 
 DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
 DEFAULT_REQUIRE_LINT_BEFORE_DONE="true"          # terminal guard: require lint pass before done
 DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE="true"      # terminal guard: require document pass before done
+DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="true" # terminal guard: block done while local unchecked plan tasks remain
 DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=5             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
@@ -1087,6 +1099,7 @@ PHASE_COMPLETION_RETRY_VERBOSE="${PHASE_COMPLETION_RETRY_VERBOSE:-$DEFAULT_PHASE
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${MAX_CONSENSUS_ROUTING_ATTEMPTS:-$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS}"
 REQUIRE_LINT_BEFORE_DONE="${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
+REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
 PHASE_NOOP_POLICY_PLAN="${PHASE_NOOP_POLICY_PLAN:-$DEFAULT_PHASE_NOOP_POLICY_PLAN}"
 PHASE_NOOP_POLICY_BUILD="${PHASE_NOOP_POLICY_BUILD:-$DEFAULT_PHASE_NOOP_POLICY_BUILD}"
 PHASE_NOOP_POLICY_TEST="${PHASE_NOOP_POLICY_TEST:-$DEFAULT_PHASE_NOOP_POLICY_TEST}"
@@ -1150,6 +1163,7 @@ PHASE_COMPLETION_RETRY_VERBOSE="${RALPHIE_PHASE_COMPLETION_RETRY_VERBOSE:-$PHASE
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS:-$MAX_CONSENSUS_ROUTING_ATTEMPTS}"
 REQUIRE_LINT_BEFORE_DONE="${RALPHIE_REQUIRE_LINT_BEFORE_DONE:-$REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE:-$REQUIRE_DOCUMENT_BEFORE_DONE}"
+REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
 SWARM_CONSENSUS_TIMEOUT="${RALPHIE_SWARM_CONSENSUS_TIMEOUT:-$SWARM_CONSENSUS_TIMEOUT}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${RALPHIE_ENGINE_HEALTH_MAX_ATTEMPTS:-$ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${RALPHIE_ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
@@ -1315,6 +1329,12 @@ REQUIRE_DOCUMENT_BEFORE_DONE="$(to_lower "$REQUIRE_DOCUMENT_BEFORE_DONE")"
 if ! is_bool_like "$REQUIRE_DOCUMENT_BEFORE_DONE"; then
     warn "Invalid REQUIRE_DOCUMENT_BEFORE_DONE '$REQUIRE_DOCUMENT_BEFORE_DONE'. Falling back to '$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE'."
     REQUIRE_DOCUMENT_BEFORE_DONE="$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE"
+fi
+
+REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="$(to_lower "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE")"
+if ! is_bool_like "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"; then
+    warn "Invalid REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE '$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE'. Falling back to '$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE'."
+    REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"
 fi
 
 if ! is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" || [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -lt 0 ]; then
@@ -5898,6 +5918,45 @@ phase_has_passed_in_history() {
     return 1
 }
 
+plan_has_unchecked_local_tasks() {
+    local plan_file="${1:-$PLAN_FILE}"
+    local unchecked_lines=""
+    [ -f "$plan_file" ] || return 1
+
+    unchecked_lines="$(
+        awk '
+            BEGIN { in_code = 0; in_external_section = 0 }
+            /^[[:space:]]*```/ {
+                in_code = 1 - in_code
+                next
+            }
+            in_code { next }
+            /^[[:space:]]*#{1,6}[[:space:]]*/ {
+                heading = tolower($0)
+                if (heading ~ /deferred[[:space:]]+external/ || heading ~ /external-only/ || heading ~ /external[[:space:]]+queue/) {
+                    in_external_section = 1
+                } else {
+                    in_external_section = 0
+                }
+                next
+            }
+            /^[[:space:]]*-[[:space:]]\[[[:space:]]\][[:space:]]/ {
+                if (in_external_section) {
+                    next
+                }
+                lower = tolower($0)
+                if (lower ~ /open[[:space:]]*\[[[:space:]]*external[[:space:]]*\]/ || lower ~ /external-only/ || lower ~ /\[[[:space:]]*external[[:space:]]*\]/) {
+                    next
+                }
+                print
+            }
+        ' "$plan_file" 2>/dev/null || true
+    )"
+    [ -n "$unchecked_lines" ] || return 1
+
+    return 0
+}
+
 enforce_terminal_done_requirements() {
     local current_phase="${1:-}"
     local candidate_next="${2:-done}"
@@ -5907,7 +5966,9 @@ enforce_terminal_done_requirements() {
     local remap_target=""
 
     LAST_DONE_GUARD_REASON=""
+    LAST_DONE_GUARD_NEXT_PHASE="$candidate_next"
     if [ "$candidate_next" != "done" ]; then
+        LAST_DONE_GUARD_NEXT_PHASE="$candidate_next"
         echo "$candidate_next"
         return 0
     fi
@@ -5925,8 +5986,12 @@ enforce_terminal_done_requirements() {
     if is_true "$REQUIRE_DOCUMENT_BEFORE_DONE" && [ "$document_satisfied" != "true" ]; then
         missing_required+=("document")
     fi
+    if is_true "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE" && plan_has_unchecked_local_tasks "$PLAN_FILE"; then
+        missing_required+=("plan_backlog")
+    fi
 
     if [ "${#missing_required[@]}" -eq 0 ]; then
+        LAST_DONE_GUARD_NEXT_PHASE="done"
         echo "done"
         return 0
     fi
@@ -5935,11 +6000,14 @@ enforce_terminal_done_requirements() {
         remap_target="lint"
     elif printf '%s\n' "${missing_required[@]}" | grep -Fxq "document"; then
         remap_target="document"
+    elif printf '%s\n' "${missing_required[@]}" | grep -Fxq "plan_backlog"; then
+        remap_target="plan"
     else
         remap_target="${missing_required[0]}"
     fi
 
     LAST_DONE_GUARD_REASON="terminal guard remap: done blocked until required phase pass(es): $(join_with_commas "${missing_required[@]+"${missing_required[@]}"}")"
+    LAST_DONE_GUARD_NEXT_PHASE="$remap_target"
     echo "$remap_target"
 }
 
@@ -7170,6 +7238,7 @@ print_session_config_banner() {
     info "consensus_score_threshold: ${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
     info "require_lint_before_done: ${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
     info "require_document_before_done: ${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
+    info "require_plan_backlog_clear_before_done: ${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
@@ -7879,7 +7948,8 @@ main() {
                 local phase_requested_next
                 phase_requested_next="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                 [ -n "$phase_requested_next" ] || phase_requested_next="$(phase_default_next "$phase")"
-                phase_next_target="$(enforce_terminal_done_requirements "$phase" "$phase_requested_next")"
+                enforce_terminal_done_requirements "$phase" "$phase_requested_next" >/dev/null
+                phase_next_target="${LAST_DONE_GUARD_NEXT_PHASE:-$phase_requested_next}"
                 if [ "$phase_next_target" != "$phase_requested_next" ]; then
                     local done_guard_reason
                     done_guard_reason="${LAST_DONE_GUARD_REASON:-terminal guard remap}"
