@@ -7421,6 +7421,7 @@ main() {
             local phase_next_target="$phase"
             local phase_route="false"
             local phase_route_reason=""
+            local phase_route_outcome="none"
             local phase_stagnation_signature=""
             local phase_stagnation_count=0
             while phase_attempt_within_budget "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS"; do
@@ -7735,6 +7736,7 @@ main() {
                         if is_number "$phase_route_candidate_index" && [ "$phase_route_candidate_index" -ge 0 ] && [ "$phase_route_candidate_index" -lt "$phase_index" ]; then
                             phase_next_target="$phase_route_candidate"
                             phase_route="true"
+                            phase_route_outcome="hold"
                             phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
@@ -7765,6 +7767,7 @@ main() {
                         if is_true "$build_consensus_hold_detected"; then
                             phase_next_target="plan"
                             phase_route="true"
+                            phase_route_outcome="hold"
                             phase_route_reason="auto-backtrack: build exhausted retries on $build_hold_reason; refreshing plan scope"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting build -> plan"
@@ -7836,6 +7839,7 @@ main() {
                         if [ -n "$auto_backtrack_target" ] && [ "$auto_backtrack_target" != "$phase" ]; then
                             phase_next_target="$auto_backtrack_target"
                             phase_route="true"
+                            phase_route_outcome="hold"
                             phase_route_reason="auto-backtrack: $phase exhausted retries (${exhausted_attempt_count}/${PHASE_COMPLETION_MAX_ATTEMPTS}); rerouting to $auto_backtrack_target for blocker resolution"
                             phase_transition_history_append "$phase" "$exhausted_attempt_count" "$phase_next_target" "hold" "$phase_route_reason"
                             write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting $phase -> $phase_next_target"
@@ -7895,6 +7899,7 @@ main() {
                 elif [ -z "$phase_route_reason" ]; then
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
+                phase_route_outcome="pass"
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1
@@ -7915,6 +7920,12 @@ main() {
                 fi
                 if [ "$phase_next_target" = "done" ] || [ "$route_index" -ne "$expected_route_index" ]; then
                     notify_event "phase_decision" "reroute_pass" "phase=$phase rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
+                fi
+                if [ "$phase_route_outcome" = "pass" ]; then
+                    # A successful phase completion resets cross-phase reroute pressure.
+                    consensus_route_count=0
+                    routing_stagnation_signature=""
+                    routing_stagnation_count=0
                 fi
                 if [ "$route_index" -lt "$phase_index" ]; then
                     consensus_route_count=$((consensus_route_count + 1))
