@@ -352,7 +352,7 @@ is_allowed_config_key() {
         ENGINE_OUTPUT_TO_STDOUT|ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
         PHASE_COMPLETION_RETRY_DELAY_SECONDS|PHASE_COMPLETION_RETRY_VERBOSE|\
         MAX_CONSENSUS_ROUTING_ATTEMPTS|REQUIRE_LINT_BEFORE_DONE|REQUIRE_DOCUMENT_BEFORE_DONE|\
-        REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE|\
+        REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE|REQUIRE_PLAN_FRESHNESS_FOR_BUILD|BACKLOG_SOURCES|\
         PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
         PHASE_NOOP_POLICY_TEST|PHASE_NOOP_POLICY_REFACTOR|PHASE_NOOP_POLICY_LINT|\
         PHASE_NOOP_POLICY_DOCUMENT|PHASE_NOOP_PROFILE|SESSION_TOKEN_BUDGET|\
@@ -677,7 +677,9 @@ Core options:
   --phase-noop-policy-refactor hard|soft|none Phase worktree mutation policy for refactor
   --phase-noop-policy-lint hard|soft|none  Phase worktree mutation policy for lint
   --phase-noop-policy-document hard|soft|none  Phase worktree mutation policy for document
-  --require-plan-backlog-clear-before-done bool  Block terminal done while local unchecked plan tasks remain
+  --require-plan-backlog-clear-before-done bool  Block terminal done while local unchecked backlog tasks remain
+  --require-plan-freshness-for-build bool  Remap to plan when configured backlog sources changed after plan
+  --backlog-sources PATHS                 Comma-separated markdown backlog files (default: IMPLEMENTATION_PLAN.md)
   --help, -h                             Show this help and exit
 
 All options may also be set through config.env (eg. SESSION_TOKEN_BUDGET, MAX_SESSION_CYCLES, etc).
@@ -716,7 +718,9 @@ Additional runtime env knobs:
   RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS     Wall-clock limit per phase attempt (seconds, 0=disabled)
   RALPHIE_REQUIRE_LINT_BEFORE_DONE          Require at least one passed lint phase before terminal done routing
   RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE      Require at least one passed document phase before terminal done routing
-  RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE  Require local plan backlog to be clear before terminal done routing
+  RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE  Require local configured backlog sources to be clear before terminal done routing
+  RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD  Require plan refresh when configured backlog sources change before build/done routing
+  RALPHIE_BACKLOG_SOURCES                   Comma-separated markdown backlog files evaluated for local unchecked tasks
 EOF
 }
 
@@ -962,6 +966,18 @@ parse_args() {
                 fi
                 shift 2
                 ;;
+            --require-plan-freshness-for-build)
+                REQUIRE_PLAN_FRESHNESS_FOR_BUILD="$(parse_arg_value "--require-plan-freshness-for-build" "${2:-}")"
+                if ! is_bool_like "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD"; then
+                    err "Invalid boolean value for --require-plan-freshness-for-build: $REQUIRE_PLAN_FRESHNESS_FOR_BUILD"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --backlog-sources)
+                BACKLOG_SOURCES="$(parse_arg_value "--backlog-sources" "${2:-}")"
+                shift 2
+                ;;
             --max-iterations)
                 MAX_ITERATIONS="$(parse_arg_value "--max-iterations" "${2:-}")"
                 require_non_negative_int "MAX_ITERATIONS" "$MAX_ITERATIONS"
@@ -1042,7 +1058,9 @@ DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus 
 DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
 DEFAULT_REQUIRE_LINT_BEFORE_DONE="true"          # terminal guard: require lint pass before done
 DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE="true"      # terminal guard: require document pass before done
-DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="true" # terminal guard: block done while local unchecked plan tasks remain
+DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="true" # terminal guard: block done while local unchecked backlog tasks remain
+DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD="true"  # route guard: stale plan vs backlog sources must remap to plan
+DEFAULT_BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md" # comma-separated markdown backlog sources
 DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=5             # attempts before refusing to proceed
 DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
@@ -1100,6 +1118,8 @@ MAX_CONSENSUS_ROUTING_ATTEMPTS="${MAX_CONSENSUS_ROUTING_ATTEMPTS:-$DEFAULT_MAX_C
 REQUIRE_LINT_BEFORE_DONE="${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
 REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
+REQUIRE_PLAN_FRESHNESS_FOR_BUILD="${REQUIRE_PLAN_FRESHNESS_FOR_BUILD:-$DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD}"
+BACKLOG_SOURCES="${BACKLOG_SOURCES:-$DEFAULT_BACKLOG_SOURCES}"
 PHASE_NOOP_POLICY_PLAN="${PHASE_NOOP_POLICY_PLAN:-$DEFAULT_PHASE_NOOP_POLICY_PLAN}"
 PHASE_NOOP_POLICY_BUILD="${PHASE_NOOP_POLICY_BUILD:-$DEFAULT_PHASE_NOOP_POLICY_BUILD}"
 PHASE_NOOP_POLICY_TEST="${PHASE_NOOP_POLICY_TEST:-$DEFAULT_PHASE_NOOP_POLICY_TEST}"
@@ -1164,6 +1184,8 @@ MAX_CONSENSUS_ROUTING_ATTEMPTS="${RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS:-$MAX_C
 REQUIRE_LINT_BEFORE_DONE="${RALPHIE_REQUIRE_LINT_BEFORE_DONE:-$REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE:-$REQUIRE_DOCUMENT_BEFORE_DONE}"
 REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
+REQUIRE_PLAN_FRESHNESS_FOR_BUILD="${RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD:-$REQUIRE_PLAN_FRESHNESS_FOR_BUILD}"
+BACKLOG_SOURCES="${RALPHIE_BACKLOG_SOURCES:-$BACKLOG_SOURCES}"
 SWARM_CONSENSUS_TIMEOUT="${RALPHIE_SWARM_CONSENSUS_TIMEOUT:-$SWARM_CONSENSUS_TIMEOUT}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${RALPHIE_ENGINE_HEALTH_MAX_ATTEMPTS:-$ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${RALPHIE_ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
@@ -1337,6 +1359,16 @@ if ! is_bool_like "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"; then
     REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE"
 fi
 
+REQUIRE_PLAN_FRESHNESS_FOR_BUILD="$(to_lower "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD")"
+if ! is_bool_like "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD"; then
+    warn "Invalid REQUIRE_PLAN_FRESHNESS_FOR_BUILD '$REQUIRE_PLAN_FRESHNESS_FOR_BUILD'. Falling back to '$DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD'."
+    REQUIRE_PLAN_FRESHNESS_FOR_BUILD="$DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD"
+fi
+
+if [ -z "$(sanitize_text_for_log "$BACKLOG_SOURCES")" ]; then
+    BACKLOG_SOURCES="$DEFAULT_BACKLOG_SOURCES"
+fi
+
 if ! is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" || [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -lt 0 ]; then
     warn "Invalid PHASE_WALLCLOCK_LIMIT_SECONDS '$PHASE_WALLCLOCK_LIMIT_SECONDS'. Falling back to '$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS'."
     PHASE_WALLCLOCK_LIMIT_SECONDS="$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS"
@@ -1483,6 +1515,10 @@ LAST_CONSENSUS_RESPONDED_VOTES=0
 LAST_CONSENSUS_FAILURE_KIND="none"
 LAST_CONSENSUS_FAILURE_REASON=""
 LAST_DONE_GUARD_REASON=""
+LAST_DONE_GUARD_NEXT_PHASE="done"
+LAST_PHASE_ROUTE_GUARD_REASON=""
+LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="done"
+LAST_BACKLOG_STALE_SOURCES=""
 LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
@@ -5918,10 +5954,10 @@ phase_has_passed_in_history() {
     return 1
 }
 
-plan_has_unchecked_local_tasks() {
-    local plan_file="${1:-$PLAN_FILE}"
+markdown_has_unchecked_local_tasks() {
+    local markdown_file="$1"
     local unchecked_lines=""
-    [ -f "$plan_file" ] || return 1
+    [ -f "$markdown_file" ] || return 1
 
     unchecked_lines="$(
         awk '
@@ -5950,11 +5986,142 @@ plan_has_unchecked_local_tasks() {
                 }
                 print
             }
-        ' "$plan_file" 2>/dev/null || true
+        ' "$markdown_file" 2>/dev/null || true
     )"
     [ -n "$unchecked_lines" ] || return 1
 
     return 0
+}
+
+collect_backlog_source_files() {
+    local sources_raw="${BACKLOG_SOURCES:-$DEFAULT_BACKLOG_SOURCES}"
+    local sources_trimmed item normalized abs_path
+    local -a resolved=()
+
+    sources_trimmed="$(sanitize_text_for_log "$sources_raw")"
+    if [ -z "$sources_trimmed" ]; then
+        sources_trimmed="$DEFAULT_BACKLOG_SOURCES"
+    fi
+
+    while IFS= read -r item; do
+        normalized="$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$normalized" ] || continue
+        case "$normalized" in
+            /*) abs_path="$normalized" ;;
+            *) abs_path="$PROJECT_DIR/$normalized" ;;
+        esac
+        resolved+=("$abs_path")
+    done < <(printf '%s' "$sources_trimmed" | tr ',' '\n')
+
+    if [ "${#resolved[@]}" -eq 0 ]; then
+        resolved+=("$PLAN_FILE")
+    fi
+
+    printf '%s\n' "${resolved[@]}" | awk '!seen[$0]++'
+}
+
+plan_has_unchecked_local_tasks() {
+    local plan_file="${1:-$PLAN_FILE}"
+    markdown_has_unchecked_local_tasks "$plan_file"
+}
+
+backlog_has_unchecked_local_tasks() {
+    local source_file
+    while IFS= read -r source_file; do
+        [ -n "$source_file" ] || continue
+        if markdown_has_unchecked_local_tasks "$source_file"; then
+            return 0
+        fi
+    done < <(collect_backlog_source_files)
+    return 1
+}
+
+file_mtime_epoch() {
+    local target="$1"
+    [ -e "$target" ] || { echo "-1"; return 0; }
+    if stat -f '%m' "$target" >/dev/null 2>&1; then
+        stat -f '%m' "$target" 2>/dev/null || echo "-1"
+        return 0
+    fi
+    if stat -c '%Y' "$target" >/dev/null 2>&1; then
+        stat -c '%Y' "$target" 2>/dev/null || echo "-1"
+        return 0
+    fi
+    echo "-1"
+}
+
+backlog_sources_newer_than_plan() {
+    local plan_file="${1:-$PLAN_FILE}"
+    local plan_mtime source_file source_mtime rel_path
+    local -a stale_sources=()
+
+    LAST_BACKLOG_STALE_SOURCES=""
+
+    [ -f "$plan_file" ] || return 1
+    plan_mtime="$(file_mtime_epoch "$plan_file")"
+    is_number "$plan_mtime" || return 1
+    [ "$plan_mtime" -ge 0 ] || return 1
+
+    while IFS= read -r source_file; do
+        [ -n "$source_file" ] || continue
+        [ -f "$source_file" ] || continue
+        if [ "$source_file" = "$plan_file" ]; then
+            continue
+        fi
+        source_mtime="$(file_mtime_epoch "$source_file")"
+        if is_number "$source_mtime" && [ "$source_mtime" -gt "$plan_mtime" ]; then
+            rel_path="$(path_relative_to_project "$source_file")"
+            if [ -n "$rel_path" ] && [ "$rel_path" != "$source_file" ]; then
+                stale_sources+=("$(path_for_display "$rel_path")")
+            else
+                stale_sources+=("$(path_for_display "$source_file")")
+            fi
+        fi
+    done < <(collect_backlog_source_files)
+
+    if [ "${#stale_sources[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    LAST_BACKLOG_STALE_SOURCES="$(join_with_commas "${stale_sources[@]+"${stale_sources[@]}"}")"
+    return 0
+}
+
+enforce_phase_route_prerequisites() {
+    local current_phase="${1:-}"
+    local candidate_next="${2:-done}"
+    local remap_target="$candidate_next"
+    local -a reasons=()
+    local stale_sources_text=""
+
+    LAST_PHASE_ROUTE_GUARD_REASON=""
+    LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="$candidate_next"
+
+    if ! is_phase_or_done "$candidate_next"; then
+        LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="$candidate_next"
+        echo "$candidate_next"
+        return 0
+    fi
+
+    if is_true "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD"; then
+        if backlog_sources_newer_than_plan "$PLAN_FILE"; then
+            stale_sources_text="${LAST_BACKLOG_STALE_SOURCES:-configured backlog sources}"
+            case "$candidate_next" in
+                build|test|refactor|lint|document|done)
+                    remap_target="plan"
+                    reasons+=("plan refresh required: backlog sources newer than plan ($stale_sources_text)")
+                    ;;
+                *)
+                    ;;
+            esac
+        fi
+    fi
+
+    LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="$remap_target"
+    if [ "${#reasons[@]}" -gt 0 ]; then
+        LAST_PHASE_ROUTE_GUARD_REASON="$(join_with_commas "${reasons[@]+"${reasons[@]}"}")"
+    fi
+    echo "$remap_target"
 }
 
 enforce_terminal_done_requirements() {
@@ -5986,7 +6153,7 @@ enforce_terminal_done_requirements() {
     if is_true "$REQUIRE_DOCUMENT_BEFORE_DONE" && [ "$document_satisfied" != "true" ]; then
         missing_required+=("document")
     fi
-    if is_true "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE" && plan_has_unchecked_local_tasks "$PLAN_FILE"; then
+    if is_true "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE" && backlog_has_unchecked_local_tasks; then
         missing_required+=("plan_backlog")
     fi
 
@@ -6066,6 +6233,7 @@ phase_transition_history_recent() {
 collect_phase_resume_blockers() {
     local phase="$1"
     local -a blockers=()
+    local stale_sources_text=""
     case "$phase" in
         plan)
             ;;
@@ -6081,6 +6249,10 @@ collect_phase_resume_blockers() {
             fi
             if [ -f "$PLAN_FILE" ] && ! plan_is_semantically_actionable "$PLAN_FILE"; then
                 blockers+=("plan is not semantically actionable")
+            fi
+            if is_true "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD" && backlog_sources_newer_than_plan "$PLAN_FILE"; then
+                stale_sources_text="${LAST_BACKLOG_STALE_SOURCES:-configured backlog sources}"
+                blockers+=("plan refresh required before $phase: backlog sources newer than plan ($stale_sources_text)")
             fi
             ;;
         *)
@@ -6670,6 +6842,11 @@ collect_build_prerequisites_issues() {
     if [ ! -f "$CONSTITUTION_FILE" ]; then
         missing+=("constitution file missing: .specify/memory/constitution.md")
     fi
+    if is_true "$REQUIRE_PLAN_FRESHNESS_FOR_BUILD" && backlog_sources_newer_than_plan "$PLAN_FILE"; then
+        local stale_sources
+        stale_sources="${LAST_BACKLOG_STALE_SOURCES:-configured backlog sources}"
+        missing+=("plan refresh required: backlog sources newer than plan ($stale_sources)")
+    fi
 
     print_array_lines "${missing[@]+"${missing[@]}"}"
 }
@@ -7239,6 +7416,8 @@ print_session_config_banner() {
     info "require_lint_before_done: ${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
     info "require_document_before_done: ${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
     info "require_plan_backlog_clear_before_done: ${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
+    info "require_plan_freshness_for_build: ${REQUIRE_PLAN_FRESHNESS_FOR_BUILD:-$DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD}"
+    info "backlog_sources: ${BACKLOG_SOURCES:-$DEFAULT_BACKLOG_SOURCES}"
     info "phase_noop_profile: ${PHASE_NOOP_PROFILE:-$DEFAULT_PHASE_NOOP_PROFILE}"
     info "strict_validation_noop: ${STRICT_VALIDATION_NOOP:-false}"
     info "auto_repair_markdown_artifacts: ${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-false}"
@@ -7946,8 +8125,23 @@ main() {
                 fi
 
                 local phase_requested_next
+                local raw_phase_requested_next
                 phase_requested_next="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                 [ -n "$phase_requested_next" ] || phase_requested_next="$(phase_default_next "$phase")"
+                raw_phase_requested_next="$phase_requested_next"
+                enforce_phase_route_prerequisites "$phase" "$phase_requested_next" >/dev/null
+                phase_requested_next="${LAST_PHASE_ROUTE_GUARD_NEXT_PHASE:-$phase_requested_next}"
+                if [ -n "${LAST_PHASE_ROUTE_GUARD_REASON:-}" ] && [ "$phase_requested_next" != "$raw_phase_requested_next" ]; then
+                    local route_guard_reason
+                    route_guard_reason="${LAST_PHASE_ROUTE_GUARD_REASON:-phase route guard remap}"
+                    warn "Phase route guard remapped next phase: ${raw_phase_requested_next} -> ${phase_requested_next} (${route_guard_reason})."
+                    notify_event "phase_decision" "route_guard_remap" "phase=$phase requested_next=${raw_phase_requested_next} remapped_next=${phase_requested_next} reason=${route_guard_reason}" || true
+                    if [ -n "$phase_route_reason" ]; then
+                        phase_route_reason="${phase_route_reason}; ${route_guard_reason}"
+                    else
+                        phase_route_reason="$route_guard_reason"
+                    fi
+                fi
                 enforce_terminal_done_requirements "$phase" "$phase_requested_next" >/dev/null
                 phase_next_target="${LAST_DONE_GUARD_NEXT_PHASE:-$phase_requested_next}"
                 if [ "$phase_next_target" != "$phase_requested_next" ]; then
