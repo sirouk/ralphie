@@ -248,9 +248,15 @@ prompt_read_line() {
         return 0
     fi
     if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        read -rp "$prompt" response < /dev/tty > /dev/tty 2>/dev/null
-        printf '%s' "${response:-$default}"
-        return 0
+        if { exec 9<>/dev/tty; } 2>/dev/null; then
+            printf '%s' "$prompt" >&9
+            if IFS= read -r -u 9 response; then
+                exec 9>&- 9<&-
+                printf '%s' "${response:-$default}"
+                return 0
+            fi
+            exec 9>&- 9<&-
+        fi
     fi
     printf '%s' "$default"
 }

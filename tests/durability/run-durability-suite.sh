@@ -892,6 +892,89 @@ test_unit_noninteractive_bootstrap_requires_build_consent() {
     )
 }
 
+test_unit_prompt_read_line_shows_prompt_with_piped_stdin() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 200
+    fi
+
+    RALPHIE_FOR_PROMPT_TEST="$RALPHIE_FILE" python3 - <<'PY'
+import os
+import select
+import shlex
+import signal
+import sys
+import time
+import pty
+
+script = os.environ["RALPHIE_FOR_PROMPT_TEST"]
+cmd = (
+    "source " + shlex.quote(script) + "; "
+    "printf ignored | prompt_read_line 'Visible prompt: ' 'fallback'; "
+    "printf '\\nDONE\\n'"
+)
+
+pid, master_fd = pty.fork()
+if pid == 0:
+    os.execlp("bash", "bash", "-lc", cmd)
+
+output = b""
+sent_answer = False
+deadline = time.time() + 5
+
+while time.time() < deadline:
+    ready, _, _ = select.select([master_fd], [], [], 0.1)
+    if master_fd not in ready:
+        continue
+    try:
+        chunk = os.read(master_fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    output += chunk
+    if b"Visible prompt: " in output and not sent_answer:
+        os.write(master_fd, b"tty-answer\n")
+        sent_answer = True
+    if b"DONE" in output:
+        break
+
+done_pid = 0
+status = 0
+for _ in range(20):
+    done_pid, status = os.waitpid(pid, os.WNOHANG)
+    if done_pid != 0:
+        break
+    time.sleep(0.1)
+
+if done_pid == 0:
+    os.kill(pid, signal.SIGTERM)
+    time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os.waitpid(pid, 0)
+    sys.stderr.write(output.decode(errors="replace"))
+    sys.stderr.write("prompt_read_line did not complete\n")
+    sys.exit(1)
+
+exit_code = os.waitstatus_to_exitcode(status)
+text = output.decode(errors="replace")
+if exit_code != 0:
+    sys.stderr.write(text)
+    sys.stderr.write(f"child exited with {exit_code}\n")
+    sys.exit(1)
+if "Visible prompt: " not in text:
+    sys.stderr.write(text)
+    sys.stderr.write("prompt was not visible on /dev/tty\n")
+    sys.exit(1)
+if "tty-answer" not in text or "DONE" not in text:
+    sys.stderr.write(text)
+    sys.stderr.write("prompt_read_line did not read the tty answer\n")
+    sys.exit(1)
+PY
+}
+
 test_unit_idle_output_watchdog_recycles_hung_process() {
     (
         set -euo pipefail
@@ -2002,6 +2085,7 @@ main() {
     run_case "unit_bootstrap_accept_blocked_no_change_guard" test_unit_bootstrap_accept_blocked_no_change_guard
     run_case "unit_append_bootstrap_context_includes_arch_and_tech" test_unit_append_bootstrap_context_includes_arch_and_tech
     run_case "unit_noninteractive_bootstrap_requires_build_consent" test_unit_noninteractive_bootstrap_requires_build_consent
+    run_case "unit_prompt_read_line_shows_prompt_with_piped_stdin" test_unit_prompt_read_line_shows_prompt_with_piped_stdin
     run_case "unit_idle_output_watchdog_recycles_hung_process" test_unit_idle_output_watchdog_recycles_hung_process
     run_case "unit_idle_output_watchdog_kills_child_process" test_unit_idle_output_watchdog_kills_child_process
     run_case "unit_timeout_warning_without_timeout_binary" test_unit_timeout_warning_without_timeout_binary
