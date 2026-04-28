@@ -43,8 +43,6 @@ REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
 NOTIFICATION_LOG_FILE="$CONFIG_DIR/notifications.log"
 GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
 STATE_FILE="$CONFIG_DIR/state.env"
-DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh"
-
 SPECIFY_DIR="$PROJECT_DIR/.specify/memory"
 CONSTITUTION_FILE="$SPECIFY_DIR/constitution.md"
 SPECS_DIR="$PROJECT_DIR/specs"
@@ -195,13 +193,92 @@ extract_xml_value() {
 
     [ -f "$file" ] || { echo "$default"; return 0; }
 
-    value="$(grep -oE "<${tag}>[^<]*</${tag}>" "$file" 2>/dev/null | tail -n 1 | sed -E "s#</?${tag}>##g")"
+    value="$(
+        awk -v tag="$tag" '
+            BEGIN {
+                open_tag = "<" tag ">"
+                close_tag = "</" tag ">"
+                in_tag = 0
+                current = ""
+                last = ""
+            }
+            {
+                line = $0
+                while (length(line) > 0) {
+                    if (!in_tag) {
+                        start = index(line, open_tag)
+                        if (start == 0) {
+                            break
+                        }
+                        line = substr(line, start + length(open_tag))
+                        current = ""
+                        in_tag = 1
+                    }
+
+                    stop = index(line, close_tag)
+                    if (stop > 0) {
+                        current = current substr(line, 1, stop - 1)
+                        last = current
+                        line = substr(line, stop + length(close_tag))
+                        current = ""
+                        in_tag = 0
+                    } else {
+                        current = current line "\n"
+                        break
+                    }
+                }
+            }
+            END {
+                if (last != "") {
+                    printf "%s", last
+                }
+            }
+        ' "$file" 2>/dev/null
+    )"
     value="$(sanitize_text_for_log "$value")"
     if [ -z "$value" ]; then
         echo "$default"
         return 0
     fi
     echo "$value"
+}
+
+extract_review_score() {
+    local file="$1"
+    local score
+    score="$(extract_xml_value "$file" "score" "")"
+    if ! is_number "$score"; then
+        score=0
+    fi
+    sanitize_review_score "$score"
+}
+
+extract_review_verdict() {
+    local file="$1"
+    local verdict
+    verdict="$(extract_xml_value "$file" "verdict" "")"
+    case "$verdict" in
+        GO|HOLD)
+            echo "$verdict"
+            return 0
+            ;;
+    esac
+
+    verdict="$(extract_xml_value "$file" "decision" "")"
+    case "$verdict" in
+        GO|HOLD) echo "$verdict" ;;
+        *) echo "HOLD" ;;
+    esac
+}
+
+extract_review_gaps() {
+    local file="$1"
+    local limit="${2:-180}"
+    local gaps
+    gaps="$(extract_xml_value "$file" "gaps" "")"
+    gaps="$(sanitize_text_for_log "$gaps" | cut -c 1-"$limit")"
+    [ -n "$gaps" ] || gaps="no explicit gaps"
+    echo "$gaps"
 }
 
 is_phase_or_done() {
@@ -570,7 +647,7 @@ apply_phase_noop_profile() {
 
     case "$profile" in
         strict)
-            [ "$PHASE_NOOP_POLICY_PLAN_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_PLAN="none"
+            [ "$PHASE_NOOP_POLICY_PLAN_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_PLAN="hard"
             [ "$PHASE_NOOP_POLICY_BUILD_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_BUILD="hard"
             [ "$PHASE_NOOP_POLICY_TEST_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_TEST="hard"
             [ "$PHASE_NOOP_POLICY_REFACTOR_EXPLICIT" != "true" ] && PHASE_NOOP_POLICY_REFACTOR="hard"
@@ -999,6 +1076,12 @@ MARKDOWN_ARTIFACTS_CLEANED_LIST=""
 MARKDOWN_ARTIFACTS_PREVIEW_LIST=""
 MARKDOWN_ARTIFACTS_BACKUP_LIST=""
 TIMEOUT_BINARY_WARNING_EMITTED="false"
+LOCK_ACQUIRED="false"
+LOCK_OWNER_TOKEN=""
+RALPHIE_CLEANUP_STATE_ENABLED="false"
+RALPHIE_CLEANUP_IN_PROGRESS="false"
+RALPHIE_TRAPS_INSTALLED="false"
+AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
 
 # Configuration defaults
 DEFAULT_ENGINE="auto"
@@ -1014,7 +1097,7 @@ DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
 DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup when missing
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
-DEFAULT_AUTO_UPDATE="true"
+DEFAULT_AUTO_UPDATE="false"                  # runtime auto-update is intentionally unsupported
 DEFAULT_COMMAND_TIMEOUT_SECONDS=0           # Tolerant default: disable command timeouts unless overridden
 DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
 DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
@@ -1196,7 +1279,6 @@ REBOOTSTRAP_REQUESTED="${RALPHIE_REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQ
 ENGINE_OUTPUT_TO_STDOUT="${RALPHIE_ENGINE_OUTPUT_TO_STDOUT:-$ENGINE_OUTPUT_TO_STDOUT}"
 YOLO="${RALPHIE_YOLO:-$YOLO}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
-AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 PHASE_WALLCLOCK_LIMIT_SECONDS="${RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS:-$PHASE_WALLCLOCK_LIMIT_SECONDS}"
 PHASE_NOOP_PROFILE="${RALPHIE_PHASE_NOOP_PROFILE:-$PHASE_NOOP_PROFILE}"
 PHASE_NOOP_POLICY_PLAN="${RALPHIE_PHASE_NOOP_POLICY_PLAN:-$PHASE_NOOP_POLICY_PLAN}"
@@ -1892,7 +1974,10 @@ enforce_session_budget() {
 
 # Interactive Questions
 is_tty_input_available() {
-    [ -t 0 ]
+    if [ -t 0 ]; then
+        return 0
+    fi
+    [ -e /dev/tty ] && { : < /dev/tty > /dev/tty; } 2>/dev/null
 }
 
 prompt_read_line() {
@@ -1906,10 +1991,11 @@ prompt_read_line() {
         return 0
     fi
 
-    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        read -rp "$prompt" response < /dev/tty > /dev/tty 2>/dev/null
-        echo "${response:-$default}"
-        return 0
+    if is_tty_input_available; then
+        if read -rp "$prompt" response < /dev/tty > /dev/tty 2>/dev/null; then
+            echo "${response:-$default}"
+            return 0
+        fi
     fi
 
     echo "$default"
@@ -2438,7 +2524,7 @@ ensure_project_bootstrap() {
     local project_type objective build_consent interactive_source constraints success_criteria goals_text goals_doc_url architecture_shape technology_choices
     project_type="existing"
     objective="Improve project with a deterministic, evidence-first implementation path."
-    build_consent="true"
+    build_consent="false"
     interactive_source="false"
     constraints="No explicit constraints provided."
     success_criteria="All required phase gates pass and deliverables match project objectives."
@@ -2743,7 +2829,7 @@ ensure_project_bootstrap() {
     fi
 
     if is_true "$needs_prompt" && ! is_tty_input_available; then
-        info "Non-interactive bootstrap fallback retained: objective and build consent defaults were applied."
+        info "Non-interactive bootstrap fallback retained: objective defaults were applied and build consent remains false."
     fi
 
     write_project_goals_file "$goals_text"
@@ -3949,10 +4035,27 @@ smoke_test_engine() {
 # Multi-Agent Capability Detection
 probe_engine_capabilities() {
     local force_reprobe="${1:-false}"
+    local probe_scope="${2:-${ENGINE_SELECTION_REQUESTED:-auto}}"
+    local probe_codex="true"
+    local probe_claude="true"
 
     if is_true "$ENGINE_CAPABILITIES_PROBED" && ! is_true "$force_reprobe"; then
         return 0
     fi
+    probe_scope="$(to_lower "$probe_scope")"
+    case "$probe_scope" in
+        codex)
+            probe_claude="false"
+            ;;
+        claude)
+            probe_codex="false"
+            ;;
+        auto|"")
+            ;;
+        *)
+            probe_scope="auto"
+            ;;
+    esac
 
     CODEX_CAP_OUTPUT_LAST_MESSAGE=0
     CODEX_CAP_YOLO_FLAG=0
@@ -3966,7 +4069,9 @@ probe_engine_capabilities() {
     CLAUDE_SMOKE_PASS="false"
 
     # Probing Claude Code
-    if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
+    if ! is_true "$probe_claude"; then
+        CLAUDE_CAP_NOTE="not probed for requested engine scope '$probe_scope'"
+    elif command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
         local claude_help
         claude_help="$("$CLAUDE_CMD" --help 2>&1 || true)"
         if echo "$claude_help" | grep -qE -- "-p, --print"; then
@@ -4001,7 +4106,9 @@ probe_engine_capabilities() {
     fi
 
     # Probing Codex
-    if command -v "$CODEX_CMD" >/dev/null 2>&1; then
+    if ! is_true "$probe_codex"; then
+        CODEX_CAP_NOTE="not probed for requested engine scope '$probe_scope'"
+    elif command -v "$CODEX_CMD" >/dev/null 2>&1; then
         local codex_help
         codex_help="$("$CODEX_CMD" exec --help 2>&1 || true)"
         if echo "$codex_help" | grep -qE -- "--output-last-message"; then
@@ -4148,7 +4255,7 @@ ensure_engines_ready() {
             info "Engine readiness check attempt $attempt/$max_attempts..."
         fi
 
-        probe_engine_capabilities "true"
+        probe_engine_capabilities "true" "$requested_engine"
         ENGINE_CAPABILITIES_PROBED=true
 
         if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
@@ -4199,34 +4306,104 @@ ensure_engines_ready() {
 }
 
 # Lock Management (atomic via mkdir)
+new_lock_owner_token() {
+    local random_part
+    random_part="$(portable_random 2>/dev/null || echo 0)"
+    printf '%s-%s-%s' "$$" "$(date +%s 2>/dev/null || echo 0)" "$random_part"
+}
+
+write_lock_owner_files() {
+    local lock_dir="$1"
+    local token="$2"
+    local owner_tmp
+    owner_tmp="$lock_dir/owner.tmp.$$"
+    {
+        printf 'pid=%s\n' "$$"
+        printf 'token=%s\n' "$token"
+        printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
+    } > "$owner_tmp" || return 1
+    mv "$owner_tmp" "$lock_dir/owner" || return 1
+    {
+        printf '%s\n' "$$"
+        date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown
+        printf 'token=%s\n' "$token"
+    } > "$LOCK_FILE"
+}
+
+lock_owner_pid() {
+    local lock_dir="${LOCK_FILE}.d"
+    local owner_file="$lock_dir/owner"
+    local pid=""
+    if [ -f "$owner_file" ]; then
+        pid="$(sed -n 's/^pid=//p' "$owner_file" 2>/dev/null | head -n 1)"
+    fi
+    if [ -z "$pid" ] && [ -f "$LOCK_FILE" ]; then
+        pid="$(head -n 1 "$LOCK_FILE" 2>/dev/null || echo "")"
+    fi
+    printf '%s' "$pid"
+}
+
+lock_owner_token_matches() {
+    local lock_dir="${LOCK_FILE}.d"
+    local owner_file="$lock_dir/owner"
+    local token="${LOCK_OWNER_TOKEN:-}"
+    [ -n "$token" ] || return 1
+    if [ -f "$owner_file" ] && grep -Fxq "token=$token" "$owner_file" 2>/dev/null; then
+        return 0
+    fi
+    if [ -f "$LOCK_FILE" ] && grep -Fxq "token=$token" "$LOCK_FILE" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 acquire_lock() {
     mkdir -p "$(dirname "$LOCK_FILE")"
     # Use a lock directory for atomic acquisition (mkdir is atomic on POSIX)
     local lock_dir="${LOCK_FILE}.d"
     if mkdir "$lock_dir" 2>/dev/null; then
-        echo "$$" > "$LOCK_FILE"
-        date '+%Y-%m-%d %H:%M:%S' >> "$LOCK_FILE"
+        LOCK_OWNER_TOKEN="$(new_lock_owner_token)"
+        if ! write_lock_owner_files "$lock_dir" "$LOCK_OWNER_TOKEN"; then
+            rm -f "$LOCK_FILE"
+            rm -rf "$lock_dir" 2>/dev/null || true
+            LOCK_OWNER_TOKEN=""
+            err "Failed to write lock owner metadata."
+            return 1
+        fi
+        LOCK_ACQUIRED="true"
         return 0
     fi
     # Lock dir exists — check if holder is still alive
-    if [ -f "$LOCK_FILE" ]; then
-        local holder_pid
-        holder_pid="$(head -n1 "$LOCK_FILE" 2>/dev/null || echo "")"
-        if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
-            err "Orchestrator already running with PID $holder_pid."
-            log_reason_code "RB_LOCK_ALREADY_HELD" "pid $holder_pid active"
-            return 1
-        else
-            warn "Stale lock file found (PID $holder_pid no longer running). Reclaiming."
-        fi
+    local holder_pid=""
+    local owner_wait_attempt=0
+    while [ "$owner_wait_attempt" -lt 3 ]; do
+        holder_pid="$(lock_owner_pid)"
+        [ -n "$holder_pid" ] && break
+        sleep 1
+        owner_wait_attempt=$((owner_wait_attempt + 1))
+    done
+    if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+        err "Orchestrator already running with PID $holder_pid."
+        log_reason_code "RB_LOCK_ALREADY_HELD" "pid $holder_pid active"
+        return 1
+    elif [ -n "$holder_pid" ]; then
+        warn "Stale lock file found (PID $holder_pid no longer running). Reclaiming."
     else
-        warn "Stale lock directory found without PID file. Reclaiming."
+        warn "Stale lock directory found without owner metadata. Reclaiming."
     fi
     # Reclaim stale lock
+    rm -f "$LOCK_FILE"
     rm -rf "$lock_dir"
     if mkdir "$lock_dir" 2>/dev/null; then
-        echo "$$" > "$LOCK_FILE"
-        date '+%Y-%m-%d %H:%M:%S' >> "$LOCK_FILE"
+        LOCK_OWNER_TOKEN="$(new_lock_owner_token)"
+        if ! write_lock_owner_files "$lock_dir" "$LOCK_OWNER_TOKEN"; then
+            rm -f "$LOCK_FILE"
+            rm -rf "$lock_dir" 2>/dev/null || true
+            LOCK_OWNER_TOKEN=""
+            err "Failed to write lock owner metadata after stale reclaim."
+            return 1
+        fi
+        LOCK_ACQUIRED="true"
         return 0
     fi
     err "Failed to acquire lock after stale reclaim attempt."
@@ -4234,25 +4411,85 @@ acquire_lock() {
 }
 
 release_lock() {
+    if ! is_true "$LOCK_ACQUIRED"; then
+        return 0
+    fi
+    if ! lock_owner_token_matches; then
+        warn "Lock release skipped: current process does not own $(path_for_display "$LOCK_FILE")."
+        LOCK_ACQUIRED="false"
+        LOCK_OWNER_TOKEN=""
+        return 0
+    fi
     rm -f "$LOCK_FILE"
     rm -rf "${LOCK_FILE}.d" 2>/dev/null || true
+    LOCK_ACQUIRED="false"
+    LOCK_OWNER_TOKEN=""
 }
 
 # Interrupt handling
+register_managed_pid() {
+    local pid="${1:-}"
+    [ -n "$pid" ] || return 0
+    RALPHIE_BG_PIDS+=("$pid")
+}
+
+unregister_managed_pid() {
+    local pid="${1:-}"
+    local registered
+    local -a kept=()
+    [ -n "$pid" ] || return 0
+    for registered in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
+        [ "$registered" = "$pid" ] && continue
+        kept+=("$registered")
+    done
+    RALPHIE_BG_PIDS=("${kept[@]+"${kept[@]}"}")
+}
+
+terminate_process_tree() {
+    local pid="${1:-}"
+    local signal="${2:-TERM}"
+    local child
+    [ -n "$pid" ] || return 0
+    [ "$pid" != "$$" ] || return 0
+
+    if command -v pgrep >/dev/null 2>&1; then
+        while IFS= read -r child; do
+            [ -n "$child" ] || continue
+            terminate_process_tree "$child" "$signal"
+        done < <(pgrep -P "$pid" 2>/dev/null || true)
+    fi
+
+    kill "-$signal" "$pid" 2>/dev/null || true
+}
+
 cleanup_managed_processes() {
     if [ "${#RALPHIE_BG_PIDS[@]}" -gt 0 ]; then
         for pid in "${RALPHIE_BG_PIDS[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
-                kill -TERM "$pid" 2>/dev/null || true
+                terminate_process_tree "$pid" TERM
             fi
         done
+        sleep 2
+        for pid in "${RALPHIE_BG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                terminate_process_tree "$pid" KILL
+            fi
+        done
+        RALPHIE_BG_PIDS=()
     fi
 }
 
 cleanup_resources() {
-    save_state 2>/dev/null || true
+    if is_true "$RALPHIE_CLEANUP_IN_PROGRESS"; then
+        return 0
+    fi
+    RALPHIE_CLEANUP_IN_PROGRESS="true"
+    if is_true "$RALPHIE_CLEANUP_STATE_ENABLED"; then
+        save_state 2>/dev/null || true
+    fi
     cleanup_managed_processes
     release_lock
+    RALPHIE_CLEANUP_IN_PROGRESS="false"
 }
 
 show_interrupt_menu() {
@@ -4328,9 +4565,16 @@ cleanup() {
     cleanup_resources
     exit 143
 }
-trap handle_interrupt SIGINT
-trap cleanup SIGTERM
-trap cleanup_resources EXIT
+
+install_cleanup_traps() {
+    if is_true "$RALPHIE_TRAPS_INSTALLED"; then
+        return 0
+    fi
+    trap handle_interrupt SIGINT
+    trap cleanup SIGTERM
+    trap cleanup_resources EXIT
+    RALPHIE_TRAPS_INSTALLED="true"
+}
 
 # Unified Agent Run Function with Exponential Backoff Retries
 get_timeout_command() {
@@ -4412,9 +4656,9 @@ wait_for_process_with_idle_output_watchdog() {
         if [ "$last_progress" -gt 0 ] && [ "$now" -gt 0 ] && [ $((now - last_progress)) -ge "$idle_timeout" ]; then
             warn "Idle-output watchdog tripped for ${label}: no new output for ${idle_timeout}s. Recycling process."
             log_reason_code "RB_IDLE_OUTPUT_WATCHDOG" "idle output watchdog tripped for ${label} (${idle_timeout}s without new output)"
-            kill -TERM "$pid" 2>/dev/null || true
+            terminate_process_tree "$pid" TERM
             sleep 2
-            kill -KILL "$pid" 2>/dev/null || true
+            terminate_process_tree "$pid" KILL
             wait "$pid" 2>/dev/null || true
             return 124
         fi
@@ -4584,11 +4828,13 @@ run_agent_with_prompt() {
             fi
         fi
         local agent_pid=$!
+        register_managed_pid "$agent_pid"
         if wait_for_process_with_idle_output_watchdog "$agent_pid" "$idle_output_timeout" "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}" "$log_file" "$output_file"; then
             exit_code=0
         else
             exit_code=$?
         fi
+        unregister_managed_pid "$agent_pid"
         if [ "$exit_code" -eq 0 ]; then
             charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")"
             if ! enforce_session_budget "agent attempt"; then
@@ -4962,7 +5208,7 @@ run_swarm_consensus() {
                 "${primary_cmds[$i]}" \
                 "${fallback_cmds[$i]}"
         ) &
-        RALPHIE_BG_PIDS+=($!)
+        register_managed_pid "$!"
         active=$((active + 1))
         if [ "$active" -ge "$parallel" ] || [ "$i" -eq $((count - 1)) ]; then
             # wait -n requires Bash 4.3+; use portable fallback
@@ -5004,11 +5250,11 @@ run_swarm_consensus() {
                 warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
                 swarm_timed_out=true
                 for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
-                    kill -TERM "$pid" 2>/dev/null || true
+                    terminate_process_tree "$pid" TERM
                 done
                 sleep 2
                 for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
-                    kill -KILL "$pid" 2>/dev/null || true
+                    terminate_process_tree "$pid" KILL
                 done
                 break
             fi
@@ -5053,23 +5299,13 @@ run_swarm_consensus() {
         fi
 
         if [ -f "$ofile" ]; then
-            score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
-            score="$(sanitize_review_score "$score")"
-            if grep -qE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null; then
-                verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" | tail -n 1 | sed -E 's/<\/?verdict>//g' )"
-            elif grep -qE "<decision>(GO|HOLD)</decision>" "$ofile" 2>/dev/null; then
-                verdict="$(grep -oE "<decision>(GO|HOLD)</decision>" "$ofile" | tail -n 1 | sed -E 's/<\/?decision>//g' )"
-            else
-                verdict="HOLD"
-            fi
+            score="$(extract_review_score "$ofile")"
+            verdict="$(extract_review_verdict "$ofile")"
 
             next_phase="$(extract_xml_value "$ofile" "next_phase" "$default_next_phase")"
             next_phase="$(normalize_next_phase_recommendation "$next_phase" "$base_stage" "$default_next_phase")"
             next_phase_reason="$(extract_xml_value "$ofile" "next_phase_reason" "")"
-            if grep -q "<gaps>" "$ofile" 2>/dev/null; then
-                verdict_gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
-            fi
-            verdict_gaps="$(sanitize_text_for_log "$verdict_gaps" | cut -c 1-180)"
+            verdict_gaps="$(extract_review_gaps "$ofile" 180)"
             next_phase_reason="$(sanitize_text_for_log "$next_phase_reason")"
             [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         else
@@ -5274,20 +5510,9 @@ read_handoff_review_output() {
 
     [ -f "$output_file" ] || return 0
 
-    score="$(grep -oE "<score>[0-9]{1,3}</score>" "$output_file" | sed 's/[^0-9]//g' | tail -n 1)"
-    score="$(sanitize_review_score "$score")"
-
-    if grep -qE "<verdict>(GO|HOLD)</verdict>" "$output_file" 2>/dev/null; then
-        verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$output_file" | tail -n 1 | sed -E 's/<\/?verdict>//g')"
-    elif grep -qE "<decision>(GO|HOLD)</decision>" "$output_file" 2>/dev/null; then
-        verdict="$(grep -oE "<decision>(GO|HOLD)</decision>" "$output_file" | tail -n 1 | sed -E 's/<\/?decision>//g')"
-    fi
-
-    if grep -q "<gaps>" "$output_file" 2>/dev/null; then
-        gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$output_file" | head -n 1)"
-    fi
-    gaps="$(sanitize_text_for_log "$gaps" | cut -c 1-180)"
-    [ -z "$gaps" ] && gaps="no explicit gaps"
+    score="$(extract_review_score "$output_file")"
+    verdict="$(extract_review_verdict "$output_file")"
+    gaps="$(extract_review_gaps "$output_file" 180)"
 
     LAST_HANDOFF_SCORE="$score"
     LAST_HANDOFF_VERDICT="$verdict"
@@ -5743,6 +5968,7 @@ build_phase_commit_message() {
 
 prepare_phase_auto_commit_mode() {
     AUTO_COMMIT_SESSION_ENABLED="false"
+    AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
     if ! is_true "$AUTO_COMMIT_ON_PHASE_PASS"; then
         info "Phase auto-commit is disabled."
         return 0
@@ -5759,13 +5985,28 @@ prepare_phase_auto_commit_mode() {
         return 0
     fi
 
-    if git_has_local_changes; then
-        warn "Auto-commit starting from a dirty worktree; first phase commit may include pre-existing local changes."
+    AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE="$(mktemp "$CONFIG_DIR/autocommit-baseline.XXXXXX")" || AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
+    if [ -n "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
+        collect_git_dirty_paths > "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" 2>/dev/null || true
+    fi
+    if [ -n "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ] && [ -s "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
+        warn "Auto-commit starting from a dirty worktree; phase commits will be skipped if they overlap pre-existing dirty paths."
     fi
 
     AUTO_COMMIT_SESSION_ENABLED="true"
     info "Git identity ready for auto-commit (${GIT_IDENTITY_SOURCE})."
     info "Phase auto-commit enabled (local commits only; pushes are disabled)."
+}
+
+collect_git_dirty_paths() {
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    {
+        git -C "$PROJECT_DIR" diff --name-only -- . 2>/dev/null || true
+        git -C "$PROJECT_DIR" diff --cached --name-only -- . 2>/dev/null || true
+        git -C "$PROJECT_DIR" ls-files --others --exclude-standard -- . 2>/dev/null || true
+    } | sed '/^$/d' | sort -u
 }
 
 collect_manifest_delta_commit_paths() {
@@ -5833,6 +6074,20 @@ commit_phase_approved_changes() {
         warn "Auto-commit skipped for phase '$phase': no reliable manifest delta paths were captured for this attempt."
         rm -f "$commit_paths_file"
         return 0
+    fi
+    if [ -n "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ] && [ -s "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
+        local overlap_file
+        overlap_file="$(mktemp "$CONFIG_DIR/commit-overlap.XXXXXX")" || overlap_file=""
+        if [ -n "$overlap_file" ]; then
+            comm -12 "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$commit_paths_file" > "$overlap_file" 2>/dev/null || true
+            if [ -s "$overlap_file" ]; then
+                warn "Auto-commit skipped for phase '$phase': phase delta overlaps paths dirty before Ralphie started."
+                sed 's/^/  - /' "$overlap_file" >&2 || true
+                rm -f "$overlap_file" "$commit_paths_file"
+                return 0
+            fi
+            rm -f "$overlap_file"
+        fi
     fi
 
     if ! stage_commit_paths_from_file "$commit_paths_file"; then
@@ -6753,6 +7008,12 @@ plan_is_semantically_actionable() {
     return 1
 }
 
+plan_is_fallback_placeholder() {
+    local plan_file="$1"
+    [ -f "$plan_file" ] || return 1
+    grep -q '^ralphie_fallback_placeholder:[[:space:]]*true[[:space:]]*$' "$plan_file" 2>/dev/null
+}
+
 plan_task_count() {
     local plan_file="$1"
     if [ ! -f "$plan_file" ]; then
@@ -6819,6 +7080,8 @@ collect_build_prerequisites_issues() {
     fi
     if [ ! -f "$PLAN_FILE" ]; then
         missing+=("IMPLEMENTATION_PLAN.md missing before build")
+    elif plan_is_fallback_placeholder "$PLAN_FILE"; then
+        missing+=("IMPLEMENTATION_PLAN.md still contains Ralphie fallback placeholder; run PLAN to replace it with a project-specific plan")
     elif ! plan_is_semantically_actionable "$PLAN_FILE"; then
         missing+=("plan is not semantically actionable")
     fi
@@ -6902,6 +7165,7 @@ Outputs (required)
 - `research/COVERAGE_MATRIX.md` with coverage against goals.
 - `research/STACK_SNAPSHOT.md` with ranked stack hypotheses, deterministic confidence score, and alternatives.
 - `IMPLEMENTATION_PLAN.md` with goal, validation criteria, and actionable tasks.
+- If `IMPLEMENTATION_PLAN.md` contains `ralphie_fallback_placeholder: true`, replace it with a project-specific plan and remove that marker before declaring PLAN complete.
 - `consensus/build_gate.md` if needed for blockers.
 
 Behavior
@@ -7017,39 +7281,37 @@ ensure_core_artifacts() {
 
     [ -f "$PLAN_FILE" ] || cat > "$PLAN_FILE" <<'EOF'
 # Implementation Plan
+ralphie_fallback_placeholder: true
 
 ## Goal
-- Bring project into an executable, measurable development plan.
+- Produce a project-specific, executable, measurable development plan.
 
 ## Research Discovery
-- Inspect repository structure and runtime stack for training, OOF, optimization, and live execution surfaces.
-- Map execution boundaries between scripts, orchestration, and live service components.
+- Inspect repository structure, entrypoints, tests, configuration, and runtime stack.
+- Map the current user workflow, execution boundaries, and operational constraints.
 
 ## Stack
-- Confirm Python is the canonical workflow runtime and keep dashboard tooling isolated to observability.
-- Track deterministic entrypoint ownership for train, OOF, optimization, and parity checks.
+- Determine the canonical workflow/runtime from repository evidence.
+- Record alternatives and uncertainty where stack ownership is ambiguous.
 
 ## Acceptance Criteria
-- `<confidence>` score present in `research/RESEARCH_SUMMARY.md`.
-- Research and specs artifacts updated with acceptance criteria.
-  - `research/CODEBASE_MAP.md`
-  - `research/DEPENDENCY_RESEARCH.md`
-  - `research/COVERAGE_MATRIX.md`
-  - `research/STACK_SNAPSHOT.md`
+- `research/RESEARCH_SUMMARY.md` includes a `<confidence>` score and current posture.
+- Research artifacts describe codebase shape, dependencies, coverage, and stack signals.
+- This placeholder marker is removed by the PLAN phase after a real project-specific plan is written.
 
 ## Readiness
 - Plan artifacts and build prerequisites remain stable between phase transitions.
 - Required artifacts are present and reviewed before build/test gates.
 
 ## Risk
-- Config drift and checkpoint/model-contract mismatch between train→OOF→optimize→live are high-priority risks.
-- Missing handoff consistency checks at phase handoff may cause parity failures.
+- Generic fallback planning can misdirect implementation if not replaced with repository-specific evidence.
+- Missing handoff consistency checks may allow phase gates to pass without actionable evidence.
 
 ## Actionable Tasks
-- [ ] Inspect repository structure and stack dependencies.
-- [ ] Generate or update research artifacts (`research/*`).
-- [ ] Produce a concrete implementation plan.
-- [ ] Implement phase-safe iteration and guardrails.
+1. Inspect repository structure and stack dependencies.
+2. Generate or update research artifacts (`research/*`).
+3. Replace this fallback with a concrete, project-specific implementation plan.
+4. Define validation commands and done criteria for the next build/test pass.
 EOF
 
     [ -f "$RESEARCH_SUMMARY_FILE" ] || cat > "$RESEARCH_SUMMARY_FILE" <<'EOF'
@@ -7300,22 +7562,14 @@ collect_phase_retry_failures_from_consensus() {
     for ofile in "$LAST_CONSENSUS_DIR"/*.out; do
         [ -f "$ofile" ] || continue
         local score verdict next_phase next_phase_reason
-        score="$(grep -oE "<score>[0-9]{1,3}</score>" "$ofile" | sed 's/[^0-9]//g' | tail -n 1)"
-        score="$(sanitize_review_score "$score")"
-        verdict="$(grep -oE "<verdict>(GO|HOLD)</verdict>" "$ofile" 2>/dev/null | tail -n 1 | sed -E 's/<\/?verdict>//g')"
-        [ "$verdict" = "GO" ] || [ "$verdict" = "HOLD" ] || verdict="HOLD"
+        score="$(extract_review_score "$ofile")"
+        verdict="$(extract_review_verdict "$ofile")"
         next_phase="$(extract_xml_value "$ofile" "next_phase" "unknown")"
         next_phase_reason="$(extract_xml_value "$ofile" "next_phase_reason" "")"
         next_phase_reason="$(sanitize_text_for_log "$next_phase_reason")"
         [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         local gaps
-        if grep -q "<gaps>" "$ofile" 2>/dev/null; then
-            gaps="$(sed -n 's/.*<gaps>\(.*\)<\/gaps>.*/\1/p' "$ofile" | head -n 1)"
-            gaps="$(sanitize_text_for_log "$gaps" | cut -c 1-140)"
-            [ -z "$gaps" ] && gaps="no explicit gaps"
-        else
-            gaps="no explicit gaps"
-        fi
+        gaps="$(extract_review_gaps "$ofile" 140)"
         reviewer_summary="$(basename "$ofile"): score=$score verdict=${verdict:-HOLD} next=$next_phase reason=$next_phase_reason gaps=$gaps"
         failures+=("consensus review: $reviewer_summary")
     done
@@ -7368,7 +7622,7 @@ run_idle_plan_refresh() { return 0; }
 print_session_config_banner() {
     info "=== Ralphie Session Budget & Retry Configuration ==="
     info "script_version: ${SCRIPT_VERSION}"
-    info "auto_update_url: ${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
+    info "auto_update: ${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE} (runtime auto-update unsupported)"
     info "max_session_cycles: ${MAX_SESSION_CYCLES:-0} (0=unlimited)"
     info "session_token_budget: ${SESSION_TOKEN_BUDGET:-0} (0=unlimited)"
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
@@ -7465,14 +7719,17 @@ main() {
     is_bool_like "$STARTUP_OPERATIONAL_PROBE" || STARTUP_OPERATIONAL_PROBE="$DEFAULT_STARTUP_OPERATIONAL_PROBE"
 
     acquire_lock || exit 1
+    install_cleanup_traps
 
     local resume_reentry_pending="false"
     if is_true "$RESUME_REQUESTED" && load_state; then
         resume_reentry_pending="true"
         success "Resuming mission..."
+        RALPHIE_CLEANUP_STATE_ENABLED="true"
     else
         rm -f "$SESSION_CHANGED_PATHS_FILE" 2>/dev/null || true
         save_state_or_exit "session bootstrap initialization"
+        RALPHIE_CLEANUP_STATE_ENABLED="true"
     fi
     if is_true "$ENGINE_OUTPUT_TO_STDOUT_EXPLICIT"; then
         ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT_OVERRIDE"
@@ -7534,7 +7791,6 @@ main() {
     fi
     refresh_git_identity_status || true
     prepare_phase_auto_commit_mode
-    run_first_deploy_notification_wizard || true
     save_state_or_exit "post-startup bootstrap"
 
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
@@ -7582,6 +7838,7 @@ main() {
     local routing_stagnation_signature=""
     local routing_stagnation_count=0
     local engine_override_bootstrap_checked="false"
+    local notification_wizard_bootstrap_checked="false"
     local session_start_notified="false"
     while true; do
         ENGINE_CAPABILITIES_PROBED=false  # force fresh probe (including smoke test) each iteration
@@ -7603,6 +7860,10 @@ main() {
                 fi
             fi
         fi
+        if [ "$notification_wizard_bootstrap_checked" = "false" ]; then
+            notification_wizard_bootstrap_checked="true"
+            run_first_deploy_notification_wizard || true
+        fi
         if [ "$session_start_notified" = "false" ]; then
             session_start_notified="true"
             notify_event "session_start" "ok" "engine_request=$ENGINE_SELECTION_REQUESTED active_engine=$ACTIVE_ENGINE channels=$(notification_channels_for_display)" || true
@@ -7617,6 +7878,12 @@ main() {
                 reentering_in_progress_phase="true"
                 info "Resuming in-progress phase '$phase' at iteration ${ITERATION_COUNT} attempt ${CURRENT_PHASE_ATTEMPT}."
             else
+                if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then
+                    log_reason_code "RB_ITERATION_BUDGET_REACHED" "run iteration budget reached before phase $phase at $ITERATION_COUNT/$MAX_ITERATIONS"
+                    notify_event "session_error" "iteration_budget_reached" "iteration budget reached before phase=$phase at $ITERATION_COUNT/$MAX_ITERATIONS" || true
+                    should_exit="true"
+                    break 2
+                fi
                 ITERATION_COUNT=$((ITERATION_COUNT + 1))
             fi
             if [ "$reentering_in_progress_phase" != "true" ]; then
@@ -7669,7 +7936,6 @@ main() {
             local phase_next_target="$phase"
             local phase_route="false"
             local phase_route_reason=""
-            local phase_route_outcome="none"
             local phase_stagnation_signature=""
             local phase_stagnation_count=0
             while phase_attempt_within_budget "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS"; do
@@ -7690,7 +7956,7 @@ main() {
                 local bootstrap_prompt_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.bootstrap.prompt.md"
                 local previous_attempt_output_hash=""
                 local previous_attempt_output_file=""
-                local phase_noop_mode manifest_before_file manifest_after_file phase_attempt_started_at
+                local phase_noop_mode manifest_before_file manifest_after_file
                 phase_noop_mode="$(phase_noop_policy "$phase")"
                 local phase_delta_preview=""
                 local handoff_validator_prompt="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}.handoff.prompt.md"
@@ -7984,7 +8250,6 @@ main() {
                         if is_number "$phase_route_candidate_index" && [ "$phase_route_candidate_index" -ge 0 ] && [ "$phase_route_candidate_index" -lt "$phase_index" ]; then
                             phase_next_target="$phase_route_candidate"
                             phase_route="true"
-                            phase_route_outcome="hold"
                             phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
@@ -8015,7 +8280,6 @@ main() {
                         if is_true "$build_consensus_hold_detected"; then
                             phase_next_target="plan"
                             phase_route="true"
-                            phase_route_outcome="hold"
                             phase_route_reason="auto-backtrack: build exhausted retries on $build_hold_reason; refreshing plan scope"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting build -> plan"
@@ -8087,7 +8351,6 @@ main() {
                         if [ -n "$auto_backtrack_target" ] && [ "$auto_backtrack_target" != "$phase" ]; then
                             phase_next_target="$auto_backtrack_target"
                             phase_route="true"
-                            phase_route_outcome="hold"
                             phase_route_reason="auto-backtrack: $phase exhausted retries (${exhausted_attempt_count}/${PHASE_COMPLETION_MAX_ATTEMPTS}); rerouting to $auto_backtrack_target for blocker resolution"
                             phase_transition_history_append "$phase" "$exhausted_attempt_count" "$phase_next_target" "hold" "$phase_route_reason"
                             write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting $phase -> $phase_next_target"
@@ -8122,6 +8385,21 @@ main() {
                     for issue in "${phase_warnings[@]+"${phase_warnings[@]}"}"; do
                         info "note: $issue"
                     done
+                fi
+
+                if is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" && [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -gt 0 ] && is_number "${phase_attempt_started_at:-0}" && [ "${phase_attempt_started_at:-0}" -gt 0 ]; then
+                    local now elapsed
+                    now="$(date +%s 2>/dev/null || echo 0)"
+                    elapsed=$(( now - phase_attempt_started_at ))
+                    if [ "$elapsed" -ge "$PHASE_WALLCLOCK_LIMIT_SECONDS" ]; then
+                        warn "Phase $phase wall-clock guard (${PHASE_WALLCLOCK_LIMIT_SECONDS}s) tripped after successful attempt $phase_attempt; stopping before routing."
+                        log_reason_code "RB_PHASE_WALLCLOCK_EXCEEDED" "phase $phase attempt $phase_attempt exceeded wall-clock limit ${PHASE_WALLCLOCK_LIMIT_SECONDS}s (elapsed ${elapsed}s)"
+                        notify_event "phase_blocked" "hold" "phase=$phase wallclock=${PHASE_WALLCLOCK_LIMIT_SECONDS}s elapsed=${elapsed}s" || true
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        save_state_or_exit "phase wallclock guard checkpoint ($phase)"
+                        should_exit="true"
+                        break
+                    fi
                 fi
 
                 local phase_requested_next
@@ -8163,7 +8441,6 @@ main() {
                 elif [ -z "$phase_route_reason" ]; then
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
-                phase_route_outcome="pass"
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1
@@ -8184,12 +8461,6 @@ main() {
                 fi
                 if [ "$phase_next_target" = "done" ] || [ "$route_index" -ne "$expected_route_index" ]; then
                     notify_event "phase_decision" "reroute_pass" "phase=$phase rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
-                fi
-                if [ "$phase_route_outcome" = "pass" ]; then
-                    # A successful phase completion resets cross-phase reroute pressure.
-                    consensus_route_count=0
-                    routing_stagnation_signature=""
-                    routing_stagnation_count=0
                 fi
                 if [ "$route_index" -lt "$phase_index" ]; then
                     consensus_route_count=$((consensus_route_count + 1))

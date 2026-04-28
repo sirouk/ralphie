@@ -10,6 +10,7 @@ LIVE_TIMEOUT_SECONDS="${LIVE_TIMEOUT_SECONDS:-120}"
 STRESS_SCENARIOS="${STRESS_SCENARIOS:-full,retry,resume}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 EXERCISE_TTS_FALLBACK="false"
+VALID_STRESS_SCENARIOS="full,retry,resume"
 
 info() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -21,13 +22,15 @@ print_usage() {
 Usage: ./test.sh [options]
 
 Runs the pre-ship validation sequence:
-  1) bash syntax check for ralphie.sh
-  2) tests/durability/run-durability-suite.sh
-  3) tests/durability/run-claude-phase-stress.sh
-  4) tests/durability/run-live-smoke.sh (optional, controlled by flags)
+  1) bash syntax checks for ralphie.sh and support scripts
+  2) shellcheck support scripts when available
+  3) offline setup-agent-subrepos fixture check
+  4) tests/durability/run-durability-suite.sh
+  5) tests/durability/run-claude-phase-stress.sh
+  6) tests/durability/run-live-smoke.sh (optional, controlled by flags)
 
 Options:
-  --live-engine codex|claude     Live smoke engine (default: claude)
+  --live-engine codex|claude     Live smoke provider API path (default: claude)
   --live                         Require and run live smoke (fail if creds missing)
   --auto-live                    Run live smoke only when creds are available (default)
   --skip-live                    Skip live smoke
@@ -46,6 +49,15 @@ is_number() {
     [[ "${1:-}" =~ ^[0-9]+$ ]]
 }
 
+require_arg_value() {
+    local flag="$1"
+    local value="${2:-}"
+    if [ -z "$value" ] || [[ "$value" == --* ]]; then
+        fail "$flag requires a value"
+        exit 1
+    fi
+}
+
 get_timeout_cmd() {
     if command -v timeout >/dev/null 2>&1; then
         echo "timeout"
@@ -58,10 +70,47 @@ get_timeout_cmd() {
     echo ""
 }
 
+stress_scenario_is_valid() {
+    case "${1:-}" in
+        full|retry|resume) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_stress_scenarios() {
+    local raw="${1:-}"
+    local -a scenario_values=()
+    local old_ifs scenario
+
+    if [ -z "$raw" ]; then
+        fail "Invalid --stress-scenarios value: empty (expected: $VALID_STRESS_SCENARIOS)"
+        exit 1
+    fi
+    case "$raw" in
+        ,*|*,|*,,*)
+            fail "Invalid --stress-scenarios value '$raw' (expected comma-separated names: $VALID_STRESS_SCENARIOS)"
+            exit 1
+            ;;
+    esac
+
+    old_ifs="$IFS"
+    IFS=,
+    read -r -a scenario_values <<< "$raw"
+    IFS="$old_ifs"
+
+    for scenario in "${scenario_values[@]}"; do
+        if ! stress_scenario_is_valid "$scenario"; then
+            fail "Invalid stress scenario '$scenario' (expected one of: $VALID_STRESS_SCENARIOS)"
+            exit 1
+        fi
+    done
+}
+
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --live-engine)
+                require_arg_value "--live-engine" "${2:-}"
                 LIVE_ENGINE="${2:-}"
                 shift 2
                 ;;
@@ -78,14 +127,17 @@ parse_args() {
                 shift
                 ;;
             --live-timeout-seconds)
+                require_arg_value "--live-timeout-seconds" "${2:-}"
                 LIVE_TIMEOUT_SECONDS="${2:-}"
                 shift 2
                 ;;
             --stress-scenarios)
+                require_arg_value "--stress-scenarios" "${2:-}"
                 STRESS_SCENARIOS="${2:-}"
                 shift 2
                 ;;
             --discord-webhook-url)
+                require_arg_value "--discord-webhook-url" "${2:-}"
                 DISCORD_WEBHOOK_URL="${2:-}"
                 shift 2
                 ;;
@@ -128,10 +180,102 @@ validate_args() {
         exit 1
     fi
 
+    validate_stress_scenarios "$STRESS_SCENARIOS"
+
     if [ "$EXERCISE_TTS_FALLBACK" = "true" ] && [ -z "$DISCORD_WEBHOOK_URL" ]; then
         fail "--exercise-tts-fallback requires --discord-webhook-url"
         exit 1
     fi
+}
+
+run_support_bash_syntax_checks() {
+    local -a shell_files=(
+        ./ralphie.sh
+        ./test.sh
+        ./tests/durability/run-claude-phase-stress.sh
+        ./tests/durability/run-live-smoke.sh
+        ./tests/durability/mock-claude-control.sh
+        ./engines/setup-agent-subrepos.sh
+    )
+    local file
+
+    for file in "${shell_files[@]}"; do
+        bash -n "$file"
+    done
+}
+
+run_support_shellcheck_if_available() {
+    local -a shell_files=(
+        ./test.sh
+        ./tests/durability/run-claude-phase-stress.sh
+        ./tests/durability/run-live-smoke.sh
+        ./tests/durability/mock-claude-control.sh
+        ./engines/setup-agent-subrepos.sh
+    )
+
+    if ! command -v shellcheck >/dev/null 2>&1; then
+        warn "shellcheck skipped (not installed)."
+        return 0
+    fi
+
+    shellcheck "${shell_files[@]}"
+}
+
+run_setup_agent_subrepos_fixture_check() {
+    local tmpd rc=0
+    tmpd="$(mktemp -d /tmp/ralphie-setup-agent-fixture.XXXXXX)"
+
+    set +e
+    (
+        set -euo pipefail
+
+        mkdir -p "$tmpd/repo/engines" "$tmpd/bin"
+        cp ./engines/setup-agent-subrepos.sh "$tmpd/repo/engines/setup-agent-subrepos.sh"
+
+        cat > "$tmpd/bin/git" <<'EOF_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" = "-C" ]; then
+    shift 2
+fi
+
+case "${1:-}" in
+    clone)
+        dest=""
+        for arg in "$@"; do
+            dest="$arg"
+        done
+        [ -n "$dest" ]
+        mkdir -p "$dest/.git"
+        ;;
+    rev-parse)
+        case "${2:-}" in
+            HEAD) echo "0123456789abcdef0123456789abcdef01234567" ;;
+            --is-inside-work-tree) echo "true" ;;
+        esac
+        ;;
+    *)
+        ;;
+esac
+EOF_GIT
+        chmod +x "$tmpd/bin/git" "$tmpd/repo/engines/setup-agent-subrepos.sh"
+
+        PATH="$tmpd/bin:$PATH" "$tmpd/repo/engines/setup-agent-subrepos.sh" --mode clone \
+            >"$tmpd/setup.out" 2>"$tmpd/setup.err"
+
+        [ -f "$tmpd/repo/maps/agent-source-map.yaml" ]
+        [ -f "$tmpd/repo/maps/binary-steering-map.yaml" ]
+
+        local plan_count
+        plan_count="$(grep -c '^  plan:' "$tmpd/repo/maps/binary-steering-map.yaml" || true)"
+        [ "$plan_count" -eq 1 ]
+    )
+    rc=$?
+    set -e
+
+    rm -rf "$tmpd"
+    return "$rc"
 }
 
 run_step() {
@@ -182,7 +326,9 @@ main() {
     parse_args "$@"
     validate_args
 
-    run_step "bash -n ralphie.sh" bash -n ./ralphie.sh
+    run_step "bash syntax checks" run_support_bash_syntax_checks
+    run_step "shellcheck support scripts" run_support_shellcheck_if_available
+    run_step "setup-agent-subrepos fixture" run_setup_agent_subrepos_fixture_check
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")

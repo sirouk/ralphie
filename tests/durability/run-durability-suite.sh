@@ -140,6 +140,19 @@ test_shellcheck() {
     shellcheck "$RALPHIE_FILE" >/dev/null
 }
 
+test_cli_help_does_not_mutate_state() {
+    local ws
+    ws="$(make_workspace)"
+    (
+        set -euo pipefail
+        cd "$ws"
+        ./ralphie.sh --help >/dev/null
+        [ ! -e "$ws/.ralphie/state.env" ]
+        [ ! -e "$ws/.ralphie/run.lock" ]
+        [ ! -e "$ws/.ralphie/run.lock.d" ]
+    )
+}
+
 test_unit_state_roundtrip_and_checksum() {
     (
         set -euo pipefail
@@ -255,9 +268,9 @@ test_unit_reviewer_payload_sanitization() {
 
         out_file="$tmpd/handoff.out"
         {
-            printf '<score>999</score>\n'
-            printf '<verdict>GO</verdict>\n'
-            printf '<gaps>raw '
+            printf '<score>\n999\n</score>\n'
+            printf '<verdict>\nGO\n</verdict>\n'
+            printf '<gaps>raw\n'
             printf '\033'
             printf ' control</gaps>\n'
         } > "$out_file"
@@ -272,13 +285,13 @@ test_unit_reviewer_payload_sanitization() {
         cons_dir="$tmpd/consensus"
         mkdir -p "$cons_dir"
         {
-            printf '<score>101</score>\n'
-            printf '<verdict>HOLD</verdict>\n'
-            printf '<next_phase>build</next_phase>\n'
-            printf '<next_phase_reason>reason '
+            printf '<score>\n101\n</score>\n'
+            printf '<verdict>\nHOLD\n</verdict>\n'
+            printf '<next_phase>\nbuild\n</next_phase>\n'
+            printf '<next_phase_reason>reason\n'
             printf '\033'
             printf ' x</next_phase_reason>\n'
-            printf '<gaps>gaps '
+            printf '<gaps>gaps\n'
             printf '\033'
             printf ' y</gaps>\n'
         } > "$cons_dir/reviewer_1.out"
@@ -855,6 +868,30 @@ EOF
     )
 }
 
+test_unit_noninteractive_bootstrap_requires_build_consent() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-noninteractive-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        CONFIG_FILE="$CONFIG_DIR/config.env"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        is_tty_input_available() { return 1; }
+        ensure_project_bootstrap
+
+        grep -q '^interactive_prompted: false$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^build_consent: false$' "$PROJECT_BOOTSTRAP_FILE"
+    )
+}
+
 test_unit_idle_output_watchdog_recycles_hung_process() {
     (
         set -euo pipefail
@@ -889,6 +926,47 @@ test_unit_idle_output_watchdog_recycles_hung_process() {
     )
 }
 
+test_unit_idle_output_watchdog_kills_child_process() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd log_file out_file child_pid wrapper_pid rc
+        tmpd="$(mktemp -d /tmp/ralphie-watchdog-tree-unit.XXXXXX)"
+        log_file="$tmpd/agent.log"
+        out_file="$tmpd/agent.out"
+        : > "$log_file"
+        : > "$out_file"
+
+        (
+            ( sleep 30 ) &
+            echo "$!" > "$tmpd/child.pid"
+            wait
+        ) &
+        wrapper_pid=$!
+
+        for _ in 1 2 3 4 5; do
+            [ -s "$tmpd/child.pid" ] && break
+            sleep 0.2
+        done
+        child_pid="$(cat "$tmpd/child.pid")"
+
+        if wait_for_process_with_idle_output_watchdog "$wrapper_pid" 1 "unit-watchdog-tree" "$log_file" "$out_file"; then
+            return 1
+        else
+            rc=$?
+        fi
+
+        [ "$rc" -eq 124 ]
+        sleep 0.5
+        if kill -0 "$child_pid" 2>/dev/null; then
+            return 1
+        fi
+    )
+}
+
 test_unit_timeout_warning_without_timeout_binary() {
     (
         set -euo pipefail
@@ -907,6 +985,129 @@ test_unit_timeout_warning_without_timeout_binary() {
         printf '%s' "$warning_output" | grep -q "no timeout wrapper is installed"
         printf '%s' "$warning_output" | grep -q "brew install coreutils"
         [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "true" ]
+    )
+}
+
+test_unit_run_agent_cli_contracts_codex_and_claude() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd prompt_file codex_log codex_out claude_log claude_out
+        tmpd="$(mktemp -d /tmp/ralphie-cli-contract-unit.XXXXXX)"
+        mkdir -p "$tmpd/bin"
+        prompt_file="$tmpd/prompt.md"
+        printf 'hello contract\n' > "$prompt_file"
+
+        cat > "$tmpd/bin/fake-codex" <<'FAKE_CODEX'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = "exec" ] || { echo "missing exec" >&2; exit 2; }
+shift
+output_file=""
+stdin_dash=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --model|-c|--output-schema)
+            [ -n "${2:-}" ] || exit 2
+            if [ "$1" = "--output-schema" ] && [ ! -f "$2" ]; then exit 2; fi
+            shift 2
+            ;;
+        --dangerously-bypass-approvals-and-sandbox)
+            shift
+            ;;
+        --output-last-message)
+            [ -n "${2:-}" ] || exit 2
+            output_file="$2"
+            shift 2
+            ;;
+        -)
+            stdin_dash=true
+            shift
+            ;;
+        *)
+            echo "unknown codex arg: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+[ "$stdin_dash" = true ] || exit 2
+[ -n "$output_file" ] || exit 2
+cat >/dev/null
+printf 'codex final\n' > "$output_file"
+printf 'codex log\n'
+FAKE_CODEX
+
+        cat > "$tmpd/bin/fake-claude" <<'FAKE_CLAUDE'
+#!/usr/bin/env bash
+set -euo pipefail
+print_mode=false
+stdin_dash=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -p|--print)
+            print_mode=true
+            shift
+            ;;
+        --model|--settings)
+            [ -n "${2:-}" ] || exit 2
+            shift 2
+            ;;
+        --dangerously-skip-permissions)
+            shift
+            ;;
+        -)
+            stdin_dash=true
+            shift
+            ;;
+        *)
+            echo "unknown claude arg: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+[ "$print_mode" = true ] || exit 2
+[ "$stdin_dash" = true ] || exit 2
+cat >/dev/null
+printf 'claude final\n'
+FAKE_CLAUDE
+        chmod +x "$tmpd/bin/fake-codex" "$tmpd/bin/fake-claude"
+
+        PROJECT_DIR="$tmpd"
+        CONFIG_DIR="$tmpd/.ralphie"
+        mkdir -p "$CONFIG_DIR"
+        COMMAND_TIMEOUT_SECONDS=0
+        ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS=0
+        ENGINE_OUTPUT_TO_STDOUT=false
+        RUN_AGENT_MAX_ATTEMPTS=1
+        RUN_AGENT_RETRY_DELAY_SECONDS=0
+        CODEX_THINKING_OVERRIDE="high"
+        CLAUDE_THINKING_OVERRIDE="high"
+        YOLO=true
+
+        codex_log="$tmpd/codex.log"
+        codex_out="$tmpd/codex.out"
+        ACTIVE_ENGINE=codex
+        ACTIVE_CMD="$tmpd/bin/fake-codex"
+        CODEX_HEALTHY=true
+        CODEX_CAP_OUTPUT_LAST_MESSAGE=1
+        CODEX_CAP_YOLO_FLAG=1
+        probe_engine_capabilities() { return 0; }
+        run_agent_with_prompt "$prompt_file" "$codex_log" "$codex_out" true 1
+        grep -q '^codex final$' "$codex_out"
+        grep -q '^codex log$' "$codex_log"
+
+        claude_log="$tmpd/claude.log"
+        claude_out="$tmpd/claude.out"
+        ACTIVE_ENGINE=claude
+        ACTIVE_CMD="$tmpd/bin/fake-claude"
+        CLAUDE_HEALTHY=true
+        CLAUDE_CAP_PRINT=1
+        CLAUDE_CAP_YOLO_FLAG="--dangerously-skip-permissions"
+        run_agent_with_prompt "$prompt_file" "$claude_log" "$claude_out" true 1
+        grep -q '^claude final$' "$claude_out"
     )
 }
 
@@ -1095,6 +1296,54 @@ test_unit_auto_commit_scoped_to_manifest_delta() {
     )
 }
 
+test_unit_auto_commit_skips_preexisting_dirty_overlap() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd manifest_before manifest_after before_head after_head
+        tmpd="$(mktemp -d /tmp/ralphie-autocommit-overlap-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        LOG_DIR="$PROJECT_DIR/logs"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR" "$LOG_DIR"
+
+        git -C "$PROJECT_DIR" init >/dev/null 2>&1
+        git -C "$PROJECT_DIR" config user.name "Durability Bot"
+        git -C "$PROJECT_DIR" config user.email "durability@example.test"
+        printf 'base\n' > "$PROJECT_DIR/phase.txt"
+        git -C "$PROJECT_DIR" add phase.txt
+        git -C "$PROJECT_DIR" commit -m "init" >/dev/null 2>&1
+
+        printf 'preexisting-user-change\n' >> "$PROJECT_DIR/phase.txt"
+        AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE="$tmpd/baseline-dirty.txt"
+        collect_git_dirty_paths > "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE"
+
+        manifest_before="$tmpd/manifest.before"
+        manifest_after="$tmpd/manifest.after"
+        PHASE_MANIFEST_MODE="light"
+        phase_capture_worktree_manifest "$manifest_before"
+        printf 'phase-change\n' >> "$PROJECT_DIR/phase.txt"
+        phase_capture_worktree_manifest "$manifest_after"
+
+        AUTO_COMMIT_SESSION_ENABLED=true
+        AUTO_COMMIT_ON_PHASE_PASS=true
+        export GIT_AUTHOR_NAME="Durability Bot"
+        export GIT_AUTHOR_EMAIL="durability@example.test"
+        export GIT_COMMITTER_NAME="Durability Bot"
+        export GIT_COMMITTER_EMAIL="durability@example.test"
+
+        before_head="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+        commit_phase_approved_changes "build" "test" "$manifest_before" "$manifest_after"
+        after_head="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+
+        [ "$before_head" = "$after_head" ]
+        git -C "$PROJECT_DIR" diff --name-only -- . | grep -q '^phase.txt$'
+    )
+}
+
 test_integration_consensus_infra_retry_without_attempt_decrement() {
     local ws
     ws="$(make_workspace)"
@@ -1124,6 +1373,22 @@ run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
     __agent_calls=$((__agent_calls + 1))
     printf 'agent-call-%s\n' "$__agent_calls" >> agent-calls.log
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Complete the consensus retry harness with a project-specific plan.
+
+## Acceptance Criteria
+- Consensus retries do not consume phase attempts.
+- The run can route to build after transient reviewer failure.
+
+## Actionable Tasks
+1. Exercise retry handling.
+2. Complete the remaining phase sequence.
+PLAN
+    fi
     printf 'ok\n' > "$log_file"
     printf 'ok\n' > "$output_file"
     return 0
@@ -1236,6 +1501,20 @@ run_startup_operational_probe() { return 0; }
 build_is_preapproved() { return 0; }
 run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise routing stagnation with a real non-placeholder plan.
+
+## Acceptance Criteria
+- Build can be reached before the forced route loop.
+
+## Actionable Tasks
+1. Run the routing loop harness.
+PLAN
+    fi
     printf 'ok\n' > "$log_file"
     printf 'ok\n' > "$output_file"
     return 0
@@ -1293,6 +1572,20 @@ run_agent_with_prompt() {
     local phase_name
     phase_name="$(basename "$log_file" | cut -d'_' -f1)"
     printf '%s\n' "$phase_name" >> "$PWD/phases.log"
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise terminal done guard routing with a project-specific plan.
+
+## Acceptance Criteria
+- Done is remapped through lint and document before completion.
+
+## Actionable Tasks
+1. Route through required terminal phases.
+PLAN
+    fi
     printf 'ok\n' > "$log_file"
     printf 'ok\n' > "$output_file"
     printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
@@ -1359,6 +1652,22 @@ run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
     __durability_counter=$((__durability_counter + 1))
     printf 'stub run %s\n' "$__durability_counter" > "$log_file"
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Complete the durability harness happy path with project-specific evidence.
+
+## Acceptance Criteria
+- All configured Ralphie phases route forward and the session reaches done.
+- The mocked plan is not the fallback placeholder.
+
+## Actionable Tasks
+1. Exercise plan, build, test, refactor, lint, and document routing.
+2. Preserve deterministic harness artifacts.
+PLAN
+    fi
     cat > "$output_file" <<MSG
 Updated artifacts:
 - durability marker $__durability_counter
@@ -1422,6 +1731,19 @@ run_first_deploy_engine_override_wizard() { return 0; }
 run_first_deploy_notification_wizard() { return 0; }
 run_startup_operational_probe() { return 0; }
 build_is_preapproved() { return 0; }
+cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise forward reroute guard from a resumed build phase.
+
+## Acceptance Criteria
+- Non-backtracking reroute recommendations are ignored after a hold.
+
+## Actionable Tasks
+1. Resume build.
+2. Trigger the forced forward reroute recommendation.
+PLAN
 run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
     printf 'reroute guard log\n' > "$log_file"
@@ -1517,6 +1839,8 @@ EOF
     local holder_pid=$!
     sleep 0.7
     "$ws/contender.sh"
+    [ -d "$ws/.ralphie/run.lock.d" ]
+    [ -f "$ws/.ralphie/run.lock" ]
     wait "$holder_pid"
 }
 
@@ -1586,6 +1910,21 @@ __resume_counter=0
 run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
     __resume_counter=$((__resume_counter + 1))
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Resume from a crash with a project-specific plan.
+
+## Acceptance Criteria
+- The resumed run reaches done without using the fallback placeholder.
+
+## Actionable Tasks
+1. Resume the interrupted phase.
+2. Complete the remaining phase sequence.
+PLAN
+    fi
     printf 'resume run %s\n' "$__resume_counter" > "$log_file"
     printf 'resume output %s\n' "$__resume_counter" > "$output_file"
     printf 'resume-mutation-%s\n' "$__resume_counter" >> resume-mutation.log
@@ -1650,6 +1989,7 @@ main() {
 
     run_case "syntax" test_syntax
     run_case "shellcheck" test_shellcheck
+    run_case "cli_help_does_not_mutate_state" test_cli_help_does_not_mutate_state
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum
     run_case "unit_config_fuzz_and_precedence" test_unit_config_fuzz_and_precedence
     run_case "unit_reviewer_payload_sanitization" test_unit_reviewer_payload_sanitization
@@ -1661,12 +2001,16 @@ main() {
     run_case "unit_bootstrap_accept_gate_and_no_change_guard" test_unit_bootstrap_accept_gate_and_no_change_guard
     run_case "unit_bootstrap_accept_blocked_no_change_guard" test_unit_bootstrap_accept_blocked_no_change_guard
     run_case "unit_append_bootstrap_context_includes_arch_and_tech" test_unit_append_bootstrap_context_includes_arch_and_tech
+    run_case "unit_noninteractive_bootstrap_requires_build_consent" test_unit_noninteractive_bootstrap_requires_build_consent
     run_case "unit_idle_output_watchdog_recycles_hung_process" test_unit_idle_output_watchdog_recycles_hung_process
+    run_case "unit_idle_output_watchdog_kills_child_process" test_unit_idle_output_watchdog_kills_child_process
     run_case "unit_timeout_warning_without_timeout_binary" test_unit_timeout_warning_without_timeout_binary
+    run_case "unit_run_agent_cli_contracts_codex_and_claude" test_unit_run_agent_cli_contracts_codex_and_claude
     run_case "unit_manifest_modes_light_and_deep" test_unit_manifest_modes_light_and_deep
     run_case "unit_markdown_repair_dry_run_backup_and_scope" test_unit_markdown_repair_dry_run_backup_and_scope
     run_case "unit_save_state_or_exit_enforces_stop" test_unit_save_state_or_exit_enforces_stop
     run_case "unit_auto_commit_scoped_to_manifest_delta" test_unit_auto_commit_scoped_to_manifest_delta
+    run_case "unit_auto_commit_skips_preexisting_dirty_overlap" test_unit_auto_commit_skips_preexisting_dirty_overlap
     run_case "integration_happy_path" test_integration_happy_path
     run_case "integration_consensus_infra_retry_without_attempt_decrement" test_integration_consensus_infra_retry_without_attempt_decrement
     run_case "integration_unlimited_phase_attempts_stagnation_guard" test_integration_unlimited_phase_attempts_stagnation_guard

@@ -34,18 +34,113 @@ This mock advertises read/write/tool capabilities for orchestrator probing.
 HELP
 }
 
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ]; then
-    emit_help
-    exit 0
-fi
-if [ "${1:-}" = "--version" ] || [ "${1:-}" = "version" ]; then
-    echo "mock-claude-control 1.0.0"
-    exit 0
-fi
+usage_error() {
+    printf '[mock-claude] %s\n' "$*" >&2
+    emit_help >&2
+    exit 2
+}
+
+require_arg_value() {
+    local flag="$1"
+    local value="${2:-}"
+    if [ -z "$value" ] || [[ "$value" == --* ]]; then
+        usage_error "$flag requires a value"
+    fi
+}
+
+validate_settings_value() {
+    local value="$1"
+    if ! printf '%s' "$value" | grep -Eq '^\{.*\}$'; then
+        usage_error "--settings requires an inline JSON object"
+    fi
+}
+
+PRINT_MODE="false"
+POSITIONAL_PROMPT=""
+
+add_positional_prompt() {
+    local value="$1"
+    if [ -n "$POSITIONAL_PROMPT" ]; then
+        usage_error "Only one prompt argument is supported"
+    fi
+    POSITIONAL_PROMPT="$value"
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --help|help)
+                if [ "$#" -ne 1 ]; then
+                    usage_error "$1 does not accept additional arguments"
+                fi
+                emit_help
+                exit 0
+                ;;
+            --version|version)
+                if [ "$#" -ne 1 ]; then
+                    usage_error "$1 does not accept additional arguments"
+                fi
+                echo "mock-claude-control 1.0.0"
+                exit 0
+                ;;
+            -p|--print)
+                PRINT_MODE="true"
+                shift
+                ;;
+            --dangerously-skip-permissions)
+                shift
+                ;;
+            --model)
+                require_arg_value "--model" "${2:-}"
+                shift 2
+                ;;
+            --settings)
+                require_arg_value "--settings" "${2:-}"
+                validate_settings_value "$2"
+                shift 2
+                ;;
+            --)
+                shift
+                while [ "$#" -gt 0 ]; do
+                    add_positional_prompt "$1"
+                    shift
+                done
+                ;;
+            -)
+                add_positional_prompt "$1"
+                shift
+                ;;
+            --*|-*)
+                usage_error "Unknown option: $1"
+                ;;
+            *)
+                add_positional_prompt "$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [ "$PRINT_MODE" != "true" ]; then
+        usage_error "Missing required print mode: -p or --print"
+    fi
+}
+
+parse_args "$@"
 
 prompt=""
+if [ "$POSITIONAL_PROMPT" != "-" ]; then
+    prompt="$POSITIONAL_PROMPT"
+fi
 if [ ! -t 0 ]; then
-    prompt="$(cat)"
+    stdin_prompt="$(cat)"
+    if [ -n "$stdin_prompt" ]; then
+        if [ -n "$prompt" ]; then
+            prompt="${prompt}
+${stdin_prompt}"
+        else
+            prompt="$stdin_prompt"
+        fi
+    fi
 fi
 
 # Handle engine smoke canary prompts.

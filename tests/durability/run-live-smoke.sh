@@ -45,14 +45,14 @@ print_usage() {
 Usage: tests/durability/run-live-smoke.sh [options] [codex|claude]
 
 Options:
-  --engine codex|claude  Engine to test (same as positional arg)
-  --prompt               Force interactive prompts (engine + temporary overrides)
+  --engine codex|claude  Provider API path to test (same as positional arg)
+  --prompt               Force interactive prompts (provider path + temporary overrides)
   --no-prompt            Disable interactive prompts
   --help, -h             Show this help
 
 Behavior:
-  - In interactive terminals, if engine was not explicitly provided, the script
-    prompts for engine selection and optional temporary overrides.
+  - In interactive terminals, if provider path was not explicitly provided, the
+    script prompts for provider selection and optional temporary overrides.
   - Overrides are in-memory for this run only and are never persisted.
 EOF
 }

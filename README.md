@@ -51,7 +51,7 @@ Ralphie transitions through structured phases governed by strict validation gate
 ## Runtime Management
 
 `ralphie.sh` does not auto-update itself at runtime. Release drift is handled intentionally through normal checkout/version control workflows.
-To upgrade behavior, update the checked-out `ralphie.sh` script (or repository) and rerun with the same command.
+The `curl | bash` quick start is an install-and-run bootstrap only: it fetches the script once, writes `./ralphie.sh` in the current directory, and re-execs that local file. To upgrade behavior later, update the checked-out `ralphie.sh` script or repository and rerun from disk.
 
 ## Security & Sandboxing (Claude Code)
 
@@ -66,6 +66,8 @@ When operating in autonomous YOLO mode, Ralphie applies Claude runtime safeguard
 curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ralphie.sh | bash
 ```
 
+Run the quick start from the project root you want Ralphie to manage. The streamed script is persisted as `./ralphie.sh` before execution so repository-relative paths, config, and bootstrap files are anchored to that directory.
+
 `ralphie.sh` will self-bootstrap missing control artifacts before the first run:
 
 - `.specify/memory/constitution.md`
@@ -78,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/refs/heads/master/ra
   - explicit plan→build transition consent
 - optional `.ralphie/project-goals.md` for pasted goals/context documents
 
-Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is present):
+Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is present). This includes `curl | bash` runs: stdin carries the script stream, and prompts are read from the controlling terminal when available.
 - `project_type`: is this a new project?
 - `objective`: what should Ralphie optimize for?
 - `constraints` and `success_criteria`: quick single-line defaults (press Enter to keep)
@@ -87,6 +89,8 @@ Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is pres
   - paste full document content or URL notes
   - finish with a line containing only `EOF` (or press `Ctrl+D`)
 - `build_consent`: proceed from PLAN to BUILD automatically when gates pass?
+
+When no terminal is available, bootstrap uses deterministic fallback values and records `interactive_prompted: false`. In that non-interactive fallback, `build_consent` defaults to `false`; Ralphie can complete planning but will not proceed into BUILD until you set consent intentionally, for example by rerunning `./ralphie.sh --rebootstrap` in a terminal or editing `.ralphie/project-bootstrap.md`.
 
 If `.ralphie/project-bootstrap.md` already exists and was created interactively, `ralphie.sh` will reuse it.
 If it was created non-interactively, the first interactive run will refresh it by default.
@@ -154,6 +158,7 @@ Operator guidance:
 - Use the startup config banner as the source of truth for effective values after config/env/CLI precedence.
 
 Phase no-op profile precedence: explicit per-phase policy flags win over profile-derived policy values.
+`--strict-validation-noop true` is a compatibility hardening switch for test and lint no-op handling after profile and explicit policy resolution; it does not make the plan phase require worktree mutation.
 
 Supported no-op profiles:
 - `balanced` (default): plan=`none`, build=`hard`, test=`soft`, refactor=`hard`, lint=`hard`, document=`soft`.
@@ -263,26 +268,28 @@ Build transitions require the snapshot and clean artifact checks to pass.
 
 Ralphie now includes a GitHub Actions workflow at `.github/workflows/durability-ci.yml`.
 
-- Auto run (push + PR): runs `tests/durability/run-durability-suite.sh` as the default offline durability gate.
-- Manual run (`workflow_dispatch`): optional live engine smoke check using `tests/durability/run-live-smoke.sh`.
+- Auto run (push + PR): runs `./test.sh --skip-live` as the default offline pre-ship gate.
+- Manual run (`workflow_dispatch`): optional direct provider API smoke check using `tests/durability/run-live-smoke.sh`.
 
 ### Live smoke inputs
 
 - `run_live_smoke` (`true|false`): whether to execute live smoke.
-- `live_engine` (`codex|claude`): which live engine to test.
+- `live_engine` (`codex|claude`): which provider API path to smoke-test.
 
 ### Live smoke interactive behavior
 
 - Running `tests/durability/run-live-smoke.sh` in an interactive terminal now prompts for:
-  - engine selection (`codex|claude`) when not explicitly provided
-  - optional temporary API key/model/endpoint overrides for the selected engine
+  - provider selection (`codex|claude`) when not explicitly provided
+  - optional temporary API key/model/endpoint overrides for the selected provider path
 - These overrides are in-memory for that invocation only and are not persisted.
 - You can force prompt mode with `--prompt` or disable prompts with `--no-prompt`.
 
+Live smoke calls the OpenAI Responses API or Anthropic Messages API directly with `curl`; it does not exercise the installed Codex or Claude CLI binaries.
+
 ### Live smoke secrets/vars
 
-- Configure provider API credentials for the engine you want to smoke-test.
-- Optional endpoint/model overrides are supported for both engines.
+- Configure provider API credentials for the provider path you want to smoke-test.
+- Optional endpoint/model overrides are supported for both provider paths.
 - Use `.github/workflows/durability-ci.yml` and `tests/durability/run-live-smoke.sh --help` for the exact key names and current defaults.
 
 Live smoke is manual by default because it uses real provider credentials and can incur usage cost.
@@ -332,10 +339,12 @@ Use the root test runner to execute the full pre-ship chain:
 ```
 
 Default sequence:
-- `bash -n ralphie.sh`
+- bash syntax checks for `ralphie.sh` and support scripts
+- `shellcheck` for support scripts when available
+- offline `engines/setup-agent-subrepos.sh` fixture check
 - `tests/durability/run-durability-suite.sh`
 - `tests/durability/run-claude-phase-stress.sh --scenarios full,retry,resume`
-- `tests/durability/run-live-smoke.sh` in auto mode (runs only if matching creds are present)
+- `tests/durability/run-live-smoke.sh` in auto mode (direct provider API smoke; runs only if matching creds are present)
 
 Common flags:
 - `--live` (require live smoke and fail if creds missing)

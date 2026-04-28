@@ -54,7 +54,7 @@ to_repo_relative_path() {
         return
     fi
     if [[ "$abs_path" == "$ROOT_DIR/"* ]]; then
-        echo "${abs_path#$ROOT_DIR/}"
+        echo "${abs_path#"$ROOT_DIR"/}"
     else
         echo "$abs_path"
     fi
@@ -388,9 +388,6 @@ engine_mode_bindings:
   plan:
     preferred_engine: "auto"
     fallback_order: ["codex", "claude"]
-  plan:
-    preferred_engine: "auto"
-    fallback_order: ["codex", "claude"]
   build:
     preferred_engine: "auto"
     fallback_order: ["codex", "claude"]
@@ -448,7 +445,10 @@ main() {
     require_within_repo_root "--subrepo-dir" "$subrepo_dir_abs"
     require_within_repo_root "--map-file" "$map_file_abs"
     local map_dir_abs steering_map_abs steering_map_rel
-    map_dir_abs="$(cd "$(dirname "$map_file_abs")" && pwd)"
+    map_dir_abs="$(dirname "$map_file_abs")"
+    require_within_repo_root "--map-file" "$map_dir_abs"
+    mkdir -p "$map_dir_abs"
+    map_dir_abs="$(cd "$map_dir_abs" && pwd)"
     steering_map_abs="$map_dir_abs/$STEERING_MAP_BASENAME"
     steering_map_rel="$(to_repo_relative_path "$steering_map_abs")"
     require_within_repo_root "--map-file" "$map_dir_abs"

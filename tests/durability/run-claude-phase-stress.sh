@@ -17,6 +17,7 @@ DISCORD_WEBHOOK_URL=""
 KEEP_WORKSPACES="false"
 PER_SCENARIO_TIMEOUT_SECONDS=120
 EXERCISE_TTS_FALLBACK="false"
+VALID_SCENARIOS="full,retry,resume"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -83,7 +84,7 @@ print_usage() {
 Usage: tests/durability/run-claude-phase-stress.sh [options]
 
 Options:
-  --scenarios LIST              Comma-separated: full,retry,resume (default: all)
+  --scenarios LIST              Comma-separated: full,retry,resume (default: full,retry,resume)
   --discord-webhook-url URL     Optional Discord webhook for high-signal run notifications
   --timeout-seconds N           Per-scenario timeout (default: 120)
   --exercise-tts-fallback       Enable Ralphie TTS path but force fail-fast TTS generation; verifies Discord text fallback
@@ -96,15 +97,18 @@ parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --scenarios)
+                require_arg_value "--scenarios" "${2:-}"
                 SCENARIOS="${2:-}"
                 shift 2
                 ;;
             --discord-webhook-url)
+                require_arg_value "--discord-webhook-url" "${2:-}"
                 DISCORD_WEBHOOK_URL="${2:-}"
                 shift 2
                 ;;
             --timeout-seconds)
-                PER_SCENARIO_TIMEOUT_SECONDS="${2:-120}"
+                require_arg_value "--timeout-seconds" "${2:-}"
+                PER_SCENARIO_TIMEOUT_SECONDS="${2:-}"
                 shift 2
                 ;;
             --exercise-tts-fallback)
@@ -128,8 +132,53 @@ parse_args() {
     done
 }
 
+require_arg_value() {
+    local flag="$1"
+    local value="${2:-}"
+    if [ -z "$value" ] || [[ "$value" == --* ]]; then
+        fail "$flag requires a value"
+        exit 1
+    fi
+}
+
 is_number() {
     [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
+scenario_is_valid() {
+    case "${1:-}" in
+        full|retry|resume) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_scenarios() {
+    local raw="${1:-}"
+    local -a scenario_values=()
+    local old_ifs scenario
+
+    if [ -z "$raw" ]; then
+        fail "Invalid --scenarios value: empty (expected: $VALID_SCENARIOS)"
+        exit 1
+    fi
+    case "$raw" in
+        ,*|*,|*,,*)
+            fail "Invalid --scenarios value '$raw' (expected comma-separated names: $VALID_SCENARIOS)"
+            exit 1
+            ;;
+    esac
+
+    old_ifs="$IFS"
+    IFS=,
+    read -r -a scenario_values <<< "$raw"
+    IFS="$old_ifs"
+
+    for scenario in "${scenario_values[@]}"; do
+        if ! scenario_is_valid "$scenario"; then
+            fail "Invalid scenario '$scenario' (expected one of: $VALID_SCENARIOS)"
+            exit 1
+        fi
+    done
 }
 
 get_timeout_cmd() {
@@ -473,6 +522,7 @@ main() {
         fail "Invalid --timeout-seconds value: $PER_SCENARIO_TIMEOUT_SECONDS"
         exit 1
     fi
+    validate_scenarios "$SCENARIOS"
     if [ "$EXERCISE_TTS_FALLBACK" = "true" ] && [ -z "$DISCORD_WEBHOOK_URL" ]; then
         fail "--exercise-tts-fallback requires --discord-webhook-url so text fallback delivery can be verified."
         exit 1
