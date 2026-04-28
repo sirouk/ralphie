@@ -185,6 +185,79 @@ is_decimal_number() {
     [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
 
+version_score_from_text() {
+    local text="${1:-}"
+    local major=0
+    local minor=0
+    local patch=0
+
+    if [[ "$text" =~ ([0-9]+)[.]([0-9]+)[.]([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+        patch="${BASH_REMATCH[3]}"
+    fi
+
+    echo $((major * 1000000 + minor * 1000 + patch))
+}
+
+discover_versioned_command_default() {
+    local command_name="$1"
+    shift
+    local -a candidates=()
+    local candidate resolved version score
+    local best_cmd="$command_name"
+    local best_score=-1
+    local seen_paths=$'\n'
+
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] && candidates+=("$candidate")
+    done < <(type -a -p "$command_name" 2>/dev/null || true)
+
+    for candidate in "$@"; do
+        [ -n "$candidate" ] && candidates+=("$candidate")
+    done
+    candidates+=("$command_name")
+
+    for candidate in "${candidates[@]}"; do
+        if [ "$candidate" = "$command_name" ]; then
+            resolved="$(command -v "$command_name" 2>/dev/null || true)"
+        else
+            resolved="$candidate"
+        fi
+        [ -n "$resolved" ] || continue
+        case "$seen_paths" in
+            *$'\n'"$resolved"$'\n'*) continue ;;
+        esac
+        seen_paths="${seen_paths}${resolved}"$'\n'
+        [ -x "$resolved" ] || continue
+
+        version="$("$resolved" --version 2>/dev/null | head -n 1 || true)"
+        score="$(version_score_from_text "$version")"
+        if [ "$score" -gt "$best_score" ]; then
+            best_cmd="$resolved"
+            best_score="$score"
+        fi
+    done
+
+    echo "$best_cmd"
+}
+
+discover_codex_command_default() {
+    discover_versioned_command_default \
+        "codex" \
+        "/opt/homebrew/bin/codex" \
+        "/usr/local/bin/codex" \
+        "${HOME:-}/.local/bin/codex"
+}
+
+discover_claude_command_default() {
+    discover_versioned_command_default \
+        "claude" \
+        "${HOME:-}/.local/bin/claude" \
+        "/opt/homebrew/bin/claude" \
+        "/usr/local/bin/claude"
+}
+
 extract_xml_value() {
     local file="$1"
     local tag="$2"
@@ -1085,8 +1158,8 @@ AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
 
 # Configuration defaults
 DEFAULT_ENGINE="auto"
-DEFAULT_CODEX_CMD="codex"
-DEFAULT_CLAUDE_CMD="claude"
+DEFAULT_CODEX_CMD="$(discover_codex_command_default)"
+DEFAULT_CLAUDE_CMD="$(discover_claude_command_default)"
 DEFAULT_AUTO_ENGINE_PREFERENCE="codex"        # codex|claude (AUTO mode selection priority)
 DEFAULT_CODEX_ENDPOINT=""                     # empty = do not override OPENAI_BASE_URL
 DEFAULT_CODEX_USE_RESPONSES_SCHEMA="false"    # false = skip codex --output-schema
