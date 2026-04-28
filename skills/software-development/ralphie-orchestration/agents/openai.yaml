@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralphie Orchestration"
+  short_description: "Operate ralphie.sh safely."
+  default_prompt: "Use the Ralphie orchestration skill to inspect, modify, test, or document this repository."
