@@ -8128,6 +8128,28 @@ main() {
                         phase_failures+=("pre-build markdown remediation summary: ${repair_summary//$'\\n'/; }")
                     fi
                     if [ "${#gate_issues[@]}" -gt 0 ]; then
+                        local gate_requires_plan_refresh=false
+                        local gate_has_non_plan_refresh=false
+                        for issue in "${gate_issues[@]}"; do
+                            case "$issue" in
+                                "plan refresh required:"*) gate_requires_plan_refresh=true ;;
+                                *) gate_has_non_plan_refresh=true ;;
+                            esac
+                        done
+                        if is_true "$gate_requires_plan_refresh" && ! is_true "$gate_has_non_plan_refresh"; then
+                            phase_next_target="plan"
+                            phase_route="true"
+                            phase_route_reason="${gate_issues[0]}"
+                            phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
+                            write_gate_feedback "$phase" "${gate_issues[@]}" "auto-reroute triggered: build -> plan for backlog freshness"
+                            warn "Build gate requires plan refresh; auto-routing build -> plan instead of retrying build."
+                            notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
+                            log_reason_code "RB_BUILD_GATE_PLAN_REFRESH_REROUTE" "$phase attempt $phase_attempt rerouted to plan after backlog freshness gate"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            CURRENT_PHASE_ATTEMPT=1
+                            save_state_or_exit "build gate plan-refresh reroute checkpoint"
+                            break
+                        fi
                         for issue in "${gate_issues[@]}"; do
                             phase_failures+=("build gate blocked before build execution: $issue")
                         done
