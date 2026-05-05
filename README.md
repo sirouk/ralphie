@@ -107,9 +107,22 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 
 ### Continuing With A New Focus
 
-Plain `./ralphie.sh` means "continue the current mission." That is the right
-default after a crash, timeout, pause, or terminal disconnect because Ralphie
-can restore the exact phase and attempt from `.ralphie/state.env`.
+Ralphie keeps two separate pieces of operator state:
+
+- `.ralphie/state.env` stores the current phase, phase attempt, iteration
+  counters, and completion state. `--resume` is the default, so plain
+  `./ralphie.sh` tries to load this file.
+- `.ralphie/project-bootstrap.md` stores the project type, objective,
+  constraints, success criteria, architecture/technology preferences, and
+  plan→build consent. `--rebootstrap` refreshes this file; it does not disable
+  resume by itself.
+
+Plain `./ralphie.sh` therefore means "continue the current mission." That is
+the right default after a crash, timeout, pause, or terminal disconnect because
+Ralphie can restore the exact phase and attempt from `.ralphie/state.env`.
+It is also why plain `./ralphie.sh` is not a good way to start unrelated work
+after a completed loop: if state says `CURRENT_PHASE=done`, Ralphie will resume
+that completed mission and exit done again.
 
 After a mission has met its goals, treat the next objective as a new mission
 instead of resuming the old one. The safest operator pattern is:
@@ -132,9 +145,16 @@ instead of resuming the old one. The safest operator pattern is:
 Use `--resume` or plain `./ralphie.sh` again only after that new mission has
 started and you want Ralphie to continue the same in-flight work.
 
-`IMPLEMENTATION_PLAN.md` is the canonical active plan. Use a steering file for
-mission-specific detail when the plan would otherwise become crowded. A good
-steering file is short, current, and explicit:
+Use `--rebootstrap` without `--no-resume` only when the mission is still the
+same and you want to correct or enrich bootstrap intent while preserving the
+current phase state. Do not manually delete `.ralphie/state.env` for normal
+operator steering; the resume flags are the intended reset boundary.
+
+`IMPLEMENTATION_PLAN.md` is Ralphie's canonical active plan artifact and the
+default backlog source. Use a separate steering file for mission-specific
+detail when the plan would otherwise become crowded; list that steering file in
+`--backlog-sources` so plan freshness and done guards see it. A good steering
+file is short, current, and explicit:
 
 ````markdown
 # Ralphie Steering: Next Focus

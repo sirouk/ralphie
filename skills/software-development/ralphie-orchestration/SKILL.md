@@ -56,8 +56,18 @@ Important behavior:
 
 ### Continuing With A New Focus
 
+Ralphie separates phase state from bootstrap intent:
+
+- `.ralphie/state.env` stores current phase, attempt, counters, and terminal
+  completion. Resume is enabled by default, so plain `./ralphie.sh` loads it.
+- `.ralphie/project-bootstrap.md` stores the operator's objective, constraints,
+  success criteria, architecture/technology preferences, and build consent.
+  `--rebootstrap` refreshes this context but does not disable state resume.
+
 Use resume for the same mission after an interrupt, timeout, pause, or crash.
-Do not use resume to repurpose a completed mission for unrelated new work.
+Do not use resume to repurpose a completed mission for unrelated new work. If
+state says `CURRENT_PHASE=done`, plain `./ralphie.sh` will resume the completed
+mission and exit done again.
 
 When the previous loop met its goals and the operator wants Ralphie to work on
 another focus:
@@ -77,6 +87,10 @@ another focus:
 
 After that new mission is underway, plain `./ralphie.sh` is again appropriate
 because it resumes the current in-flight mission.
+
+Use `--rebootstrap` without `--no-resume` only to correct or enrich bootstrap
+intent for the same in-flight mission. Prefer the flags over manually deleting
+`.ralphie/state.env`.
 
 ## What Ralphie Unfolds
 
