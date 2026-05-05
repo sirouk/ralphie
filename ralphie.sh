@@ -1209,6 +1209,7 @@ DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine lea
 DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN="false"  # preview-only remediation mode (no file mutations)
 DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP="true"    # write backup+diff artifacts before markdown mutation
 DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="false" # optional scope limiter for markdown remediation
+DEFAULT_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="" # optional ERE for intentional documented paths
 DEFAULT_PHASE_MANIFEST_MODE="light"           # light|deep manifest capture strategy
 DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus reviewers
 DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
@@ -1290,6 +1291,7 @@ AUTO_REPAIR_MARKDOWN_ARTIFACTS="${AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$DEFAULT_AUTO_
 AUTO_REPAIR_MARKDOWN_DRY_RUN="${AUTO_REPAIR_MARKDOWN_DRY_RUN:-$DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN}"
 AUTO_REPAIR_MARKDOWN_BACKUP="${AUTO_REPAIR_MARKDOWN_BACKUP:-$DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP}"
 AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="${AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED:-$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED}"
+MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="${MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX:-$DEFAULT_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX}"
 PHASE_MANIFEST_MODE="${PHASE_MANIFEST_MODE:-$DEFAULT_PHASE_MANIFEST_MODE}"
 SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
 CONSENSUS_SCORE_THRESHOLD="${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
@@ -1365,6 +1367,7 @@ AUTO_REPAIR_MARKDOWN_ARTIFACTS="${RALPHIE_AUTO_REPAIR_MARKDOWN_ARTIFACTS:-$AUTO_
 AUTO_REPAIR_MARKDOWN_DRY_RUN="${RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN:-$AUTO_REPAIR_MARKDOWN_DRY_RUN}"
 AUTO_REPAIR_MARKDOWN_BACKUP="${RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP:-$AUTO_REPAIR_MARKDOWN_BACKUP}"
 AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="${RALPHIE_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED:-$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED}"
+MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="${RALPHIE_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX:-$MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX}"
 PHASE_MANIFEST_MODE="${RALPHIE_PHASE_MANIFEST_MODE:-$PHASE_MANIFEST_MODE}"
 AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${RALPHIE_AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-$AUTO_PLAN_BACKFILL_ON_IDLE_BUILD}"
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
@@ -6695,10 +6698,26 @@ file_has_local_identity_leakage() {
     home_dir="${HOME:-}"
     home_dir_regex="$(printf '%s' "$home_dir" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')"
 
-    if [ -n "$home_dir_regex" ] && grep -qE "(^|[^[:alnum:]_.-])${home_dir_regex}(/|$)" "$candidate_file" 2>/dev/null; then
-        return 0
-    fi
-    if grep -qiE '(/Users/[A-Za-z0-9._-]+/)|(/home/[A-Za-z0-9._-]+/)|(/root/[A-Za-z0-9._-]+/)' "$candidate_file" 2>/dev/null; then
+    if awk -v home_re="$home_dir_regex" -v allow_re="${MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX:-}" '
+        function scrub(line) {
+            if (allow_re != "") {
+                gsub(allow_re, "", line)
+            }
+            return line
+        }
+        {
+            line = scrub($0)
+            if (home_re != "" && line ~ ("(^|[^[:alnum:]_.-])" home_re "(/|$)")) {
+                found = 1
+                exit
+            }
+            if (line ~ /\/Users\/[A-Za-z0-9._-]+\// || line ~ /\/home\/[A-Za-z0-9._-]+\// || line ~ /\/root\/[A-Za-z0-9._-]+\//) {
+                found = 1
+                exit
+            }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$candidate_file" 2>/dev/null; then
         return 0
     fi
     return 1
@@ -6764,8 +6783,17 @@ sanitize_markdown_artifact_file() {
     local rel_file=""
     rel_file="$(path_for_display "$(path_relative_to_project "$file")")"
 
-    if awk '
-        $0 ~ /succeeded in [0-9][0-9]*ms:/ || $0 ~ /assistant[[:space:]][[:space:]]*to=/ || $0 ~ /recipient_name[[:space:]]*:/ || $0 ~ /tokens used/ || $0 ~ /mcp startup:/ || $0 ~ /\/Users\/[A-Za-z0-9._-]+\// || $0 ~ /\/root\/[A-Za-z0-9._-]+\// || $0 ~ /\/home\/[A-Za-z0-9._-]+\// { next }
+    if awk -v allow_re="${MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX:-}" '
+        function scrub(line) {
+            if (allow_re != "") {
+                gsub(allow_re, "", line)
+            }
+            return line
+        }
+        {
+            clean_line = scrub($0)
+            if (clean_line ~ /succeeded in [0-9][0-9]*ms:/ || clean_line ~ /assistant[[:space:]][[:space:]]*to=/ || clean_line ~ /recipient_name[[:space:]]*:/ || clean_line ~ /tokens used/ || clean_line ~ /mcp startup:/ || clean_line ~ /\/Users\/[A-Za-z0-9._-]+\// || clean_line ~ /\/root\/[A-Za-z0-9._-]+\// || clean_line ~ /\/home\/[A-Za-z0-9._-]+\//) { next }
+        }
         { print }
     ' "$file" > "$tmp_file"; then
         if ! cmp -s "$file" "$tmp_file"; then
