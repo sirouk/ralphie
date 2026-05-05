@@ -54,6 +54,30 @@ Important behavior:
 - Resume is enabled by default; `--no-resume` starts fresh.
 - Ralphie may initialize git if the managed directory is not already a repository, depending on configuration.
 
+### Continuing With A New Focus
+
+Use resume for the same mission after an interrupt, timeout, pause, or crash.
+Do not use resume to repurpose a completed mission for unrelated new work.
+
+When the previous loop met its goals and the operator wants Ralphie to work on
+another focus:
+
+1. Checkpoint the completed work with a project-local commit or equivalent.
+2. Update `IMPLEMENTATION_PLAN.md` with the new active objective.
+3. Add a focused steering/backlog file such as
+   `research/RALPHIE_NEXT_FOCUS_STEERING.md` when the objective needs detail.
+4. Start with fresh state and refreshed bootstrap context:
+
+```bash
+./ralphie.sh \
+  --no-resume \
+  --rebootstrap \
+  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
+```
+
+After that new mission is underway, plain `./ralphie.sh` is again appropriate
+because it resumes the current in-flight mission.
+
 ## What Ralphie Unfolds
 
 When planted in a project, `ralphie.sh` may create or update:

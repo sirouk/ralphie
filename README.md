@@ -105,6 +105,63 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 ./ralphie.sh --no-resume
 ```
 
+### Continuing With A New Focus
+
+Plain `./ralphie.sh` means "continue the current mission." That is the right
+default after a crash, timeout, pause, or terminal disconnect because Ralphie
+can restore the exact phase and attempt from `.ralphie/state.env`.
+
+After a mission has met its goals, treat the next objective as a new mission
+instead of resuming the old one. The safest operator pattern is:
+
+1. Checkpoint the completed work with a commit, tag, or other intentional
+   project-local snapshot.
+2. Update `IMPLEMENTATION_PLAN.md` so it names the new active objective and
+   links any detailed steering/backlog source.
+3. Optionally create a focused steering file such as
+   `research/RALPHIE_NEXT_FOCUS_STEERING.md` for the next slice.
+4. Start Ralphie with fresh state and refreshed bootstrap context:
+
+```bash
+./ralphie.sh \
+  --no-resume \
+  --rebootstrap \
+  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
+```
+
+Use `--resume` or plain `./ralphie.sh` again only after that new mission has
+started and you want Ralphie to continue the same in-flight work.
+
+`IMPLEMENTATION_PLAN.md` is the canonical active plan. Use a steering file for
+mission-specific detail when the plan would otherwise become crowded. A good
+steering file is short, current, and explicit:
+
+````markdown
+# Ralphie Steering: Next Focus
+
+## Current State
+- What is already complete.
+- What validation already passed.
+
+## Next Objective
+One precise build slice Ralphie should complete next.
+
+## Do Not Rebuild
+- Stable surfaces that should be preserved unless a focused test fails.
+
+## Expected Outputs
+- Files, modules, docs, or tests that should change.
+
+## Validation Floor
+```bash
+git diff --check
+./project-specific-test-command
+```
+
+## Done Means
+- The exact observable outcome required before Ralphie may route to done.
+````
+
 ### Reference Sources
 
 - `engines/setup-agent-subrepos.sh` is retained for comparative engine behavior research only.
@@ -168,7 +225,7 @@ Supported no-op profiles:
 
 Behavior summary:
 - `0` values for retry/routing budgets are treated as unlimited loops with stagnation guards.
-- Resume remains enabled by default (`--resume`).
+- Resume remains enabled by default (`--resume`); use `--no-resume --rebootstrap` when changing to a new mission or focus.
 - Terminal routing to `done` is guarded: lint and document must each pass at least once before completion.
 
 ## Interrupt Controls
