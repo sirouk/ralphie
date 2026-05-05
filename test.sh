@@ -359,7 +359,12 @@ run_self_update_fixture_check() {
 # Fixture update used by the self-update regression test.
 set -euo pipefail
 SCRIPT_VERSION="fixture-self-update"
+parse_args() { :; }
+self_update_check_and_reexec() { :; }
 main() {
+    parse_args "$@"
+    self_update_check_and_reexec "$@"
+    [ "${RALPHIE_SKIP_AUTO_UPDATE:-}" = "1" ] || exit 11
     if [ "${RALPHIE_SELF_UPDATE_TEST:-}" = "1" ]; then
         echo "RALPHIE_SELF_UPDATE_FIXTURE_OK"
         exit 0
@@ -382,6 +387,74 @@ EOF_REMOTE
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
         grep -q 'SCRIPT_VERSION="fixture-self-update"' "$tmpd/project/ralphie.sh"
         ls "$tmpd/project/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
+        test ! -e "$tmpd/project/.ralphie/self-update/update.lock"
+
+        mkdir -p "$tmpd/noop"
+        cp ./ralphie.sh "$tmpd/noop/ralphie.sh"
+        chmod +x "$tmpd/noop/ralphie.sh"
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/noop/ralphie.sh" "$timeout_cmd" 20 "$tmpd/noop/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/noop/ralphie.sh" "$tmpd/noop/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "Auto-update: current ralphie.sh already matches remote."
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+        test ! -e "$tmpd/noop/.ralphie/self-update/update.lock"
+
+        mkdir -p "$tmpd/invalid"
+        cp ./ralphie.sh "$tmpd/invalid/ralphie.sh"
+        chmod +x "$tmpd/invalid/ralphie.sh"
+        printf '%s\n' '#!/bin/sh' 'echo nope' > "$tmpd/not-ralphie.sh"
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/not-ralphie.sh" "$timeout_cmd" 20 "$tmpd/invalid/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/not-ralphie.sh" "$tmpd/invalid/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "failed validation"
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+        ! grep -q 'fixture-self-update' "$tmpd/invalid/ralphie.sh"
+        test ! -e "$tmpd/invalid/.ralphie/self-update/update.lock"
+
+        mkdir -p "$tmpd/insecure"
+        cp ./ralphie.sh "$tmpd/insecure/ralphie.sh"
+        chmod +x "$tmpd/insecure/ralphie.sh"
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="http://example.invalid/ralphie.sh" "$timeout_cmd" 20 "$tmpd/insecure/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="http://example.invalid/ralphie.sh" "$tmpd/insecure/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "must be https"
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+
+        mkdir -p "$tmpd/locked/.ralphie/self-update/update.lock"
+        cp ./ralphie.sh "$tmpd/locked/ralphie.sh"
+        chmod +x "$tmpd/locked/ralphie.sh"
+        printf '%s\n' "$$" > "$tmpd/locked/.ralphie/self-update/update.lock/pid"
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=0 "$timeout_cmd" 20 "$tmpd/locked/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=0 "$tmpd/locked/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "another Ralphie self-update is still in progress"
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+        ! grep -q 'fixture-self-update' "$tmpd/locked/ralphie.sh"
+
+        if command -v git >/dev/null 2>&1; then
+            mkdir -p "$tmpd/dirty"
+            cp ./ralphie.sh "$tmpd/dirty/ralphie.sh"
+            chmod +x "$tmpd/dirty/ralphie.sh"
+            git -C "$tmpd/dirty" init -q
+            git -C "$tmpd/dirty" add ralphie.sh
+            if [ -n "$timeout_cmd" ]; then
+                output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/dirty/ralphie.sh" --no-resume 2>&1)"
+            else
+                output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/dirty/ralphie.sh" --no-resume 2>&1)"
+            fi
+            printf '%s\n' "$output" | grep -q "local ralphie.sh has uncommitted changes"
+            printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+            ! grep -q 'fixture-self-update' "$tmpd/dirty/ralphie.sh"
+            test ! -e "$tmpd/dirty/.ralphie/self-update/update.lock"
+        fi
     )
     rc=$?
     set -e

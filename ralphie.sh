@@ -500,7 +500,7 @@ is_allowed_config_key() {
             ;;
         # Explicitly supported non-prefixed compatibility keys.
         COMMAND_TIMEOUT_SECONDS|MAX_ITERATIONS|MAX_SESSION_CYCLES|YOLO|AUTO_UPDATE|AUTO_UPDATE_URL|\
-        AUTO_UPDATE_ALLOW_DIRTY|AUTO_UPDATE_TIMEOUT_SECONDS|\
+        AUTO_UPDATE_ALLOW_DIRTY|AUTO_UPDATE_ALLOW_INSECURE|AUTO_UPDATE_TIMEOUT_SECONDS|AUTO_UPDATE_LOCK_TIMEOUT_SECONDS|\
         SWARM_MAX_PARALLEL|CONFIDENCE_TARGET|CONFIDENCE_STAGNATION_LIMIT|\
         AUTO_PLAN_BACKFILL_ON_IDLE_BUILD|AUTO_ENGINE_PREFERENCE|AUTO_INIT_GIT_IF_MISSING|\
         AUTO_COMMIT_ON_PHASE_PASS|CODEX_ENDPOINT|CODEX_USE_RESPONSES_SCHEMA|\
@@ -825,6 +825,8 @@ Core options:
   --auto-commit-on-phase-pass bool        Auto-commit local changes after phase gate pass (true|false, no push)
   --auto-update bool                      Check and replace ralphie.sh from remote before startup (true|false)
   --auto-update-url URL                   Raw ralphie.sh URL for auto-update; defaults to GitHub origin/current branch
+  --auto-update-allow-insecure bool       Allow non-HTTPS HTTP auto-update URLs (true|false; default false)
+  --auto-update-lock-timeout-seconds N    Seconds to wait for another Ralphie self-update to finish
   --auto-engine-preference codex|claude   Preferred AUTO engine selection order
   --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
@@ -856,7 +858,9 @@ Additional runtime env knobs:
   RALPHIE_AUTO_UPDATE                    Enable pre-run single-file self-update (true|false)
   RALPHIE_AUTO_UPDATE_URL                Explicit raw ralphie.sh update URL
   RALPHIE_AUTO_UPDATE_ALLOW_DIRTY        Allow replacing a locally modified ralphie.sh (true|false)
+  RALPHIE_AUTO_UPDATE_ALLOW_INSECURE     Allow http:// auto-update URLs (true|false)
   RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS    Fetch timeout for single-file self-update
+  RALPHIE_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS  Seconds to wait for concurrent self-update lock
   RALPHIE_PHASE_MANIFEST_MODE            Worktree manifest mode: light|deep
   RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN   Preview markdown repairs without mutating files (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP    Save markdown backup+diff artifacts before mutation (true|false)
@@ -1037,6 +1041,19 @@ parse_args() {
                 fi
                 shift 2
                 ;;
+            --auto-update-allow-insecure)
+                AUTO_UPDATE_ALLOW_INSECURE="$(parse_arg_value "--auto-update-allow-insecure" "${2:-}")"
+                if ! is_bool_like "$AUTO_UPDATE_ALLOW_INSECURE"; then
+                    err "Invalid boolean value for --auto-update-allow-insecure: $AUTO_UPDATE_ALLOW_INSECURE"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --auto-update-lock-timeout-seconds)
+                AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="$(parse_arg_value "--auto-update-lock-timeout-seconds" "${2:-}")"
+                require_non_negative_int "AUTO_UPDATE_LOCK_TIMEOUT_SECONDS" "$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS"
+                shift 2
+                ;;
             --auto-engine-preference)
                 AUTO_ENGINE_PREFERENCE="$(to_lower "$(parse_arg_value "--auto-engine-preference" "${2:-}")")"
                 case "$AUTO_ENGINE_PREFERENCE" in
@@ -1203,7 +1220,9 @@ DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="false"                  # check remote script and replace before startup
 DEFAULT_AUTO_UPDATE_URL=""                   # explicit raw ralphie.sh URL; derived from GitHub origin when empty
 DEFAULT_AUTO_UPDATE_ALLOW_DIRTY="false"      # refuse to overwrite local ralphie.sh edits by default
+DEFAULT_AUTO_UPDATE_ALLOW_INSECURE="false"   # refuse plaintext HTTP update URLs by default
 DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS=20       # network timeout for single-file self-update fetch
+DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=30  # wait for concurrent startup self-update
 DEFAULT_COMMAND_TIMEOUT_SECONDS=0           # Tolerant default: disable command timeouts unless overridden
 DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
 DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
@@ -1282,7 +1301,9 @@ YOLO="${YOLO:-$DEFAULT_YOLO}"
 AUTO_UPDATE="${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE}"
 AUTO_UPDATE_URL="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
 AUTO_UPDATE_ALLOW_DIRTY="${AUTO_UPDATE_ALLOW_DIRTY:-$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY}"
+AUTO_UPDATE_ALLOW_INSECURE="${AUTO_UPDATE_ALLOW_INSECURE:-$DEFAULT_AUTO_UPDATE_ALLOW_INSECURE}"
 AUTO_UPDATE_TIMEOUT_SECONDS="${AUTO_UPDATE_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS}"
+AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"
 PHASE_WALLCLOCK_LIMIT_SECONDS="${PHASE_WALLCLOCK_LIMIT_SECONDS:-$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS}"
 RALPHIE_QUALITY_LEVEL="${RALPHIE_QUALITY_LEVEL:-$DEFAULT_RALPHIE_QUALITY_LEVEL}"
 SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
@@ -1412,7 +1433,9 @@ AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
 AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$AUTO_UPDATE_URL}"
 AUTO_UPDATE_ALLOW_DIRTY="${RALPHIE_AUTO_UPDATE_ALLOW_DIRTY:-$AUTO_UPDATE_ALLOW_DIRTY}"
+AUTO_UPDATE_ALLOW_INSECURE="${RALPHIE_AUTO_UPDATE_ALLOW_INSECURE:-$AUTO_UPDATE_ALLOW_INSECURE}"
 AUTO_UPDATE_TIMEOUT_SECONDS="${RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS:-$AUTO_UPDATE_TIMEOUT_SECONDS}"
+AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="${RALPHIE_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"
 CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
 CODEX_MODEL="${RALPHIE_CODEX_MODEL:-${CODEX_MODEL:-}}"
 CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
@@ -1485,9 +1508,20 @@ if ! is_bool_like "$AUTO_UPDATE_ALLOW_DIRTY"; then
     AUTO_UPDATE_ALLOW_DIRTY="$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY"
 fi
 
+AUTO_UPDATE_ALLOW_INSECURE="$(to_lower "$AUTO_UPDATE_ALLOW_INSECURE")"
+if ! is_bool_like "$AUTO_UPDATE_ALLOW_INSECURE"; then
+    warn "Invalid AUTO_UPDATE_ALLOW_INSECURE '$AUTO_UPDATE_ALLOW_INSECURE'. Falling back to '$DEFAULT_AUTO_UPDATE_ALLOW_INSECURE'."
+    AUTO_UPDATE_ALLOW_INSECURE="$DEFAULT_AUTO_UPDATE_ALLOW_INSECURE"
+fi
+
 if ! is_number "$AUTO_UPDATE_TIMEOUT_SECONDS" || [ "$AUTO_UPDATE_TIMEOUT_SECONDS" -lt 1 ]; then
     warn "Invalid AUTO_UPDATE_TIMEOUT_SECONDS '$AUTO_UPDATE_TIMEOUT_SECONDS'. Falling back to '$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS'."
     AUTO_UPDATE_TIMEOUT_SECONDS="$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS"
+fi
+
+if ! is_number "$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS"; then
+    warn "Invalid AUTO_UPDATE_LOCK_TIMEOUT_SECONDS '$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS'. Falling back to '$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS'."
+    AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS"
 fi
 
 AUTO_INIT_GIT_IF_MISSING="$(to_lower "$AUTO_INIT_GIT_IF_MISSING")"
@@ -1845,6 +1879,48 @@ self_update_current_script_path() {
     printf '%s/%s' "$SCRIPT_DIR" "$(basename "${BASH_SOURCE[0]}")"
 }
 
+self_update_acquire_lock() {
+    local lock_dir="$1"
+    local timeout_seconds="${2:-30}"
+    local waited=0
+    local owner_pid=""
+    local pid_file="$lock_dir/pid"
+
+    is_number "$timeout_seconds" || timeout_seconds=30
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        owner_pid=""
+        if [ -f "$pid_file" ]; then
+            owner_pid="$(head -n 1 "$pid_file" 2>/dev/null | tr -cd '0-9' || true)"
+        fi
+        if is_number "$owner_pid" && ! kill -0 "$owner_pid" 2>/dev/null; then
+            rm -rf "$lock_dir" 2>/dev/null || true
+            continue
+        fi
+        if [ "$waited" -ge "$timeout_seconds" ]; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    printf '%s\n' "$$" > "$pid_file" 2>/dev/null || true
+    return 0
+}
+
+self_update_release_lock() {
+    local lock_dir="${1:-}"
+    local pid_file owner_pid
+    [ -n "$lock_dir" ] || return 0
+    pid_file="$lock_dir/pid"
+    if [ -f "$pid_file" ]; then
+        owner_pid="$(head -n 1 "$pid_file" 2>/dev/null | tr -cd '0-9' || true)"
+        if [ -n "$owner_pid" ] && [ "$owner_pid" != "$$" ]; then
+            return 0
+        fi
+    fi
+    rm -rf "$lock_dir" 2>/dev/null || true
+}
+
 self_update_url_escape_path() {
     local value="${1:-}"
     if command -v python3 >/dev/null 2>&1; then
@@ -1895,10 +1971,24 @@ self_update_derive_github_raw_url() {
     printf 'https://raw.githubusercontent.com/%s/%s/%s/%s\n' "$owner" "$repo" "$branch" "$encoded_path"
 }
 
+self_update_url_is_allowed() {
+    local url="${1:-}"
+    case "$url" in
+        https://*) return 0 ;;
+        file://*|/*|./*|../*) return 0 ;;
+        http://*)
+            is_true "${AUTO_UPDATE_ALLOW_INSECURE:-false}" && return 0
+            return 1
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 self_update_download_to_file() {
     local url="$1"
     local dest="$2"
     local timeout_seconds="${3:-20}"
+    local max_bytes=2000000
     local local_path=""
 
     case "$url" in
@@ -1916,7 +2006,7 @@ self_update_download_to_file() {
     esac
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 2 --max-time "$timeout_seconds" -o "$dest" "$url"
+        curl -fsSL --retry 2 --connect-timeout "$timeout_seconds" --max-time "$timeout_seconds" --max-filesize "$max_bytes" -o "$dest" "$url"
         return $?
     fi
     if command -v wget >/dev/null 2>&1; then
@@ -1924,13 +2014,15 @@ self_update_download_to_file() {
         return $?
     fi
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$url" "$dest" "$timeout_seconds" <<'PY'
+        python3 - "$url" "$dest" "$timeout_seconds" "$max_bytes" <<'PY'
 import sys
 import urllib.request
 
-url, dest, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])
+url, dest, timeout, max_bytes = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 with urllib.request.urlopen(url, timeout=timeout) as response:
-    data = response.read()
+    data = response.read(max_bytes + 1)
+if len(data) > max_bytes:
+    raise SystemExit("remote ralphie.sh exceeds maximum auto-update size")
 with open(dest, "wb") as handle:
     handle.write(data)
 PY
@@ -1947,8 +2039,14 @@ self_update_candidate_is_valid() {
     is_number "$bytes" || return 1
     [ "$bytes" -ge 200 ] && [ "$bytes" -le 2000000 ] || return 1
     head -n 1 "$candidate" | grep -qE '^#!.*(bash|env[[:space:]]+bash)' || return 1
+    if LC_ALL=C grep -q "$(printf '\r')" "$candidate"; then
+        return 1
+    fi
     grep -q 'Ralphie - Unified autonomous loop' "$candidate" || return 1
     grep -q '^SCRIPT_VERSION=' "$candidate" || return 1
+    grep -q 'parse_args "$@"' "$candidate" || return 1
+    grep -q 'self_update_check_and_reexec "$@"' "$candidate" || return 1
+    grep -q 'RALPHIE_SKIP_AUTO_UPDATE' "$candidate" || return 1
     grep -q 'main "$@"' "$candidate" || return 1
     bash -n "$candidate" >/dev/null 2>&1
 }
@@ -1964,6 +2062,7 @@ self_update_script_is_dirty() {
         "$git_root"/*) rel_path="${self_path#"$git_root"/}" ;;
         *) return 1 ;;
     esac
+    git -C "$git_root" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1 || return 0
     ! git -C "$git_root" diff --quiet -- "$rel_path" 2>/dev/null && return 0
     ! git -C "$git_root" diff --cached --quiet -- "$rel_path" 2>/dev/null && return 0
     return 1
@@ -1974,10 +2073,22 @@ self_update_check_and_reexec() {
     [ "${RALPHIE_SKIP_AUTO_UPDATE:-}" != "1" ] || return 0
     [ "${RALPHIE_SELF_UPDATE_REEXECED:-}" != "1" ] || return 0
 
-    local self_path update_url update_dir tmp_candidate backup_path current_hash candidate_hash timestamp mode
+    local self_path update_url update_dir update_lock_dir tmp_candidate backup_path current_hash candidate_hash timestamp mode
     self_path="$(self_update_current_script_path)"
     if [ ! -f "$self_path" ]; then
         warn "Auto-update skipped: current script path is not a file."
+        return 0
+    fi
+
+    update_dir="$CONFIG_DIR/self-update"
+    mkdir -p "$update_dir" || {
+        warn "Auto-update skipped: could not create $(path_for_display "$update_dir")."
+        return 0
+    }
+    chmod 700 "$update_dir" 2>/dev/null || true
+    update_lock_dir="$update_dir/update.lock"
+    if ! self_update_acquire_lock "$update_lock_dir" "${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-30}"; then
+        warn "Auto-update skipped: another Ralphie self-update is still in progress."
         return 0
     fi
 
@@ -1987,21 +2098,23 @@ self_update_check_and_reexec() {
     fi
     if [ -z "$update_url" ]; then
         warn "Auto-update skipped: set AUTO_UPDATE_URL or run from a GitHub checkout with origin/current branch."
+        self_update_release_lock "$update_lock_dir"
+        return 0
+    fi
+    if ! self_update_url_is_allowed "$update_url"; then
+        warn "Auto-update skipped: update URL must be https://, file://, or a local path. Set AUTO_UPDATE_ALLOW_INSECURE=true only for trusted http:// origins."
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
 
     if ! is_true "${AUTO_UPDATE_ALLOW_DIRTY:-false}" && self_update_script_is_dirty; then
         warn "Auto-update skipped: local ralphie.sh has uncommitted changes. Set AUTO_UPDATE_ALLOW_DIRTY=true to override."
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
-
-    update_dir="$CONFIG_DIR/self-update"
-    mkdir -p "$update_dir" || {
-        warn "Auto-update skipped: could not create $(path_for_display "$update_dir")."
-        return 0
-    }
     tmp_candidate="$(mktemp "$update_dir/ralphie.remote.XXXXXX")" || {
         warn "Auto-update skipped: could not create temporary update file."
+        self_update_release_lock "$update_lock_dir"
         return 0
     }
 
@@ -2009,16 +2122,19 @@ self_update_check_and_reexec() {
     if ! self_update_download_to_file "$update_url" "$tmp_candidate" "${AUTO_UPDATE_TIMEOUT_SECONDS:-20}"; then
         warn "Auto-update skipped: failed to fetch remote ralphie.sh."
         rm -f "$tmp_candidate"
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
     if ! self_update_candidate_is_valid "$tmp_candidate"; then
         warn "Auto-update skipped: remote ralphie.sh failed validation."
         rm -f "$tmp_candidate"
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
     if cmp -s "$self_path" "$tmp_candidate"; then
         info "Auto-update: current ralphie.sh already matches remote."
         rm -f "$tmp_candidate"
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
 
@@ -2029,6 +2145,7 @@ self_update_check_and_reexec() {
     if ! cp -p "$self_path" "$backup_path"; then
         warn "Auto-update skipped: could not write backup before replacing ralphie.sh."
         rm -f "$tmp_candidate"
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
 
@@ -2041,10 +2158,15 @@ self_update_check_and_reexec() {
     if ! mv "$tmp_candidate" "$self_path"; then
         warn "Auto-update failed: could not atomically replace ralphie.sh. Backup remains at $(path_for_display "$backup_path")."
         rm -f "$tmp_candidate"
+        self_update_release_lock "$update_lock_dir"
         return 0
     fi
 
     success "Auto-update: replaced ralphie.sh ($current_hash -> $candidate_hash). Backup: $(path_for_display "$backup_path")."
+    self_update_release_lock "$update_lock_dir"
+    exec env RALPHIE_SKIP_AUTO_UPDATE=1 RALPHIE_SELF_UPDATE_REEXECED=1 "$self_path" "$@"
+    warn "Auto-update failed: replacement succeeded but re-exec failed. Restoring backup."
+    cp -p "$backup_path" "$self_path" 2>/dev/null || true
     exec env RALPHIE_SKIP_AUTO_UPDATE=1 RALPHIE_SELF_UPDATE_REEXECED=1 "$self_path" "$@"
 }
 
@@ -8002,6 +8124,7 @@ print_session_config_banner() {
     info "auto_update: ${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE} (pre-run single-file update)"
     info "auto_update_url: $(redact_endpoint_for_log "$AUTO_UPDATE_URL")"
     info "auto_update_allow_dirty: ${AUTO_UPDATE_ALLOW_DIRTY:-$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY}"
+    info "auto_update_allow_insecure: ${AUTO_UPDATE_ALLOW_INSECURE:-$DEFAULT_AUTO_UPDATE_ALLOW_INSECURE}"
     info "max_session_cycles: ${MAX_SESSION_CYCLES:-0} (0=unlimited)"
     info "session_token_budget: ${SESSION_TOKEN_BUDGET:-0} (0=unlimited)"
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
@@ -8092,6 +8215,10 @@ format_retry_budget_block_reason() {
 main() {
     parse_args "$@"
     self_update_check_and_reexec "$@"
+    if [ "${RALPHIE_SELF_UPDATE_TEST:-}" = "1" ]; then
+        echo "RALPHIE_SELF_UPDATE_CURRENT_OK"
+        return 0
+    fi
     finalize_phase_noop_profile_config
     REBOOTSTRAP_REQUESTED="$(to_lower "${REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}")"
     is_bool_like "$REBOOTSTRAP_REQUESTED" || REBOOTSTRAP_REQUESTED="$DEFAULT_REBOOTSTRAP_REQUESTED"

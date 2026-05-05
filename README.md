@@ -63,6 +63,8 @@ When enabled, Ralphie resolves a raw `ralphie.sh` source from `AUTO_UPDATE_URL` 
 Safety defaults:
 
 - local uncommitted edits to `ralphie.sh` block self-update unless `AUTO_UPDATE_ALLOW_DIRTY=true`;
+- `https://`, `file://`, and local paths are accepted; plaintext `http://` requires `AUTO_UPDATE_ALLOW_INSECURE=true`;
+- concurrent starts share a short self-update lock so only one process can replace `ralphie.sh` at a time;
 - failed fetch, failed validation, or failed replacement leaves the current script in place;
 - `curl | bash` remains install-and-run bootstrap only and re-execs with auto-update skipped for that first persisted run.
 
