@@ -6691,10 +6691,11 @@ file_has_local_identity_leakage() {
         return 1
     fi
 
-    local home_dir
+    local home_dir home_dir_regex
     home_dir="${HOME:-}"
+    home_dir_regex="$(printf '%s' "$home_dir" | sed 's/[][(){}.^$*+?|\\/]/\\&/g')"
 
-    if [ -n "$home_dir" ] && grep -qF "$home_dir" "$candidate_file" 2>/dev/null; then
+    if [ -n "$home_dir_regex" ] && grep -qE "(^|[^[:alnum:]_.-])${home_dir_regex}(/|$)" "$candidate_file" 2>/dev/null; then
         return 0
     fi
     if grep -qiE '(/Users/[A-Za-z0-9._-]+/)|(/home/[A-Za-z0-9._-]+/)|(/root/[A-Za-z0-9._-]+/)' "$candidate_file" 2>/dev/null; then

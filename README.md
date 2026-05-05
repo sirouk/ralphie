@@ -133,7 +133,21 @@ instead of resuming the old one. The safest operator pattern is:
    links any detailed steering/backlog source.
 3. Optionally create a focused steering file such as
    `research/RALPHIE_NEXT_FOCUS_STEERING.md` for the next slice.
-4. Start Ralphie with fresh state and refreshed bootstrap context:
+4. Make remaining work machine-readable if it must block `done`. Ralphie's
+   terminal backlog guard scans unchecked markdown tasks in configured backlog
+   sources; prose-only future slices may be documented but may not block
+   completion. Prefer explicit checkboxes:
+
+```markdown
+- [x] Slice 1: Completed previous focus
+- [ ] Slice 2: Next focus
+- [ ] Slice 3: Later focus
+```
+
+5. Choose a launch mode.
+
+Interactive fresh mission, when you want Ralphie to ask the bootstrap
+questions:
 
 ```bash
 ./ralphie.sh \
@@ -141,6 +155,22 @@ instead of resuming the old one. The safest operator pattern is:
   --rebootstrap \
   --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
 ```
+
+Prepared fresh mission, when you have already edited
+`.ralphie/project-bootstrap.md` and do not want the questionnaire:
+
+```bash
+./ralphie.sh \
+  --no-resume \
+  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
+```
+
+For the prepared path, make sure `.ralphie/project-bootstrap.md` is complete
+and intentionally pre-seeded with `interactive_prompted: true` and the desired
+`build_consent`. If the file is missing, invalid, or marked
+`interactive_prompted: false` in an interactive terminal, Ralphie will prompt
+to refresh it. Do not pass `--rebootstrap` on the prepared path; that flag
+means "ask again and rewrite bootstrap context."
 
 Use `--resume` or plain `./ralphie.sh` again only after that new mission has
 started and you want Ralphie to continue the same in-flight work.

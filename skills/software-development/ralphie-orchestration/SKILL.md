@@ -76,7 +76,13 @@ another focus:
 2. Update `IMPLEMENTATION_PLAN.md` with the new active objective.
 3. Add a focused steering/backlog file such as
    `research/RALPHIE_NEXT_FOCUS_STEERING.md` when the objective needs detail.
-4. Start with fresh state and refreshed bootstrap context:
+4. Use unchecked markdown tasks for remaining work that must block `done`.
+   Ralphie's terminal backlog guard scans configured backlog sources for
+   `- [ ]` tasks; prose-only future slices may not prevent terminal
+   completion.
+5. Choose the right fresh-start mode.
+
+Interactive fresh mission, when the operator wants the questionnaire:
 
 ```bash
 ./ralphie.sh \
@@ -84,6 +90,21 @@ another focus:
   --rebootstrap \
   --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
 ```
+
+Prepared fresh mission, when `.ralphie/project-bootstrap.md` is already
+complete and should be reused without prompts:
+
+```bash
+./ralphie.sh \
+  --no-resume \
+  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
+```
+
+For the prepared path, `.ralphie/project-bootstrap.md` must be valid and
+intentionally pre-seeded with `interactive_prompted: true` and the desired
+`build_consent`. If it is missing, invalid, or marked `interactive_prompted:
+false` in a terminal, Ralphie will prompt. Do not pass `--rebootstrap` unless
+the operator wants to answer the bootstrap questions again.
 
 After that new mission is underway, plain `./ralphie.sh` is again appropriate
 because it resumes the current in-flight mission.
