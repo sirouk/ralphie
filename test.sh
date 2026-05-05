@@ -278,6 +278,68 @@ EOF_GIT
     return "$rc"
 }
 
+run_markdown_hygiene_fixture_check() {
+    local tmpd rc=0
+    tmpd="$(mktemp -d /tmp/ralphie-markdown-hygiene.XXXXXX)"
+
+    set +e
+    (
+        set -euo pipefail
+
+        mkdir -p "$tmpd/research" "$tmpd/specs" "$tmpd/.ralphie" "$tmpd/.specify/memory"
+        touch "$tmpd/.specify/memory/constitution.md"
+        cp ./ralphie.sh "$tmpd/ralphie.sh"
+        cd "$tmpd"
+
+        HOME=/home/operator RALPHIE_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX='(^|[^[:alnum:]_.-])/home/product(/|$)' bash <<'EOF_MARKDOWN'
+set -euo pipefail
+source ./ralphie.sh
+
+printf '%s\n' 'Allowed layout: /home/product/app' > allowed.md
+if file_has_local_identity_leakage allowed.md; then
+    echo "allowlisted documented path was reported as local leakage" >&2
+    exit 1
+fi
+
+printf '%s\n' 'Local leak: /home/other/private' > leaked.md
+if ! file_has_local_identity_leakage leaked.md; then
+    echo "non-allowlisted local path was not reported as leakage" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    'Allowed layout: /home/product/app' \
+    'Transcript leak: tokens used' \
+    'Other leak: /home/other/private' > README.md
+sanitize_markdown_artifact_file README.md
+grep -q '/home/product/app' README.md
+if grep -q 'tokens used' README.md || grep -q '/home/other/private' README.md; then
+    echo "markdown sanitizer did not remove transcript or non-allowlisted path leakage" >&2
+    exit 1
+fi
+EOF_MARKDOWN
+
+        HOME=/home/operator RALPHIE_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX='[' bash <<'EOF_INVALID'
+set -euo pipefail
+source ./ralphie.sh
+if [ -n "$MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX" ]; then
+    echo "invalid markdown path allowlist regex should be disabled" >&2
+    exit 1
+fi
+printf '%s\n' 'Still a leak: /home/product/app' > invalid.md
+if ! file_has_local_identity_leakage invalid.md; then
+    echo "invalid allowlist regex caused local path detection to fail open" >&2
+    exit 1
+fi
+EOF_INVALID
+    )
+    rc=$?
+    set -e
+
+    rm -rf "$tmpd"
+    return "$rc"
+}
+
 run_step() {
     local label="$1"
     shift
@@ -329,6 +391,7 @@ main() {
     run_step "bash syntax checks" run_support_bash_syntax_checks
     run_step "shellcheck support scripts" run_support_shellcheck_if_available
     run_step "setup-agent-subrepos fixture" run_setup_agent_subrepos_fixture_check
+    run_step "markdown hygiene fixture" run_markdown_hygiene_fixture_check
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")

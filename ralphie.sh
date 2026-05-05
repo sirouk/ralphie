@@ -485,6 +485,12 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+awk_regex_is_valid() {
+    local regex="${1:-}"
+    [ -z "$regex" ] && return 0
+    awk -v re="$regex" 'BEGIN { if ("" ~ re) { } }' >/dev/null 2>&1
+}
+
 is_allowed_config_key() {
     local key="${1:-}"
     case "$key" in
@@ -508,7 +514,7 @@ is_allowed_config_key() {
         PHASE_NOOP_POLICY_DOCUMENT|PHASE_NOOP_PROFILE|SESSION_TOKEN_BUDGET|\
         SESSION_TOKEN_RATE_CENTS_PER_MILLION|SESSION_COST_BUDGET_CENTS|AUTO_REPAIR_MARKDOWN_ARTIFACTS|\
         AUTO_REPAIR_MARKDOWN_DRY_RUN|AUTO_REPAIR_MARKDOWN_BACKUP|AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED|\
-        PHASE_MANIFEST_MODE|\
+        MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX|PHASE_MANIFEST_MODE|\
         SWARM_CONSENSUS_TIMEOUT|CONSENSUS_SCORE_THRESHOLD|ENGINE_HEALTH_MAX_ATTEMPTS|\
         ENGINE_HEALTH_RETRY_DELAY_SECONDS|ENGINE_HEALTH_RETRY_VERBOSE|ENGINE_SMOKE_TEST_TIMEOUT|\
         STARTUP_OPERATIONAL_PROBE|ENGINE_OVERRIDES_BOOTSTRAPPED|NOTIFICATIONS_ENABLED|\
@@ -848,6 +854,7 @@ Additional runtime env knobs:
   RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN   Preview markdown repairs without mutating files (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP    Save markdown backup+diff artifacts before mutation (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED  Restrict markdown repair targets to this-session changed files
+  RALPHIE_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX  ERE for intentional documented paths in markdown hygiene
   RALPHIE_STARTUP_OPERATIONAL_PROBE      Run startup operational self-checks (true|false)
   RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED  First-deploy engine override prompt sentinel (true|false)
   RALPHIE_NOTIFICATIONS_ENABLED          Master notifications toggle (true|false)
@@ -1466,6 +1473,11 @@ AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="$(to_lower "$AUTO_REPAIR_MARKDOWN_ONL
 if ! is_bool_like "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"; then
     warn "Invalid AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED '$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED'. Falling back to '$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED'."
     AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="$DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"
+fi
+
+if [ -n "$MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX" ] && ! awk_regex_is_valid "$MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX"; then
+    warn "Invalid MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX; disabling markdown path allowlist."
+    MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="$DEFAULT_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX"
 fi
 
 PHASE_MANIFEST_MODE="$(normalize_phase_manifest_mode "$PHASE_MANIFEST_MODE")"
@@ -6792,7 +6804,8 @@ sanitize_markdown_artifact_file() {
         }
         {
             clean_line = scrub($0)
-            if (clean_line ~ /succeeded in [0-9][0-9]*ms:/ || clean_line ~ /assistant[[:space:]][[:space:]]*to=/ || clean_line ~ /recipient_name[[:space:]]*:/ || clean_line ~ /tokens used/ || clean_line ~ /mcp startup:/ || clean_line ~ /\/Users\/[A-Za-z0-9._-]+\// || clean_line ~ /\/root\/[A-Za-z0-9._-]+\// || clean_line ~ /\/home\/[A-Za-z0-9._-]+\//) { next }
+            if ($0 ~ /succeeded in [0-9][0-9]*ms:/ || $0 ~ /assistant[[:space:]][[:space:]]*to=/ || $0 ~ /recipient_name[[:space:]]*:/ || $0 ~ /tokens used/ || $0 ~ /mcp startup:/) { next }
+            if (clean_line ~ /\/Users\/[A-Za-z0-9._-]+\// || clean_line ~ /\/root\/[A-Za-z0-9._-]+\// || clean_line ~ /\/home\/[A-Za-z0-9._-]+\//) { next }
         }
         { print }
     ' "$file" > "$tmp_file"; then
