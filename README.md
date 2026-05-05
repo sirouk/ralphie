@@ -15,7 +15,7 @@ Ralphie operates on a "Thinking before Doing" doctrine. The system is designed a
 -   **Autonomous YOLO Mode:** Enabled by default, granting agents the authority to execute shell commands and modify files.
 -   **Self-Healing State:** SHA-256 checksum-validated state snapshots that detect artifact drift and allow for robust recovery via `--resume`.
 -   **Atomic Lifecycle Management:** Global process tracking ensures that orphaned agent processes are terminated on failure or interrupt.
--   **Self-Contained Runtime:** Runtime behavior is version-stable and local to the checked-out orchestrator script; no runtime auto-update is performed.
+-   **Self-Contained Runtime:** Runtime behavior is version-stable and local to the checked-out orchestrator script. Optional pre-run self-update can replace only `ralphie.sh` before startup, then re-exec the verified copy.
 -   **Resilient Consensus Orchestration:** Adaptive phase routing includes bounded retries and hard timeouts for reviewer swarms.
 
 ## Operational Phases & Governance
@@ -50,8 +50,21 @@ Ralphie transitions through structured phases governed by strict validation gate
 
 ## Runtime Management
 
-`ralphie.sh` does not auto-update itself at runtime. Release drift is handled intentionally through normal checkout/version control workflows.
-The `curl | bash` quick start is an install-and-run bootstrap only: it fetches the script once, writes `./ralphie.sh` in the current directory, and re-execs that local file. To upgrade behavior later, update the checked-out `ralphie.sh` script or repository and rerun from disk.
+`ralphie.sh` never mutates itself mid-session. By default, release drift is handled through normal checkout/version control workflows.
+
+Optional pre-run single-file self-update is available with:
+
+```bash
+AUTO_UPDATE=true ./ralphie.sh
+```
+
+When enabled, Ralphie resolves a raw `ralphie.sh` source from `AUTO_UPDATE_URL` / `RALPHIE_AUTO_UPDATE_URL`, or derives one from a GitHub `origin` remote and the current branch. It downloads only that one script, validates that it is a plausible Ralphie shell script, syntax-checks it, compares hashes, writes a timestamped backup under `.ralphie/self-update/`, atomically replaces `./ralphie.sh`, and re-execs once with an update loop guard.
+
+Safety defaults:
+
+- local uncommitted edits to `ralphie.sh` block self-update unless `AUTO_UPDATE_ALLOW_DIRTY=true`;
+- failed fetch, failed validation, or failed replacement leaves the current script in place;
+- `curl | bash` remains install-and-run bootstrap only and re-execs with auto-update skipped for that first persisted run.
 
 ## Security & Sandboxing (Claude Code)
 

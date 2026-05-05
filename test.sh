@@ -340,6 +340,56 @@ EOF_INVALID
     return "$rc"
 }
 
+run_self_update_fixture_check() {
+    local tmpd rc=0 timeout_cmd output
+    tmpd="$(mktemp -d /tmp/ralphie-self-update.XXXXXX)"
+    timeout_cmd="$(get_timeout_cmd)"
+
+    set +e
+    (
+        set -euo pipefail
+
+        mkdir -p "$tmpd/project" "$tmpd/home"
+        cp ./ralphie.sh "$tmpd/project/ralphie.sh"
+        chmod +x "$tmpd/project/ralphie.sh"
+        cat > "$tmpd/remote-ralphie.sh" <<'EOF_REMOTE'
+#!/usr/bin/env bash
+#
+# Ralphie - Unified autonomous loop for Codex and Claude Code.
+# Fixture update used by the self-update regression test.
+set -euo pipefail
+SCRIPT_VERSION="fixture-self-update"
+main() {
+    if [ "${RALPHIE_SELF_UPDATE_TEST:-}" = "1" ]; then
+        echo "RALPHIE_SELF_UPDATE_FIXTURE_OK"
+        exit 0
+    fi
+    echo "fixture updated script executed"
+}
+main "$@"
+# Padding keeps this fixture above the self-update minimum-size guard.
+# 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ
+# 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ
+# 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ
+EOF_REMOTE
+        chmod +x "$tmpd/remote-ralphie.sh"
+
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/project/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/project/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
+        grep -q 'SCRIPT_VERSION="fixture-self-update"' "$tmpd/project/ralphie.sh"
+        ls "$tmpd/project/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
+    )
+    rc=$?
+    set -e
+
+    rm -rf "$tmpd"
+    return "$rc"
+}
+
 run_step() {
     local label="$1"
     shift
@@ -392,6 +442,7 @@ main() {
     run_step "shellcheck support scripts" run_support_shellcheck_if_available
     run_step "setup-agent-subrepos fixture" run_setup_agent_subrepos_fixture_check
     run_step "markdown hygiene fixture" run_markdown_hygiene_fixture_check
+    run_step "self-update fixture" run_self_update_fixture_check
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")

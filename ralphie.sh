@@ -500,6 +500,7 @@ is_allowed_config_key() {
             ;;
         # Explicitly supported non-prefixed compatibility keys.
         COMMAND_TIMEOUT_SECONDS|MAX_ITERATIONS|MAX_SESSION_CYCLES|YOLO|AUTO_UPDATE|AUTO_UPDATE_URL|\
+        AUTO_UPDATE_ALLOW_DIRTY|AUTO_UPDATE_TIMEOUT_SECONDS|\
         SWARM_MAX_PARALLEL|CONFIDENCE_TARGET|CONFIDENCE_STAGNATION_LIMIT|\
         AUTO_PLAN_BACKFILL_ON_IDLE_BUILD|AUTO_ENGINE_PREFERENCE|AUTO_INIT_GIT_IF_MISSING|\
         AUTO_COMMIT_ON_PHASE_PASS|CODEX_ENDPOINT|CODEX_USE_RESPONSES_SCHEMA|\
@@ -822,6 +823,8 @@ Core options:
   --run-agent-retry-verbose bool          Verbose inference retry logging (true|false)
   --auto-init-git-if-missing bool         Initialize git repository at startup when missing (true|false)
   --auto-commit-on-phase-pass bool        Auto-commit local changes after phase gate pass (true|false, no push)
+  --auto-update bool                      Check and replace ralphie.sh from remote before startup (true|false)
+  --auto-update-url URL                   Raw ralphie.sh URL for auto-update; defaults to GitHub origin/current branch
   --auto-engine-preference codex|claude   Preferred AUTO engine selection order
   --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
@@ -850,6 +853,10 @@ Additional runtime env knobs:
   RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS  Kill/retry agent run if no new output for N seconds (0=disabled)
   RALPHIE_AUTO_INIT_GIT_IF_MISSING       Initialize git repo at startup when missing (true|false)
   RALPHIE_AUTO_COMMIT_ON_PHASE_PASS      Auto-commit phase-approved changes (true|false)
+  RALPHIE_AUTO_UPDATE                    Enable pre-run single-file self-update (true|false)
+  RALPHIE_AUTO_UPDATE_URL                Explicit raw ralphie.sh update URL
+  RALPHIE_AUTO_UPDATE_ALLOW_DIRTY        Allow replacing a locally modified ralphie.sh (true|false)
+  RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS    Fetch timeout for single-file self-update
   RALPHIE_PHASE_MANIFEST_MODE            Worktree manifest mode: light|deep
   RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN   Preview markdown repairs without mutating files (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP    Save markdown backup+diff artifacts before mutation (true|false)
@@ -1010,6 +1017,22 @@ parse_args() {
                 AUTO_COMMIT_ON_PHASE_PASS="$(parse_arg_value "--auto-commit-on-phase-pass" "${2:-}")"
                 if ! is_bool_like "$AUTO_COMMIT_ON_PHASE_PASS"; then
                     err "Invalid boolean value for --auto-commit-on-phase-pass: $AUTO_COMMIT_ON_PHASE_PASS"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --auto-update)
+                AUTO_UPDATE="$(parse_arg_value "--auto-update" "${2:-}")"
+                if ! is_bool_like "$AUTO_UPDATE"; then
+                    err "Invalid boolean value for --auto-update: $AUTO_UPDATE"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --auto-update-url)
+                AUTO_UPDATE_URL="$(parse_arg_value "--auto-update-url" "${2:-}")"
+                if [ -z "$(sanitize_text_for_log "$AUTO_UPDATE_URL")" ]; then
+                    err "Invalid empty value for --auto-update-url"
                     exit 1
                 fi
                 shift 2
@@ -1177,7 +1200,10 @@ DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
 DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup when missing
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
-DEFAULT_AUTO_UPDATE="false"                  # runtime auto-update is intentionally unsupported
+DEFAULT_AUTO_UPDATE="false"                  # check remote script and replace before startup
+DEFAULT_AUTO_UPDATE_URL=""                   # explicit raw ralphie.sh URL; derived from GitHub origin when empty
+DEFAULT_AUTO_UPDATE_ALLOW_DIRTY="false"      # refuse to overwrite local ralphie.sh edits by default
+DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS=20       # network timeout for single-file self-update fetch
 DEFAULT_COMMAND_TIMEOUT_SECONDS=0           # Tolerant default: disable command timeouts unless overridden
 DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
 DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
@@ -1254,6 +1280,9 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-$DEFAULT_MAX_ITERATIONS}"
 MAX_SESSION_CYCLES="${MAX_SESSION_CYCLES:-$DEFAULT_MAX_SESSION_CYCLES}"
 YOLO="${YOLO:-$DEFAULT_YOLO}"
 AUTO_UPDATE="${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE}"
+AUTO_UPDATE_URL="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
+AUTO_UPDATE_ALLOW_DIRTY="${AUTO_UPDATE_ALLOW_DIRTY:-$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY}"
+AUTO_UPDATE_TIMEOUT_SECONDS="${AUTO_UPDATE_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS}"
 PHASE_WALLCLOCK_LIMIT_SECONDS="${PHASE_WALLCLOCK_LIMIT_SECONDS:-$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS}"
 RALPHIE_QUALITY_LEVEL="${RALPHIE_QUALITY_LEVEL:-$DEFAULT_RALPHIE_QUALITY_LEVEL}"
 SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
@@ -1380,6 +1409,10 @@ AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${RALPHIE_AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-$A
 AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENCE}"
 AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
 AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_PHASE_PASS}"
+AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
+AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$AUTO_UPDATE_URL}"
+AUTO_UPDATE_ALLOW_DIRTY="${RALPHIE_AUTO_UPDATE_ALLOW_DIRTY:-$AUTO_UPDATE_ALLOW_DIRTY}"
+AUTO_UPDATE_TIMEOUT_SECONDS="${RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS:-$AUTO_UPDATE_TIMEOUT_SECONDS}"
 CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
 CODEX_MODEL="${RALPHIE_CODEX_MODEL:-${CODEX_MODEL:-}}"
 CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
@@ -1438,6 +1471,23 @@ AUTO_COMMIT_ON_PHASE_PASS="$(to_lower "$AUTO_COMMIT_ON_PHASE_PASS")"
 if ! is_bool_like "$AUTO_COMMIT_ON_PHASE_PASS"; then
     warn "Invalid AUTO_COMMIT_ON_PHASE_PASS '$AUTO_COMMIT_ON_PHASE_PASS'. Falling back to '$DEFAULT_AUTO_COMMIT_ON_PHASE_PASS'."
     AUTO_COMMIT_ON_PHASE_PASS="$DEFAULT_AUTO_COMMIT_ON_PHASE_PASS"
+fi
+
+AUTO_UPDATE="$(to_lower "$AUTO_UPDATE")"
+if ! is_bool_like "$AUTO_UPDATE"; then
+    warn "Invalid AUTO_UPDATE '$AUTO_UPDATE'. Falling back to '$DEFAULT_AUTO_UPDATE'."
+    AUTO_UPDATE="$DEFAULT_AUTO_UPDATE"
+fi
+
+AUTO_UPDATE_ALLOW_DIRTY="$(to_lower "$AUTO_UPDATE_ALLOW_DIRTY")"
+if ! is_bool_like "$AUTO_UPDATE_ALLOW_DIRTY"; then
+    warn "Invalid AUTO_UPDATE_ALLOW_DIRTY '$AUTO_UPDATE_ALLOW_DIRTY'. Falling back to '$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY'."
+    AUTO_UPDATE_ALLOW_DIRTY="$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY"
+fi
+
+if ! is_number "$AUTO_UPDATE_TIMEOUT_SECONDS" || [ "$AUTO_UPDATE_TIMEOUT_SECONDS" -lt 1 ]; then
+    warn "Invalid AUTO_UPDATE_TIMEOUT_SECONDS '$AUTO_UPDATE_TIMEOUT_SECONDS'. Falling back to '$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS'."
+    AUTO_UPDATE_TIMEOUT_SECONDS="$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS"
 fi
 
 AUTO_INIT_GIT_IF_MISSING="$(to_lower "$AUTO_INIT_GIT_IF_MISSING")"
@@ -1789,6 +1839,213 @@ sha256_stream_sum() {
     else
         "$checksum_cmd" -a 256 | awk '{print $1}'
     fi
+}
+
+self_update_current_script_path() {
+    printf '%s/%s' "$SCRIPT_DIR" "$(basename "${BASH_SOURCE[0]}")"
+}
+
+self_update_url_escape_path() {
+    local value="${1:-}"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$value" <<'PY' 2>/dev/null && return 0
+import sys
+from urllib.parse import quote
+print(quote(sys.argv[1], safe="/"))
+PY
+    fi
+    printf '%s' "$value" | sed 's/ /%20/g'
+}
+
+self_update_derive_github_raw_url() {
+    command -v git >/dev/null 2>&1 || return 1
+
+    local self_path git_root rel_path remote_url branch repo_path owner repo encoded_path
+    self_path="$(self_update_current_script_path)"
+    git_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$git_root" ] || return 1
+    case "$self_path" in
+        "$git_root"/*) rel_path="${self_path#"$git_root"/}" ;;
+        *) return 1 ;;
+    esac
+
+    remote_url="$(git -C "$git_root" config --get remote.origin.url 2>/dev/null || true)"
+    [ -n "$remote_url" ] || return 1
+    branch="$(git -C "$git_root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [ -z "$branch" ]; then
+        branch="$(git -C "$git_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    fi
+    [ -n "$branch" ] && [ "$branch" != "HEAD" ] || return 1
+
+    case "$remote_url" in
+        https://github.com/*) repo_path="${remote_url#https://github.com/}" ;;
+        http://github.com/*) repo_path="${remote_url#http://github.com/}" ;;
+        git@github.com:*) repo_path="${remote_url#git@github.com:}" ;;
+        ssh://git@github.com/*) repo_path="${remote_url#ssh://git@github.com/}" ;;
+        *) return 1 ;;
+    esac
+    repo_path="${repo_path%.git}"
+    owner="${repo_path%%/*}"
+    repo="${repo_path#*/}"
+    repo="${repo%%/*}"
+    repo="${repo%.git}"
+    [ -n "$owner" ] && [ -n "$repo" ] && [ "$repo" != "$repo_path" ] || return 1
+
+    encoded_path="$(self_update_url_escape_path "$rel_path")"
+    printf 'https://raw.githubusercontent.com/%s/%s/%s/%s\n' "$owner" "$repo" "$branch" "$encoded_path"
+}
+
+self_update_download_to_file() {
+    local url="$1"
+    local dest="$2"
+    local timeout_seconds="${3:-20}"
+    local local_path=""
+
+    case "$url" in
+        file://*)
+            local_path="${url#file://}"
+            [ -f "$local_path" ] || return 1
+            cp "$local_path" "$dest"
+            return $?
+            ;;
+        /*|./*|../*)
+            [ -f "$url" ] || return 1
+            cp "$url" "$dest"
+            return $?
+            ;;
+    esac
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 2 --max-time "$timeout_seconds" -o "$dest" "$url"
+        return $?
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T "$timeout_seconds" -O "$dest" "$url"
+        return $?
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$url" "$dest" "$timeout_seconds" <<'PY'
+import sys
+import urllib.request
+
+url, dest, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with urllib.request.urlopen(url, timeout=timeout) as response:
+    data = response.read()
+with open(dest, "wb") as handle:
+    handle.write(data)
+PY
+        return $?
+    fi
+    return 1
+}
+
+self_update_candidate_is_valid() {
+    local candidate="$1"
+    local bytes=""
+    [ -f "$candidate" ] || return 1
+    bytes="$(wc -c < "$candidate" | tr -d ' ')"
+    is_number "$bytes" || return 1
+    [ "$bytes" -ge 200 ] && [ "$bytes" -le 2000000 ] || return 1
+    head -n 1 "$candidate" | grep -qE '^#!.*(bash|env[[:space:]]+bash)' || return 1
+    grep -q 'Ralphie - Unified autonomous loop' "$candidate" || return 1
+    grep -q '^SCRIPT_VERSION=' "$candidate" || return 1
+    grep -q 'main "$@"' "$candidate" || return 1
+    bash -n "$candidate" >/dev/null 2>&1
+}
+
+self_update_script_is_dirty() {
+    command -v git >/dev/null 2>&1 || return 1
+
+    local self_path git_root rel_path
+    self_path="$(self_update_current_script_path)"
+    git_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$git_root" ] || return 1
+    case "$self_path" in
+        "$git_root"/*) rel_path="${self_path#"$git_root"/}" ;;
+        *) return 1 ;;
+    esac
+    ! git -C "$git_root" diff --quiet -- "$rel_path" 2>/dev/null && return 0
+    ! git -C "$git_root" diff --cached --quiet -- "$rel_path" 2>/dev/null && return 0
+    return 1
+}
+
+self_update_check_and_reexec() {
+    is_true "${AUTO_UPDATE:-false}" || return 0
+    [ "${RALPHIE_SKIP_AUTO_UPDATE:-}" != "1" ] || return 0
+    [ "${RALPHIE_SELF_UPDATE_REEXECED:-}" != "1" ] || return 0
+
+    local self_path update_url update_dir tmp_candidate backup_path current_hash candidate_hash timestamp mode
+    self_path="$(self_update_current_script_path)"
+    if [ ! -f "$self_path" ]; then
+        warn "Auto-update skipped: current script path is not a file."
+        return 0
+    fi
+
+    update_url="${AUTO_UPDATE_URL:-}"
+    if [ -z "$update_url" ]; then
+        update_url="$(self_update_derive_github_raw_url || true)"
+    fi
+    if [ -z "$update_url" ]; then
+        warn "Auto-update skipped: set AUTO_UPDATE_URL or run from a GitHub checkout with origin/current branch."
+        return 0
+    fi
+
+    if ! is_true "${AUTO_UPDATE_ALLOW_DIRTY:-false}" && self_update_script_is_dirty; then
+        warn "Auto-update skipped: local ralphie.sh has uncommitted changes. Set AUTO_UPDATE_ALLOW_DIRTY=true to override."
+        return 0
+    fi
+
+    update_dir="$CONFIG_DIR/self-update"
+    mkdir -p "$update_dir" || {
+        warn "Auto-update skipped: could not create $(path_for_display "$update_dir")."
+        return 0
+    }
+    tmp_candidate="$(mktemp "$update_dir/ralphie.remote.XXXXXX")" || {
+        warn "Auto-update skipped: could not create temporary update file."
+        return 0
+    }
+
+    info "Auto-update: checking remote ralphie.sh from $(redact_endpoint_for_log "$update_url")."
+    if ! self_update_download_to_file "$update_url" "$tmp_candidate" "${AUTO_UPDATE_TIMEOUT_SECONDS:-20}"; then
+        warn "Auto-update skipped: failed to fetch remote ralphie.sh."
+        rm -f "$tmp_candidate"
+        return 0
+    fi
+    if ! self_update_candidate_is_valid "$tmp_candidate"; then
+        warn "Auto-update skipped: remote ralphie.sh failed validation."
+        rm -f "$tmp_candidate"
+        return 0
+    fi
+    if cmp -s "$self_path" "$tmp_candidate"; then
+        info "Auto-update: current ralphie.sh already matches remote."
+        rm -f "$tmp_candidate"
+        return 0
+    fi
+
+    current_hash="$(sha256_file_sum "$self_path" 2>/dev/null || echo "unknown")"
+    candidate_hash="$(sha256_file_sum "$tmp_candidate" 2>/dev/null || echo "unknown")"
+    timestamp="$(date '+%Y%m%d_%H%M%S')"
+    backup_path="$update_dir/ralphie.sh.${timestamp}.bak"
+    if ! cp -p "$self_path" "$backup_path"; then
+        warn "Auto-update skipped: could not write backup before replacing ralphie.sh."
+        rm -f "$tmp_candidate"
+        return 0
+    fi
+
+    mode="$(stat -c '%a' "$self_path" 2>/dev/null || stat -f '%Lp' "$self_path" 2>/dev/null || echo "")"
+    if [ -n "$mode" ]; then
+        chmod "$mode" "$tmp_candidate" 2>/dev/null || chmod +x "$tmp_candidate" 2>/dev/null || true
+    else
+        chmod +x "$tmp_candidate" 2>/dev/null || true
+    fi
+    if ! mv "$tmp_candidate" "$self_path"; then
+        warn "Auto-update failed: could not atomically replace ralphie.sh. Backup remains at $(path_for_display "$backup_path")."
+        rm -f "$tmp_candidate"
+        return 0
+    fi
+
+    success "Auto-update: replaced ralphie.sh ($current_hash -> $candidate_hash). Backup: $(path_for_display "$backup_path")."
+    exec env RALPHIE_SKIP_AUTO_UPDATE=1 RALPHIE_SELF_UPDATE_REEXECED=1 "$self_path" "$@"
 }
 
 state_blob_encode() {
@@ -7742,7 +7999,9 @@ run_idle_plan_refresh() { return 0; }
 print_session_config_banner() {
     info "=== Ralphie Session Budget & Retry Configuration ==="
     info "script_version: ${SCRIPT_VERSION}"
-    info "auto_update: ${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE} (runtime auto-update unsupported)"
+    info "auto_update: ${AUTO_UPDATE:-$DEFAULT_AUTO_UPDATE} (pre-run single-file update)"
+    info "auto_update_url: $(redact_endpoint_for_log "$AUTO_UPDATE_URL")"
+    info "auto_update_allow_dirty: ${AUTO_UPDATE_ALLOW_DIRTY:-$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY}"
     info "max_session_cycles: ${MAX_SESSION_CYCLES:-0} (0=unlimited)"
     info "session_token_budget: ${SESSION_TOKEN_BUDGET:-0} (0=unlimited)"
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
@@ -7832,6 +8091,7 @@ format_retry_budget_block_reason() {
 
 main() {
     parse_args "$@"
+    self_update_check_and_reexec "$@"
     finalize_phase_noop_profile_config
     REBOOTSTRAP_REQUESTED="$(to_lower "${REBOOTSTRAP_REQUESTED:-$DEFAULT_REBOOTSTRAP_REQUESTED}")"
     is_bool_like "$REBOOTSTRAP_REQUESTED" || REBOOTSTRAP_REQUESTED="$DEFAULT_REBOOTSTRAP_REQUESTED"
