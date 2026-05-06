@@ -9182,32 +9182,44 @@ main() {
                     notify_event "phase_decision" "reroute_pass" "phase=$phase rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                 fi
                 if [ "$route_index" -lt "$phase_index" ]; then
-                    consensus_route_count=$((consensus_route_count + 1))
-                    local routing_signature
-                    routing_signature="$(phase_failure_signature "$phase" "$phase_next_target" "${phase_route_reason:-none}")"
-                    if [ "$routing_signature" = "$routing_stagnation_signature" ]; then
-                        routing_stagnation_count=$((routing_stagnation_count + 1))
+                    local route_is_plan_freshness
+                    route_is_plan_freshness="false"
+                    case "${phase_route_reason:-}" in
+                        "plan refresh required:"*) route_is_plan_freshness="true" ;;
+                    esac
+
+                    if is_true "$route_is_plan_freshness"; then
+                        routing_stagnation_signature=""
+                        routing_stagnation_count=0
+                        info "Plan freshness reroute will not count as consensus routing stagnation."
                     else
-                        routing_stagnation_signature="$routing_signature"
-                        routing_stagnation_count=1
-                    fi
-                    if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
-                        warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
-                        log_reason_code "RB_ROUTING_BUDGET_EXCEEDED" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)"
-                        notify_event "session_error" "routing_budget_exceeded" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)" || true
-                        should_exit="true"
-                        PHASE_ATTEMPT_IN_PROGRESS="false"
-                        save_state_or_exit "routing budget checkpoint ($phase->$phase_next_target)"
-                        break
-                    fi
-                    if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -eq 0 ] && [ "$routing_stagnation_count" -ge "$CONFIDENCE_STAGNATION_LIMIT" ]; then
-                        warn "Consensus routing stagnated for ${routing_stagnation_count} backtracks with unchanged route signature."
-                        log_reason_code "RB_ROUTING_STAGNATION" "unlimited routing stagnated after ${routing_stagnation_count} backtracks ($phase->$phase_next_target)"
-                        notify_event "session_error" "routing_stagnation" "unlimited routing stagnated after ${routing_stagnation_count} backtracks" || true
-                        should_exit="true"
-                        PHASE_ATTEMPT_IN_PROGRESS="false"
-                        save_state_or_exit "routing stagnation checkpoint ($phase->$phase_next_target)"
-                        break
+                        consensus_route_count=$((consensus_route_count + 1))
+                        local routing_signature
+                        routing_signature="$(phase_failure_signature "$phase" "$phase_next_target" "${phase_route_reason:-none}")"
+                        if [ "$routing_signature" = "$routing_stagnation_signature" ]; then
+                            routing_stagnation_count=$((routing_stagnation_count + 1))
+                        else
+                            routing_stagnation_signature="$routing_signature"
+                            routing_stagnation_count=1
+                        fi
+                        if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
+                            warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
+                            log_reason_code "RB_ROUTING_BUDGET_EXCEEDED" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)"
+                            notify_event "session_error" "routing_budget_exceeded" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)" || true
+                            should_exit="true"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            save_state_or_exit "routing budget checkpoint ($phase->$phase_next_target)"
+                            break
+                        fi
+                        if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -eq 0 ] && [ "$routing_stagnation_count" -ge "$CONFIDENCE_STAGNATION_LIMIT" ]; then
+                            warn "Consensus routing stagnated for ${routing_stagnation_count} backtracks with unchanged route signature."
+                            log_reason_code "RB_ROUTING_STAGNATION" "unlimited routing stagnated after ${routing_stagnation_count} backtracks ($phase->$phase_next_target)"
+                            notify_event "session_error" "routing_stagnation" "unlimited routing stagnated after ${routing_stagnation_count} backtracks" || true
+                            should_exit="true"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            save_state_or_exit "routing stagnation checkpoint ($phase->$phase_next_target)"
+                            break
+                        fi
                     fi
                 fi
                 if [ "$phase_next_target" = "done" ] || [ "$route_index" -ge "${#phases[@]}" ]; then
