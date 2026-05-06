@@ -354,6 +354,199 @@ extract_review_gaps() {
     echo "$gaps"
 }
 
+file_looks_like_auth_or_html_challenge() {
+    local file="$1"
+    [ -f "$file" ] || return 1
+    grep -qiE '<!doctype html|<html[ >]|</html>|cloudflare|cf_chl|challenge-platform|enable javascript and cookies|authrequired|missing or invalid access token|invalid_token' "$file" 2>/dev/null
+}
+
+review_output_invalid_reason() {
+    local file="$1"
+    local mode="${2:-consensus}"
+    local score verdict next_phase
+
+    [ -s "$file" ] || { echo "missing reviewer output"; return 0; }
+
+    if file_looks_like_auth_or_html_challenge "$file"; then
+        echo "provider auth/challenge HTML or token error"
+        return 0
+    fi
+
+    score="$(extract_xml_value "$file" "score" "")"
+    if ! is_number "$score" || [ "$score" -gt 100 ]; then
+        echo "missing or invalid <score>"
+        return 0
+    fi
+
+    verdict="$(extract_xml_value "$file" "verdict" "")"
+    case "$verdict" in
+        GO|HOLD) : ;;
+        *)
+            echo "missing or invalid <verdict>"
+            return 0
+            ;;
+    esac
+
+    if [ "$mode" != "handoff" ]; then
+        next_phase="$(extract_xml_value "$file" "next_phase" "")"
+        next_phase="$(to_lower "$next_phase")"
+        if ! is_phase_or_done "$next_phase"; then
+            echo "missing or invalid <next_phase>"
+            return 0
+        fi
+    fi
+
+    echo ""
+}
+
+write_invalid_reviewer_output_placeholder() {
+    local output_file="$1"
+    local reason="$2"
+    local raw_file="$3"
+
+    reason="$(sanitize_text_for_log "$reason")"
+    {
+        echo "Reviewer output was rejected by Ralphie before consensus parsing."
+        echo "reason: ${reason:-invalid reviewer output}"
+        if [ -n "$raw_file" ]; then
+            echo "raw_output_artifact: $(path_for_display "$raw_file")"
+        fi
+        echo "The raw output was not used for score, verdict, or phase routing."
+    } > "$output_file"
+}
+
+safe_print_file_head() {
+    local file="$1"
+    local lines="${2:-80}"
+    is_number "$lines" || lines=80
+    if [ ! -f "$file" ]; then
+        echo "- not available"
+        return 0
+    fi
+    if file_looks_like_auth_or_html_challenge "$file"; then
+        echo "- redacted: provider auth/challenge HTML or token-error output"
+        return 0
+    fi
+    sed -n "1,${lines}p" "$file"
+}
+
+safe_print_file_tail() {
+    local file="$1"
+    local lines="${2:-40}"
+    is_number "$lines" || lines=40
+    if [ ! -f "$file" ]; then
+        echo "- not available"
+        return 0
+    fi
+    if file_looks_like_auth_or_html_challenge "$file"; then
+        echo "- redacted: provider auth/challenge HTML or token-error output"
+        return 0
+    fi
+    tail -n "$lines" "$file"
+}
+
+stream_engine_output() {
+    local log_file="$1"
+    local output_file="${2:-}"
+    local stdout_enabled="${3:-true}"
+
+    if [ -n "$output_file" ]; then
+        : > "$output_file"
+    fi
+
+    awk -v log_file="$log_file" -v output_file="$output_file" -v stdout_enabled="$stdout_enabled" '
+        function emit(line) {
+            if (stdout_enabled == "true") {
+                print line
+            }
+            print line >> log_file
+            if (output_file != "") {
+                print line >> output_file
+            }
+            if (stdout_enabled == "true") {
+                fflush()
+            }
+            fflush(log_file)
+            if (output_file != "") {
+                fflush(output_file)
+            }
+        }
+        function clear_buffer() {
+            buffer_count = 0
+        }
+        function flush_buffer(    i) {
+            for (i = 1; i <= buffer_count; i++) {
+                emit(buffer[i])
+            }
+            clear_buffer()
+        }
+        function push_buffer(line,    i) {
+            buffer_count++
+            buffer[buffer_count] = line
+            if (buffer_count > max_buffer) {
+                emit(buffer[1])
+                for (i = 1; i < buffer_count; i++) {
+                    buffer[i] = buffer[i + 1]
+                }
+                buffer_count--
+            }
+        }
+        function looks_like_challenge(line) {
+            lower = tolower(line)
+            return lower ~ /<!doctype html|<html[ >]|<\/html>|cloudflare|cf_chl|challenge-platform|challenge-error-text|enable javascript and cookies|auth required|missing or invalid access token|invalid_token|window\._cf_chl_opt|cdn-cgi\/challenge/
+        }
+        function looks_like_engine_reentry(line) {
+            return line ~ /^(OpenAI Codex|Claude|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|--------)/
+        }
+        BEGIN {
+            max_buffer = 80
+            buffer_count = 0
+            redacting = 0
+            redacting_count = 0
+            redacted_once = 0
+        }
+        {
+            lower = tolower($0)
+            if (redacting) {
+                if (lower ~ /<\/html>/) {
+                    redacting = 0
+                    redacting_count = 0
+                    next
+                }
+                if (looks_like_engine_reentry($0)) {
+                    redacting = 0
+                    redacting_count = 0
+                    push_buffer($0)
+                    next
+                }
+                redacting_count++
+                if (redacting_count % 80 == 0) {
+                    emit("[ralphie still redacting provider auth/challenge output]")
+                }
+                next
+            }
+            if (looks_like_challenge($0)) {
+                clear_buffer()
+                if (!redacted_once) {
+                    emit("[ralphie redacted provider auth/challenge output]")
+                    redacted_once = 1
+                }
+                if (lower !~ /<\/html>/) {
+                    redacting = 1
+                    redacting_count = 0
+                }
+                next
+            }
+            push_buffer($0)
+        }
+        END {
+            if (!redacting) {
+                flush_buffer()
+            }
+        }
+    '
+}
+
 is_phase_or_done() {
     case "$1" in
         plan|build|test|refactor|lint|document|done) return 0 ;;
@@ -5358,21 +5551,21 @@ run_agent_with_prompt() {
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
                     (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file"
                     ) &
                 else
                     (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "" false
                     ) &
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
                     (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | tee "$log_file"
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file"
                     ) &
                 else
                     (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" >> "$log_file" 2>&1 < "$prompt_file"
+                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "" false
                     ) &
                 fi
             fi
@@ -5380,21 +5573,21 @@ run_agent_with_prompt() {
             if [ -n "$timeout_cmd" ]; then
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
                     (
-                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"
+                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | stream_engine_output "$log_file" "$output_file"
                     ) &
                 else
                     (
-                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"
+                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | stream_engine_output "$log_file" "$output_file" false
                     ) &
                 fi
             else
                 if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
                     (
-                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | tee "$output_file" >> "$log_file"
+                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | stream_engine_output "$log_file" "$output_file"
                     ) &
                 else
                     (
-                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - > "$output_file" 2>>"$log_file" < "$prompt_file"
+                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>>"$log_file" < "$prompt_file" | stream_engine_output "$log_file" "$output_file" false
                     ) &
                 fi
             fi
@@ -5521,8 +5714,14 @@ run_swarm_reviewer() {
     local attempt_cmd
     local attempt_exit=1
     local used_cmd="${primary_cmd}"
+    local invalid_reason=""
+    local validation_mode="consensus"
     ACTIVE_ENGINE="unknown"
     ACTIVE_CMD=""
+
+    if [ "$reviewer_index" = "handoff" ]; then
+        validation_mode="handoff"
+    fi
 
     for attempt_cmd in "${candidate_cmds[@]}"; do
         [ -n "$attempt_cmd" ] || continue
@@ -5547,9 +5746,20 @@ run_swarm_reviewer() {
         ACTIVE_CMD="$attempt_cmd"
         used_cmd="$attempt_cmd"
 
+        rm -f "$output_file"
         if run_agent_with_prompt "$prompt_file" "$log_file" "$output_file" "false" "$reviewer_index"; then
-            attempt_exit=0
-            break
+            invalid_reason="$(review_output_invalid_reason "$output_file" "$validation_mode")"
+            if [ -z "$invalid_reason" ]; then
+                attempt_exit=0
+                break
+            fi
+            local raw_invalid_output=""
+            raw_invalid_output="${output_file}.invalid.${ACTIVE_ENGINE}.${reviewer_index}"
+            mv "$output_file" "$raw_invalid_output" 2>/dev/null || raw_invalid_output=""
+            write_invalid_reviewer_output_placeholder "$output_file" "$invalid_reason" "$raw_invalid_output"
+            warn "Reviewer $reviewer_index output from ${ACTIVE_ENGINE:-unknown} was rejected: $invalid_reason"
+            attempt_exit=1
+            continue
         fi
     done
 
@@ -5563,6 +5773,9 @@ run_swarm_reviewer() {
         else
             echo "status=failure"
             echo "exit_code=1"
+            if [ -n "$invalid_reason" ]; then
+                echo "failure_reason=$(sanitize_text_for_log "$invalid_reason")"
+            fi
         fi
     } > "$status_file"
     return "$attempt_exit"
@@ -5614,18 +5827,10 @@ build_consensus_evidence_context() {
         fi
         echo ""
         echo "Completion output snippet:"
-        if [ -f "$output_file" ]; then
-            sed -n '1,120p' "$output_file"
-        else
-            echo "- not available"
-        fi
+        safe_print_file_head "$output_file" 120
         echo ""
         echo "Execution log tail:"
-        if [ -f "$log_file" ]; then
-            tail -n 40 "$log_file"
-        else
-            echo "- not available"
-        fi
+        safe_print_file_tail "$log_file" 40
         echo ""
         echo "Handoff validator status:"
         if [ -f "$handoff_status_file" ]; then
@@ -5635,11 +5840,7 @@ build_consensus_evidence_context() {
         fi
         echo ""
         echo "Handoff validator output snippet:"
-        if [ -f "$handoff_output_file" ]; then
-            sed -n '1,60p' "$handoff_output_file"
-        else
-            echo "- not available"
-        fi
+        safe_print_file_head "$handoff_output_file" 60
     }
 }
 
@@ -5849,13 +6050,14 @@ run_swarm_consensus() {
     local next_phase_vote_reason=""
 
     local idx=0
-    local status_file status engine verdict score verdict_gaps next_phase next_phase_reason
+    local status_file status engine failure_reason verdict score verdict_gaps next_phase next_phase_reason
     local recommended_next="$default_next_phase"
     local highest_next_votes=0
     local candidate_votes=0
     for ofile in "${outputs[@]}"; do
         status="failure"
         engine="unknown"
+        failure_reason=""
         verdict="HOLD"
         score="0"
         verdict_gaps="no explicit gaps"
@@ -5867,10 +6069,12 @@ run_swarm_consensus() {
             status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
             engine="$(grep -E "^engine=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
             engine="$(sanitize_text_for_log "$engine" | cut -c 1-40)"
+            failure_reason="$(grep -E "^failure_reason=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+            failure_reason="$(sanitize_text_for_log "$failure_reason" | cut -c 1-180)"
             [ "$status" = "success" ] || status="failure"
         fi
 
-        if [ -f "$ofile" ]; then
+        if [ "$status" = "success" ] && [ -f "$ofile" ]; then
             score="$(extract_review_score "$ofile")"
             verdict="$(extract_review_verdict "$ofile")"
 
@@ -5881,8 +6085,13 @@ run_swarm_consensus() {
             next_phase_reason="$(sanitize_text_for_log "$next_phase_reason")"
             [ -n "$next_phase_reason" ] || next_phase_reason="no explicit phase-routing rationale"
         else
-            verdict_gaps="no output artifact"
-            next_phase_reason="no output artifact"
+            if [ -n "$failure_reason" ]; then
+                verdict_gaps="reviewer failure: $failure_reason"
+                next_phase_reason="reviewer failure: $failure_reason"
+            else
+                verdict_gaps="no valid output artifact"
+                next_phase_reason="no valid output artifact"
+            fi
         fi
 
         [ "$status" = "success" ] && responded_votes=$((responded_votes + 1))
@@ -6051,22 +6260,14 @@ write_handoff_validation_prompt() {
 
     if [ -f "$previous_output" ]; then
         echo "Previous handoff output snippet:"
-        sed -n '1,40p' "$previous_output"
+        safe_print_file_head "$previous_output" 40
     fi
 
     echo "Current execution output snippet:"
-    if [ -f "$output_file" ]; then
-        sed -n '1,80p' "$output_file"
-    else
-        echo "- not available"
-    fi
+    safe_print_file_head "$output_file" 80
 
     echo "Current execution log tail:"
-    if [ -f "$log_file" ]; then
-        tail -n 40 "$log_file"
-    else
-        echo "- not available"
-    fi
+    safe_print_file_tail "$log_file" 40
     } > "$prompt_file"
 }
 
@@ -6081,6 +6282,13 @@ read_handoff_review_output() {
     LAST_HANDOFF_GAPS="no explicit gaps"
 
     [ -f "$output_file" ] || return 0
+
+    local invalid_reason
+    invalid_reason="$(review_output_invalid_reason "$output_file" "handoff")"
+    if [ -n "$invalid_reason" ]; then
+        LAST_HANDOFF_GAPS="invalid reviewer output: $(sanitize_text_for_log "$invalid_reason" | cut -c 1-160)"
+        return 0
+    fi
 
     score="$(extract_review_score "$output_file")"
     verdict="$(extract_review_verdict "$output_file")"

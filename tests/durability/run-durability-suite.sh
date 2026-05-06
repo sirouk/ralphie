@@ -288,7 +288,7 @@ test_unit_reviewer_payload_sanitization() {
         source "$RALPHIE_FILE"
         assert_unit_runtime_isolated
 
-        local tmpd out_file cons_dir line
+        local tmpd out_file cons_dir line html_file reason valid_file missing_verdict_file redacted placeholder stream_log stream_out quiet_log quiet_out streamed quiet_streamed
         tmpd="$(mktemp -d /tmp/ralphie-review-unit.XXXXXX)"
 
         out_file="$tmpd/handoff.out"
@@ -302,10 +302,95 @@ test_unit_reviewer_payload_sanitization() {
 
         read_handoff_review_output "$out_file"
         [ "$LAST_HANDOFF_SCORE" = "0" ]
-        [ "$LAST_HANDOFF_VERDICT" = "GO" ]
+        [ "$LAST_HANDOFF_VERDICT" = "HOLD" ]
+        printf '%s' "$LAST_HANDOFF_GAPS" | grep -q 'invalid reviewer output'
         if contains_control_chars "$LAST_HANDOFF_GAPS"; then
             return 1
         fi
+
+        html_file="$tmpd/provider.html"
+        {
+            printf '<!doctype html>\n'
+            printf '<html><body>Cloudflare challenge: enable JavaScript and cookies</body></html>\n'
+        } > "$html_file"
+        reason="$(review_output_invalid_reason "$html_file" "consensus")"
+        printf '%s' "$reason" | grep -qi 'auth/challenge'
+
+        redacted="$(safe_print_file_head "$html_file" 20)"
+        printf '%s' "$redacted" | grep -q 'redacted: provider auth/challenge'
+        if printf '%s' "$redacted" | grep -qi '<html>'; then
+            return 1
+        fi
+
+        stream_log="$tmpd/stream.log"
+        stream_out="$tmpd/stream.out"
+        streamed="$(
+            {
+                printf 'normal before\n'
+                printf '<svg width="41">provider logo prelude</svg>\n'
+                printf '<div id="challenge-error-text">Enable JavaScript and cookies to continue</div>\n'
+                printf '</html>\n'
+                printf 'normal after\n'
+            } | stream_engine_output "$stream_log" "$stream_out"
+        )"
+        printf '%s' "$streamed" | grep -q 'normal before'
+        printf '%s' "$streamed" | grep -q 'normal after'
+        printf '%s' "$streamed" | grep -q 'redacted provider auth/challenge'
+        if printf '%s' "$streamed" | grep -qi 'provider logo prelude\\|Enable JavaScript'; then
+            return 1
+        fi
+        if grep -qi 'provider logo prelude\\|Enable JavaScript' "$stream_log" "$stream_out"; then
+            return 1
+        fi
+
+        stream_log="$tmpd/reentry.log"
+        stream_out="$tmpd/reentry.out"
+        streamed="$(
+            {
+                printf 'will be buffered then cleared\n'
+                printf '<div id="challenge-error-text">Enable JavaScript and cookies to continue</div>\n'
+                printf 'challenge continuation without terminator\n'
+                printf 'OpenAI Codex v0.128.0\n'
+                printf 'workdir: /tmp/project\n'
+            } | stream_engine_output "$stream_log" "$stream_out"
+        )"
+        printf '%s' "$streamed" | grep -q 'redacted provider auth/challenge'
+        printf '%s' "$streamed" | grep -q 'OpenAI Codex v0.128.0'
+        printf '%s' "$streamed" | grep -q 'workdir: /tmp/project'
+        if printf '%s' "$streamed" | grep -qi 'challenge continuation\\|Enable JavaScript'; then
+            return 1
+        fi
+
+        quiet_log="$tmpd/quiet.log"
+        quiet_out="$tmpd/quiet.out"
+        quiet_streamed="$(printf 'quiet normal\n' | stream_engine_output "$quiet_log" "$quiet_out" false)"
+        [ -z "$quiet_streamed" ]
+        grep -q 'quiet normal' "$quiet_log"
+        grep -q 'quiet normal' "$quiet_out"
+
+        placeholder="$tmpd/placeholder.out"
+        write_invalid_reviewer_output_placeholder "$placeholder" "$reason" "$html_file"
+        grep -q 'Reviewer output was rejected' "$placeholder"
+        grep -q 'not used for score' "$placeholder"
+
+        valid_file="$tmpd/valid.out"
+        {
+            printf '<score>88</score>\n'
+            printf '<verdict>GO</verdict>\n'
+            printf '<next_phase>build</next_phase>\n'
+            printf '<next_phase_reason>ready</next_phase_reason>\n'
+            printf '<gaps>none</gaps>\n'
+        } > "$valid_file"
+        [ -z "$(review_output_invalid_reason "$valid_file" "consensus")" ]
+
+        missing_verdict_file="$tmpd/missing-verdict.out"
+        {
+            printf '<score>88</score>\n'
+            printf '<next_phase>build</next_phase>\n'
+            printf '<gaps>none</gaps>\n'
+        } > "$missing_verdict_file"
+        reason="$(review_output_invalid_reason "$missing_verdict_file" "consensus")"
+        printf '%s' "$reason" | grep -q 'invalid <verdict>'
 
         cons_dir="$tmpd/consensus"
         mkdir -p "$cons_dir"
