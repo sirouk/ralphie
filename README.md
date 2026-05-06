@@ -201,6 +201,12 @@ detail when the plan would otherwise become crowded; list that steering file in
 `--backlog-sources` so plan freshness and done guards see it. A good steering
 file is short, current, and explicit:
 
+After a PLAN phase passes, Ralphie records a fingerprint of the configured
+backlog sources in `.ralphie/state.env`. BUILD freshness checks compare against
+that checkpoint, so a valid plan refresh can update `IMPLEMENTATION_PLAN.md`
+and any listed steering files in one phase without causing a false stale-plan
+loop. If a listed source changes later, Ralphie routes back through PLAN.
+
 ````markdown
 # Ralphie Steering: Next Focus
 

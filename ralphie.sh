@@ -1773,6 +1773,7 @@ LAST_DONE_GUARD_NEXT_PHASE="done"
 LAST_PHASE_ROUTE_GUARD_REASON=""
 LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="done"
 LAST_BACKLOG_STALE_SOURCES=""
+PLAN_FRESHNESS_FINGERPRINT=""
 LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
@@ -2248,6 +2249,7 @@ save_state() {
         printf 'LAST_RUN_TOKEN_COUNT="%s"\n' "$(state_escape_value "$LAST_RUN_TOKEN_COUNT")"
         printf 'ENGINE_OUTPUT_TO_STDOUT="%s"\n' "$(state_escape_value "$ENGINE_OUTPUT_TO_STDOUT")"
         printf 'PHASE_TRANSITION_HISTORY_B64="%s"\n' "$(state_escape_value "$history_encoded")"
+        printf 'PLAN_FRESHNESS_FINGERPRINT="%s"\n' "$(state_escape_value "$PLAN_FRESHNESS_FINGERPRINT")"
         printf 'GIT_IDENTITY_READY="%s"\n' "$(state_escape_value "$GIT_IDENTITY_READY")"
         printf 'GIT_IDENTITY_SOURCE="%s"\n' "$(state_escape_value "$GIT_IDENTITY_SOURCE")"
     } > "$tmp_state_file"
@@ -2294,10 +2296,11 @@ load_state() {
     LAST_RUN_TOKEN_COUNT=0
     ENGINE_OUTPUT_TO_STDOUT="$DEFAULT_ENGINE_OUTPUT_TO_STDOUT"
     PHASE_TRANSITION_HISTORY=()
+    PLAN_FRESHNESS_FINGERPRINT=""
     GIT_IDENTITY_READY="unknown"
     GIT_IDENTITY_SOURCE="unknown"
     local phase_transition_history_b64=""
-    
+
     # Verify checksum if present
     if grep -q "STATE_CHECKSUM=" "$STATE_FILE"; then
         local expected actual state_body_file
@@ -2337,6 +2340,7 @@ load_state() {
             LAST_RUN_TOKEN_COUNT) is_number "$value" && LAST_RUN_TOKEN_COUNT="$value" ;;
             ENGINE_OUTPUT_TO_STDOUT) [ -n "$value" ] && ENGINE_OUTPUT_TO_STDOUT="$value" ;;
             PHASE_TRANSITION_HISTORY_B64) phase_transition_history_b64="$value" ;;
+            PLAN_FRESHNESS_FINGERPRINT) PLAN_FRESHNESS_FINGERPRINT="$value" ;;
             GIT_IDENTITY_READY) is_bool_like "$value" && GIT_IDENTITY_READY="$value" ;;
             GIT_IDENTITY_SOURCE) [ -n "$value" ] && GIT_IDENTITY_SOURCE="$value" ;;
             STATE_CHECKSUM) ;;
@@ -5202,7 +5206,7 @@ run_agent_with_prompt() {
                 warn "CODEX_USE_RESPONSES_SCHEMA is enabled but CODEX_RESPONSES_SCHEMA_FILE is missing; continuing without --output-schema."
             fi
         fi
-        
+
         if is_true "$yolo_effective" && is_true "$CODEX_CAP_YOLO_FLAG"; then
             engine_args+=("--dangerously-bypass-approvals-and-sandbox")
         fi
@@ -5231,7 +5235,7 @@ run_agent_with_prompt() {
         if [ -n "$CLAUDE_ENDPOINT" ]; then
             yolo_prefix=("env" "ANTHROPIC_BASE_URL=$CLAUDE_ENDPOINT")
         fi
-        
+
         if is_true "$yolo_effective"; then
             [ -n "$CLAUDE_CAP_YOLO_FLAG" ] && engine_args+=("$CLAUDE_CAP_YOLO_FLAG")
             if [ "${#yolo_prefix[@]}" -eq 0 ]; then
@@ -5318,7 +5322,7 @@ run_agent_with_prompt() {
         if ! enforce_session_budget "agent attempt"; then
             return 1
         fi
-        
+
         local hiccup_detected=false
         local permanent_failure=false
         if grep -qiE "backend error|token error|timeout|connection refused|overloaded|rate.?limit|503|502|429|ECONNRESET|ETIMEDOUT" "$log_file" 2>/dev/null; then
@@ -6747,6 +6751,60 @@ collect_backlog_source_files() {
     printf '%s\n' "${resolved[@]}" | awk '!seen[$0]++'
 }
 
+backlog_source_display_list() {
+    local source_file rel_path
+    local -a labels=()
+
+    while IFS= read -r source_file; do
+        [ -n "$source_file" ] || continue
+        rel_path="$(path_relative_to_project "$source_file")"
+        if [ -n "$rel_path" ] && [ "$rel_path" != "$source_file" ]; then
+            labels+=("$(path_for_display "$rel_path")")
+        else
+            labels+=("$(path_for_display "$source_file")")
+        fi
+    done < <(collect_backlog_source_files)
+
+    if [ "${#labels[@]}" -eq 0 ]; then
+        printf '%s' "configured backlog sources"
+    else
+        join_with_commas "${labels[@]}"
+    fi
+}
+
+backlog_sources_fingerprint() {
+    local source_file rel_path file_hash
+
+    {
+        printf 'backlog_sources=%s\n' "${BACKLOG_SOURCES:-$DEFAULT_BACKLOG_SOURCES}"
+        while IFS= read -r source_file; do
+            [ -n "$source_file" ] || continue
+            rel_path="$(path_relative_to_project "$source_file")"
+            [ -n "$rel_path" ] || rel_path="$source_file"
+            if [ -f "$source_file" ]; then
+                file_hash="$(sha256_file_sum "$source_file" 2>/dev/null || printf 'unavailable')"
+                printf 'file\t%s\t%s\n' "$rel_path" "$file_hash"
+            else
+                printf 'missing\t%s\n' "$rel_path"
+            fi
+        done < <(collect_backlog_source_files)
+    } | sha256_stream_sum
+}
+
+record_plan_freshness_checkpoint() {
+    local fingerprint
+
+    fingerprint="$(backlog_sources_fingerprint 2>/dev/null || true)"
+    if [ -z "$fingerprint" ]; then
+        warn "Plan freshness checkpoint skipped: could not fingerprint configured backlog sources."
+        return 1
+    fi
+
+    PLAN_FRESHNESS_FINGERPRINT="$fingerprint"
+    info "Plan freshness checkpoint recorded for $(backlog_source_display_list)."
+    return 0
+}
+
 plan_has_unchecked_local_tasks() {
     local plan_file="${1:-$PLAN_FILE}"
     markdown_has_unchecked_local_tasks "$plan_file"
@@ -6779,12 +6837,25 @@ file_mtime_epoch() {
 
 backlog_sources_newer_than_plan() {
     local plan_file="${1:-$PLAN_FILE}"
-    local plan_mtime source_file source_mtime rel_path
+    local plan_mtime source_file source_mtime rel_path current_fingerprint
     local -a stale_sources=()
 
     LAST_BACKLOG_STALE_SOURCES=""
 
     [ -f "$plan_file" ] || return 1
+
+    if [ -n "${PLAN_FRESHNESS_FINGERPRINT:-}" ]; then
+        current_fingerprint="$(backlog_sources_fingerprint 2>/dev/null || true)"
+        if [ -n "$current_fingerprint" ]; then
+            if [ "$current_fingerprint" = "$PLAN_FRESHNESS_FINGERPRINT" ]; then
+                return 1
+            fi
+            LAST_BACKLOG_STALE_SOURCES="$(backlog_source_display_list)"
+            [ -n "$LAST_BACKLOG_STALE_SOURCES" ] || LAST_BACKLOG_STALE_SOURCES="configured backlog sources"
+            return 0
+        fi
+    fi
+
     plan_mtime="$(file_mtime_epoch "$plan_file")"
     is_number "$plan_mtime" || return 1
     [ "$plan_mtime" -ge 0 ] || return 1
@@ -8570,22 +8641,36 @@ main() {
                         fi
                     fi
 
-                    if [ "$phase" = "plan" ] && ! enforce_build_gate; then
+                    if [ "$phase" = "plan" ]; then
                         local -a post_plan_gate_issues=()
+                        local -a post_plan_actionable_gate_issues=()
+                        local post_plan_issue
                         mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
                         local post_plan_repair_summary=""
                         if is_true "$AUTO_REPAIR_MARKDOWN_ARTIFACTS" && ! markdown_artifacts_are_clean; then
                             if sanitize_markdown_artifacts; then
                                 post_plan_repair_summary="$(markdown_artifact_cleanup_summary)"
                                 mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
-                                [ "${#post_plan_gate_issues[@]}" -eq 0 ] && info "Build gate passed after post-plan markdown remediation."
                                 [ -n "$post_plan_repair_summary" ] && phase_warnings+=("post-plan markdown remediation: ${post_plan_repair_summary//$'\\n'/; }")
                             fi
                         fi
-                        if [ "${#post_plan_gate_issues[@]}" -gt 0 ]; then
+                        for post_plan_issue in "${post_plan_gate_issues[@]}"; do
+                            case "$post_plan_issue" in
+                                "plan refresh required:"*)
+                                    phase_warnings+=("post-plan freshness checkpoint pending for configured backlog sources")
+                                    ;;
+                                *)
+                                    post_plan_actionable_gate_issues+=("$post_plan_issue")
+                                    ;;
+                            esac
+                        done
+                        if [ "${#post_plan_actionable_gate_issues[@]}" -eq 0 ] && [ -n "$post_plan_repair_summary" ]; then
+                            info "Build gate passed after post-plan markdown remediation."
+                        fi
+                        if [ "${#post_plan_actionable_gate_issues[@]}" -gt 0 ]; then
                             phase_failures+=("build gate failed after plan->build transition")
                             [ -n "$post_plan_repair_summary" ] && phase_failures+=("post-plan markdown remediation summary: ${post_plan_repair_summary//$'\\n'/; }")
-                            for issue in "${post_plan_gate_issues[@]}"; do
+                            for issue in "${post_plan_actionable_gate_issues[@]}"; do
                                 phase_failures+=("build gate: $issue")
                             done
                         fi
@@ -8916,6 +9001,10 @@ main() {
                     done
                 fi
 
+                if [ "$phase" = "plan" ]; then
+                    record_plan_freshness_checkpoint || phase_warnings+=("plan freshness checkpoint could not be recorded; mtime fallback remains active")
+                fi
+
                 if is_number "$PHASE_WALLCLOCK_LIMIT_SECONDS" && [ "$PHASE_WALLCLOCK_LIMIT_SECONDS" -gt 0 ] && is_number "${phase_attempt_started_at:-0}" && [ "${phase_attempt_started_at:-0}" -gt 0 ]; then
                     local now elapsed
                     now="$(date +%s 2>/dev/null || echo 0)"
@@ -9003,16 +9092,21 @@ main() {
                     fi
                     if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -gt 0 ] && [ "$consensus_route_count" -gt "$MAX_CONSENSUS_ROUTING_ATTEMPTS" ]; then
                         warn "Consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)."
+                        log_reason_code "RB_ROUTING_BUDGET_EXCEEDED" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)"
                         notify_event "session_error" "routing_budget_exceeded" "consensus routing attempts exceeded limit ($consensus_route_count/$MAX_CONSENSUS_ROUTING_ATTEMPTS)" || true
                         should_exit="true"
-                        break 2
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        save_state_or_exit "routing budget checkpoint ($phase->$phase_next_target)"
+                        break
                     fi
                     if [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -eq 0 ] && [ "$routing_stagnation_count" -ge "$CONFIDENCE_STAGNATION_LIMIT" ]; then
                         warn "Consensus routing stagnated for ${routing_stagnation_count} backtracks with unchanged route signature."
                         log_reason_code "RB_ROUTING_STAGNATION" "unlimited routing stagnated after ${routing_stagnation_count} backtracks ($phase->$phase_next_target)"
                         notify_event "session_error" "routing_stagnation" "unlimited routing stagnated after ${routing_stagnation_count} backtracks" || true
                         should_exit="true"
-                        break 2
+                        PHASE_ATTEMPT_IN_PROGRESS="false"
+                        save_state_or_exit "routing stagnation checkpoint ($phase->$phase_next_target)"
+                        break
                     fi
                 fi
                 if [ "$phase_next_target" = "done" ] || [ "$route_index" -ge "${#phases[@]}" ]; then
