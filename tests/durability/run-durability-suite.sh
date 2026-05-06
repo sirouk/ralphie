@@ -2160,6 +2160,108 @@ EOF
     "$ws/harness.sh"
 }
 
+test_integration_clean_terminal_done_reroute_on_hold() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=true
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_AUTO_INIT_GIT_IF_MISSING=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS=1
+export RALPHIE_REQUIRE_LINT_BEFORE_DONE=false
+export RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE=false
+export RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE=false
+export RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD=false
+cat > .gitignore <<'IGNORE'
+.ralphie/
+logs/
+consensus/
+research/
+PROMPT_*.md
+.ralphie.lock
+.env
+.env.*
+completion_log/
+HUMAN_INSTRUCTIONS.md
+research/HUMAN_FEEDBACK.md
+coverage/
+.nyc_output/
+htmlcov/
+.specify/
+specs/
+harness.sh
+run.out
+run.err
+IGNORE
+cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise clean terminal done reroute after a hold.
+
+## Acceptance Criteria
+- A clean worktree plus unanimous done recommendation exits the build loop.
+
+## Actionable Tasks
+1. Confirm there is no more local build work.
+PLAN
+git init -q
+git config user.name "Durability Test"
+git config user.email "durability@example.test"
+git add .gitignore ralphie.sh IMPLEMENTATION_PLAN.md
+git commit -q -m init
+source ./ralphie.sh
+load_state() {
+    CURRENT_PHASE="build"
+    CURRENT_PHASE_INDEX=1
+    CURRENT_PHASE_ATTEMPT=1
+    PHASE_ATTEMPT_IN_PROGRESS=true
+    ITERATION_COUNT=1
+    SESSION_ATTEMPT_COUNT=0
+    return 0
+}
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    printf 'clean terminal reroute log\n' > "$log_file"
+    printf 'nothing left to build locally\n' > "$output_file"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=20; LAST_HANDOFF_VERDICT=HOLD; LAST_HANDOFF_GAPS=no_mutation_done; return 1; }
+run_swarm_consensus() {
+    LAST_CONSENSUS_SCORE=20
+    LAST_CONSENSUS_PASS=false
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_NEXT_PHASE_VOTES=3
+    LAST_CONSENSUS_FAILURE_KIND="quality"
+    LAST_CONSENSUS_FAILURE_REASON="consensus HOLD (done recommended)"
+    LAST_CONSENSUS_SUMMARY="unanimous clean done recommendation"
+    LAST_CONSENSUS_NEXT_PHASE="done"
+    LAST_CONSENSUS_NEXT_PHASE_REASON="no local build work remains"
+    return 1
+}
+main --resume > "$PWD/run.out" 2> "$PWD/run.err"
+grep -q "Allowing clean terminal reroute recommendation 'done'" "$PWD/run.out" "$PWD/run.err"
+grep -q "All phases completed. Session done." "$PWD/run.out"
+grep -q 'CURRENT_PHASE="done"' "$PWD/.ralphie/state.env"
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
 test_integration_resume_done_short_circuit() {
     local ws
     ws="$(make_workspace)"
@@ -2411,6 +2513,7 @@ main() {
     run_case "integration_plan_freshness_reroutes_do_not_count_as_routing_stagnation" test_integration_plan_freshness_reroutes_do_not_count_as_routing_stagnation
     run_case "integration_terminal_done_guard_requires_lint_and_document" test_integration_terminal_done_guard_requires_lint_and_document
     run_case "integration_forward_reroute_guard" test_integration_forward_reroute_guard
+    run_case "integration_clean_terminal_done_reroute_on_hold" test_integration_clean_terminal_done_reroute_on_hold
     run_case "integration_resume_done_short_circuit" test_integration_resume_done_short_circuit
     run_case "integration_lock_contention" test_integration_lock_contention
     run_case "integration_crash_and_resume" test_integration_crash_and_resume
