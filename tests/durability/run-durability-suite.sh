@@ -1627,6 +1627,87 @@ EOF
     "$ws/harness.sh"
 }
 
+test_integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD=true
+export RALPHIE_BACKLOG_SOURCES="research/STEERING.md,IMPLEMENTATION_PLAN.md"
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    local phase_name
+    phase_name="$(basename "$log_file" | cut -d'_' -f1)"
+    printf '%s\n' "$phase_name" >> "$PWD/phases.log"
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        mkdir -p research
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise plan freshness after a plan refresh updates more than one backlog source.
+
+## Acceptance Criteria
+- The following build phase is not blocked by stale mtime ordering.
+- The freshness checkpoint is durable in state.
+
+## Actionable Tasks
+1. Refresh the plan.
+2. Refresh the steering backlog.
+PLAN
+        sleep 1
+        cat > research/STEERING.md <<'STEERING'
+# Steering Backlog
+
+- [x] Refresh the steering source as part of PLAN.
+STEERING
+    fi
+    printf 'ok\n' > "$log_file"
+    printf 'ok\n' > "$output_file"
+    printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+run_swarm_consensus() {
+    local stage="$1"
+    local base="${stage%-gate}"
+    LAST_CONSENSUS_SCORE=95
+    LAST_CONSENSUS_PASS=true
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_SUMMARY="freshness checkpoint stub"
+    LAST_CONSENSUS_NEXT_PHASE="$(phase_default_next "$base")"
+    LAST_CONSENSUS_NEXT_PHASE_REASON="forward"
+    return 0
+}
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
+grep -q "Plan freshness checkpoint recorded" "$PWD/run.out"
+grep -q ">>> Entering phase 'build' <<<" "$PWD/run.out"
+grep -q "All phases completed. Session done." "$PWD/run.out"
+grep -q '^PLAN_FRESHNESS_FINGERPRINT="[0-9a-f]' "$PWD/.ralphie/state.env"
+if grep -q "plan refresh required" "$PWD/run.out" "$PWD/run.err" "$PWD/.ralphie/reasons.log" 2>/dev/null; then
+    exit 1
+fi
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
 test_integration_terminal_done_guard_requires_lint_and_document() {
     local ws
     ws="$(make_workspace)"
@@ -2099,6 +2180,7 @@ main() {
     run_case "integration_consensus_infra_retry_without_attempt_decrement" test_integration_consensus_infra_retry_without_attempt_decrement
     run_case "integration_unlimited_phase_attempts_stagnation_guard" test_integration_unlimited_phase_attempts_stagnation_guard
     run_case "integration_unlimited_routing_stagnation_guard" test_integration_unlimited_routing_stagnation_guard
+    run_case "integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh" test_integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh
     run_case "integration_terminal_done_guard_requires_lint_and_document" test_integration_terminal_done_guard_requires_lint_and_document
     run_case "integration_forward_reroute_guard" test_integration_forward_reroute_guard
     run_case "integration_resume_done_short_circuit" test_integration_resume_done_short_circuit
