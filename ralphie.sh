@@ -1774,6 +1774,16 @@ LAST_PHASE_ROUTE_GUARD_REASON=""
 LAST_PHASE_ROUTE_GUARD_NEXT_PHASE="done"
 LAST_BACKLOG_STALE_SOURCES=""
 PLAN_FRESHNESS_FINGERPRINT=""
+LAST_GATE_DECISION_RECORDED_AT=""
+LAST_GATE_DECISION_PHASE=""
+LAST_GATE_DECISION_ATTEMPT=0
+LAST_GATE_DECISION_STAGE=""
+LAST_GATE_DECISION_OUTCOME=""
+LAST_GATE_DECISION_SCORE=0
+LAST_GATE_DECISION_PASS=false
+LAST_GATE_DECISION_RESPONDED_VOTES=0
+LAST_GATE_DECISION_NEXT_PHASE=""
+LAST_GATE_DECISION_SUMMARY=""
 LAST_HANDOFF_SCORE=0
 LAST_HANDOFF_VERDICT="HOLD"
 LAST_HANDOFF_GAPS="no explicit gaps"
@@ -2216,6 +2226,62 @@ state_unescape_value() {
     printf '%s' "$value"
 }
 
+gate_decision_trim_text() {
+    local value="${1:-}"
+    local limit="${2:-1200}"
+
+    is_number "$limit" || limit=1200
+    value="$(sanitize_text_for_log "$value")"
+    if [ "$limit" -gt 0 ]; then
+        value="$(printf '%s' "$value" | cut -c 1-"$limit")"
+    fi
+    printf '%s' "$value"
+}
+
+record_gate_decision() {
+    local phase="${1:-unknown}"
+    local attempt="${2:-0}"
+    local stage="${3:-phase-gate}"
+    local outcome="${4:-unknown}"
+    local next_phase="${5:-${LAST_CONSENSUS_NEXT_PHASE:-unknown}}"
+    local explainer="${6:-${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit routing rationale}}"
+    local voting_summary
+    local handoff_summary
+    local failure_summary=""
+
+    voting_summary="$(gate_decision_trim_text "${LAST_CONSENSUS_SUMMARY:-no reviewer summary}" 1400)"
+    [ -n "$voting_summary" ] || voting_summary="no reviewer summary"
+    explainer="$(gate_decision_trim_text "$explainer" 900)"
+    [ -n "$explainer" ] || explainer="no explicit routing rationale"
+    handoff_summary="$(gate_decision_trim_text "handoff verdict=${LAST_HANDOFF_VERDICT:-unknown} score=${LAST_HANDOFF_SCORE:-0} gaps=${LAST_HANDOFF_GAPS:-none}" 500)"
+    if [ "${LAST_CONSENSUS_FAILURE_KIND:-none}" != "none" ] || [ -n "${LAST_CONSENSUS_FAILURE_REASON:-}" ]; then
+        failure_summary="$(gate_decision_trim_text "failure=${LAST_CONSENSUS_FAILURE_KIND:-unknown}: ${LAST_CONSENSUS_FAILURE_REASON:-unspecified}" 500)"
+    fi
+
+    LAST_GATE_DECISION_RECORDED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)"
+    LAST_GATE_DECISION_PHASE="$phase"
+    LAST_GATE_DECISION_ATTEMPT="$attempt"
+    LAST_GATE_DECISION_STAGE="$stage"
+    LAST_GATE_DECISION_OUTCOME="$outcome"
+    LAST_GATE_DECISION_SCORE="${LAST_CONSENSUS_SCORE:-0}"
+    LAST_GATE_DECISION_PASS="${LAST_CONSENSUS_PASS:-false}"
+    LAST_GATE_DECISION_RESPONDED_VOTES="${LAST_CONSENSUS_RESPONDED_VOTES:-0}"
+    LAST_GATE_DECISION_NEXT_PHASE="$next_phase"
+    LAST_GATE_DECISION_SUMMARY="$(printf 'score=%s pass=%s votes=%s next=%s outcome=%s\nvoting: %s\nexplainer: %s\n%s' \
+        "$LAST_GATE_DECISION_SCORE" \
+        "$LAST_GATE_DECISION_PASS" \
+        "$LAST_GATE_DECISION_RESPONDED_VOTES" \
+        "$LAST_GATE_DECISION_NEXT_PHASE" \
+        "$LAST_GATE_DECISION_OUTCOME" \
+        "$voting_summary" \
+        "$explainer" \
+        "$handoff_summary")"
+    if [ -n "$failure_summary" ]; then
+        LAST_GATE_DECISION_SUMMARY="${LAST_GATE_DECISION_SUMMARY}
+$failure_summary"
+    fi
+}
+
 save_state() {
     mkdir -p "$(dirname "$STATE_FILE")"
     local checksum
@@ -2252,6 +2318,16 @@ save_state() {
         printf 'PLAN_FRESHNESS_FINGERPRINT="%s"\n' "$(state_escape_value "$PLAN_FRESHNESS_FINGERPRINT")"
         printf 'GIT_IDENTITY_READY="%s"\n' "$(state_escape_value "$GIT_IDENTITY_READY")"
         printf 'GIT_IDENTITY_SOURCE="%s"\n' "$(state_escape_value "$GIT_IDENTITY_SOURCE")"
+        printf 'LAST_GATE_DECISION_RECORDED_AT="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_RECORDED_AT")"
+        printf 'LAST_GATE_DECISION_PHASE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_PHASE")"
+        printf 'LAST_GATE_DECISION_ATTEMPT="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_ATTEMPT")"
+        printf 'LAST_GATE_DECISION_STAGE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_STAGE")"
+        printf 'LAST_GATE_DECISION_OUTCOME="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_OUTCOME")"
+        printf 'LAST_GATE_DECISION_SCORE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_SCORE")"
+        printf 'LAST_GATE_DECISION_PASS="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_PASS")"
+        printf 'LAST_GATE_DECISION_RESPONDED_VOTES="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_RESPONDED_VOTES")"
+        printf 'LAST_GATE_DECISION_NEXT_PHASE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_NEXT_PHASE")"
+        printf 'LAST_GATE_DECISION_SUMMARY="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_SUMMARY")"
     } > "$tmp_state_file"
     # Append SHA-256 checksum to the end
     if checksum="$(sha256_file_sum "$tmp_state_file")"; then
@@ -2297,6 +2373,16 @@ load_state() {
     ENGINE_OUTPUT_TO_STDOUT="$DEFAULT_ENGINE_OUTPUT_TO_STDOUT"
     PHASE_TRANSITION_HISTORY=()
     PLAN_FRESHNESS_FINGERPRINT=""
+    LAST_GATE_DECISION_RECORDED_AT=""
+    LAST_GATE_DECISION_PHASE=""
+    LAST_GATE_DECISION_ATTEMPT=0
+    LAST_GATE_DECISION_STAGE=""
+    LAST_GATE_DECISION_OUTCOME=""
+    LAST_GATE_DECISION_SCORE=0
+    LAST_GATE_DECISION_PASS=false
+    LAST_GATE_DECISION_RESPONDED_VOTES=0
+    LAST_GATE_DECISION_NEXT_PHASE=""
+    LAST_GATE_DECISION_SUMMARY=""
     GIT_IDENTITY_READY="unknown"
     GIT_IDENTITY_SOURCE="unknown"
     local phase_transition_history_b64=""
@@ -2343,6 +2429,16 @@ load_state() {
             PLAN_FRESHNESS_FINGERPRINT) PLAN_FRESHNESS_FINGERPRINT="$value" ;;
             GIT_IDENTITY_READY) is_bool_like "$value" && GIT_IDENTITY_READY="$value" ;;
             GIT_IDENTITY_SOURCE) [ -n "$value" ] && GIT_IDENTITY_SOURCE="$value" ;;
+            LAST_GATE_DECISION_RECORDED_AT) LAST_GATE_DECISION_RECORDED_AT="$value" ;;
+            LAST_GATE_DECISION_PHASE) LAST_GATE_DECISION_PHASE="$value" ;;
+            LAST_GATE_DECISION_ATTEMPT) is_number "$value" && LAST_GATE_DECISION_ATTEMPT="$value" ;;
+            LAST_GATE_DECISION_STAGE) LAST_GATE_DECISION_STAGE="$value" ;;
+            LAST_GATE_DECISION_OUTCOME) LAST_GATE_DECISION_OUTCOME="$value" ;;
+            LAST_GATE_DECISION_SCORE) is_number "$value" && LAST_GATE_DECISION_SCORE="$value" ;;
+            LAST_GATE_DECISION_PASS) is_bool_like "$value" && LAST_GATE_DECISION_PASS="$value" ;;
+            LAST_GATE_DECISION_RESPONDED_VOTES) is_number "$value" && LAST_GATE_DECISION_RESPONDED_VOTES="$value" ;;
+            LAST_GATE_DECISION_NEXT_PHASE) LAST_GATE_DECISION_NEXT_PHASE="$value" ;;
+            LAST_GATE_DECISION_SUMMARY) LAST_GATE_DECISION_SUMMARY="$value" ;;
             STATE_CHECKSUM) ;;
             *) ;;
         esac
@@ -8789,8 +8885,10 @@ main() {
                         "$previous_attempt_output_file")"
                     while true; do
                         if run_swarm_consensus "$phase-gate" "$(phase_transition_history_recent 8)" "$consensus_evidence_context"; then
+                            record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "pass"
                             break
                         fi
+                        record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "hold"
 
                         if [ "$LAST_CONSENSUS_FAILURE_KIND" = "infra" ]; then
                             local consensus_failure_reason
@@ -8865,6 +8963,7 @@ main() {
                             phase_next_target="$phase_route_candidate"
                             phase_route="true"
                             phase_route_reason="${LAST_CONSENSUS_NEXT_PHASE_REASON:-no explicit phase-routing rationale}"
+                            record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "reroute-hold" "$phase_next_target" "$phase_route_reason"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             notify_event "phase_decision" "reroute_hold" "phase=$phase attempt=$phase_attempt rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                             PHASE_ATTEMPT_IN_PROGRESS="false"
@@ -8895,6 +8994,7 @@ main() {
                             phase_next_target="plan"
                             phase_route="true"
                             phase_route_reason="auto-backtrack: build exhausted retries on $build_hold_reason; refreshing plan scope"
+                            record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "reroute-hold" "$phase_next_target" "$phase_route_reason"
                             phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "hold" "$phase_route_reason"
                             write_gate_feedback "$phase" "${phase_failures[@]}" "auto-backtrack triggered: rerouting build -> plan"
                             warn "Build retries exhausted ($build_hold_reason); auto-backtracking to plan for scope refresh."
@@ -9059,6 +9159,7 @@ main() {
                 elif [ -z "$phase_route_reason" ]; then
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
+                record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "pass" "$phase_next_target" "$phase_route_reason"
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1

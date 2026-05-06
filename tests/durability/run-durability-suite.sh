@@ -183,6 +183,16 @@ test_unit_state_roundtrip_and_checksum() {
         PHASE_TRANSITION_HISTORY=("plan(attempt 1)->build|pass|ok")
         GIT_IDENTITY_READY="true"
         GIT_IDENTITY_SOURCE="$expected_git_src"
+        LAST_GATE_DECISION_RECORDED_AT="2026-05-06T00:00:00Z"
+        LAST_GATE_DECISION_PHASE="plan"
+        LAST_GATE_DECISION_ATTEMPT=1
+        LAST_GATE_DECISION_STAGE="plan-gate"
+        LAST_GATE_DECISION_OUTCOME="pass"
+        LAST_GATE_DECISION_SCORE=91
+        LAST_GATE_DECISION_PASS=true
+        LAST_GATE_DECISION_RESPONDED_VOTES=3
+        LAST_GATE_DECISION_NEXT_PHASE="build"
+        LAST_GATE_DECISION_SUMMARY=$'score=91 pass=true votes=3 next=build outcome=pass\nvoting: reviewer agreement\nexplainer: route forward'
 
         save_state
 
@@ -200,6 +210,16 @@ test_unit_state_roundtrip_and_checksum() {
         PHASE_TRANSITION_HISTORY=()
         GIT_IDENTITY_READY="unknown"
         GIT_IDENTITY_SOURCE=""
+        LAST_GATE_DECISION_RECORDED_AT=""
+        LAST_GATE_DECISION_PHASE=""
+        LAST_GATE_DECISION_ATTEMPT=0
+        LAST_GATE_DECISION_STAGE=""
+        LAST_GATE_DECISION_OUTCOME=""
+        LAST_GATE_DECISION_SCORE=0
+        LAST_GATE_DECISION_PASS=false
+        LAST_GATE_DECISION_RESPONDED_VOTES=0
+        LAST_GATE_DECISION_NEXT_PHASE=""
+        LAST_GATE_DECISION_SUMMARY=""
 
         load_state
 
@@ -207,6 +227,11 @@ test_unit_state_roundtrip_and_checksum() {
         [ "$GIT_IDENTITY_SOURCE" = "$expected_git_src" ]
         [ "$CURRENT_PHASE" = "build" ]
         [ "$CURRENT_PHASE_ATTEMPT" = "2" ]
+        [ "$LAST_GATE_DECISION_PHASE" = "plan" ]
+        [ "$LAST_GATE_DECISION_SCORE" = "91" ]
+        [ "$LAST_GATE_DECISION_NEXT_PHASE" = "build" ]
+        printf '%s' "$LAST_GATE_DECISION_SUMMARY" | grep -q 'voting: reviewer agreement'
+        grep -q '^LAST_GATE_DECISION_SUMMARY="score=91 pass=true votes=3 next=build outcome=pass\\nvoting: reviewer agreement\\nexplainer: route forward"$' "$STATE_FILE"
         grep -q '^STATE_CHECKSUM=' "$STATE_FILE"
 
         # Tamper with state body to force checksum mismatch and verify clean failure.
@@ -1859,6 +1884,11 @@ run_swarm_consensus() {
 main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
 grep -q "All phases completed. Session done." "$PWD/run.out"
 grep -q 'CURRENT_PHASE="done"' "$PWD/.ralphie/state.env"
+grep -q 'LAST_GATE_DECISION_PHASE="document"' "$PWD/.ralphie/state.env"
+grep -q 'LAST_GATE_DECISION_SCORE="92"' "$PWD/.ralphie/state.env"
+grep -q 'LAST_GATE_DECISION_NEXT_PHASE="done"' "$PWD/.ralphie/state.env"
+grep -q 'voting: durability happy path' "$PWD/.ralphie/state.env"
+grep -q 'explainer: stub next' "$PWD/.ralphie/state.env"
 EOF
     chmod +x "$ws/harness.sh"
     "$ws/harness.sh"
