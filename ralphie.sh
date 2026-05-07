@@ -357,7 +357,7 @@ extract_review_gaps() {
 file_looks_like_auth_or_html_challenge() {
     local file="$1"
     [ -f "$file" ] || return 1
-    grep -qiE '<!doctype html|<html[ >]|</html>|cloudflare|cf_chl|challenge-platform|enable javascript and cookies|authrequired|missing or invalid access token|invalid_token' "$file" 2>/dev/null
+    grep -qiE '<!doctype html|<html[ >]|</html>|cf_chl|challenge-platform|challenge-error-text|enable javascript and cookies|authrequired|missing or invalid access token|invalid_token|window\._cf_chl_opt|cdn-cgi/challenge|cloudflare ray id|attention required! \| cloudflare' "$file" 2>/dev/null
 }
 
 review_output_invalid_reason() {
@@ -493,7 +493,7 @@ stream_engine_output() {
         }
         function looks_like_challenge(line) {
             lower = tolower(line)
-            return lower ~ /<!doctype html|<html[ >]|<\/html>|cloudflare|cf_chl|challenge-platform|challenge-error-text|enable javascript and cookies|auth required|missing or invalid access token|invalid_token|window\._cf_chl_opt|cdn-cgi\/challenge/
+            return lower ~ /<!doctype html|<html[ >]|<\/html>|cf_chl|challenge-platform|challenge-error-text|enable javascript and cookies|auth required|missing or invalid access token|invalid_token|window\._cf_chl_opt|cdn-cgi\/challenge|cloudflare ray id|attention required! \| cloudflare/
         }
         function looks_like_engine_reentry(line) {
             return line ~ /^(OpenAI Codex|Claude|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|--------)/
