@@ -416,6 +416,97 @@ test_unit_reviewer_payload_sanitization() {
     )
 }
 
+test_unit_auth_challenge_redaction_is_precise() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd policy_file challenge_file auth_file policy_stream challenge_stream
+        tmpd="$(mktemp -d /tmp/ralphie-redaction-unit.XXXXXX)"
+        policy_file="$tmpd/policy.txt"
+        challenge_file="$tmpd/challenge.html"
+        auth_file="$tmpd/auth.txt"
+        policy_stream="$tmpd/policy-stream.log"
+        challenge_stream="$tmpd/challenge-stream.log"
+
+        cat > "$policy_file" <<'EOF_POLICY'
+Network policy:
+- Do not build Cloudflare bypass, stealth, captcha avoidance, or browser impersonation.
+- curl_cffi may be discussed as a non-goal without triggering provider challenge redaction.
+EOF_POLICY
+
+        if file_looks_like_auth_or_html_challenge "$policy_file"; then
+            fail "policy text mentioning Cloudflare bypass should not be classified as provider challenge output"
+            return 1
+        fi
+
+        cat > "$challenge_file" <<'EOF_CHALLENGE'
+<!doctype html>
+<html>
+<title>Attention Required! | Cloudflare</title>
+<body>Cloudflare Ray ID: abc123</body>
+</html>
+EOF_CHALLENGE
+
+        if ! file_looks_like_auth_or_html_challenge "$challenge_file"; then
+            fail "real Cloudflare challenge HTML should be classified as provider challenge output"
+            return 1
+        fi
+
+        printf '%s\n' 'missing or invalid access token' > "$auth_file"
+        if ! file_looks_like_auth_or_html_challenge "$auth_file"; then
+            fail "provider token errors should be classified as sensitive provider output"
+            return 1
+        fi
+
+        printf '%s\n' \
+            'before' \
+            'Do not build Cloudflare bypass, stealth, or captcha avoidance.' \
+            'after' \
+            | stream_engine_output "$policy_stream" "" false
+
+        grep -q 'Cloudflare bypass' "$policy_stream"
+        if grep -q '\[ralphie redacted provider auth/challenge output\]' "$policy_stream"; then
+            fail "stream redactor should not redact ordinary Cloudflare policy text"
+            return 1
+        fi
+
+        printf '%s\n' \
+            'before' \
+            '<!doctype html>' \
+            '<html><title>Attention Required! | Cloudflare</title>' \
+            'Cloudflare Ray ID: abc123' \
+            '</html>' \
+            'OpenAI Codex v0' \
+            'workdir: /tmp' \
+            | stream_engine_output "$challenge_stream" "" false
+
+        grep -q '\[ralphie redacted provider auth/challenge output\]' "$challenge_stream"
+        if grep -q 'Cloudflare Ray ID' "$challenge_stream"; then
+            fail "stream redactor should suppress real Cloudflare challenge details"
+            return 1
+        fi
+    )
+}
+
+test_unit_empty_array_guard_is_bash32_safe() {
+    (
+        set -euo pipefail
+        bash -u -c '
+            post_plan_gate_issues=()
+            post_plan_actionable_gate_issues=()
+            if [ "${#post_plan_gate_issues[@]}" -gt 0 ]; then
+                for post_plan_issue in "${post_plan_gate_issues[@]}"; do
+                    post_plan_actionable_gate_issues+=("$post_plan_issue")
+                done
+            fi
+            [ "${#post_plan_actionable_gate_issues[@]}" -eq 0 ]
+        '
+    )
+}
+
 test_unit_tts_narration_styles() {
     (
         set -euo pipefail
@@ -2486,6 +2577,8 @@ main() {
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum
     run_case "unit_config_fuzz_and_precedence" test_unit_config_fuzz_and_precedence
     run_case "unit_reviewer_payload_sanitization" test_unit_reviewer_payload_sanitization
+    run_case "unit_auth_challenge_redaction_is_precise" test_unit_auth_challenge_redaction_is_precise
+    run_case "unit_empty_array_guard_is_bash32_safe" test_unit_empty_array_guard_is_bash32_safe
     run_case "unit_tts_narration_styles" test_unit_tts_narration_styles
     run_case "unit_notify_discord_text_fallback_on_tts_failure" test_unit_notify_discord_text_fallback_on_tts_failure
     run_case "unit_stack_discovery" test_unit_stack_discovery
