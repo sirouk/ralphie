@@ -8995,16 +8995,18 @@ main() {
                                 [ -n "$post_plan_repair_summary" ] && phase_warnings+=("post-plan markdown remediation: ${post_plan_repair_summary//$'\\n'/; }")
                             fi
                         fi
-                        for post_plan_issue in "${post_plan_gate_issues[@]}"; do
-                            case "$post_plan_issue" in
-                                "plan refresh required:"*)
-                                    phase_warnings+=("post-plan freshness checkpoint pending for configured backlog sources")
-                                    ;;
-                                *)
-                                    post_plan_actionable_gate_issues+=("$post_plan_issue")
-                                    ;;
-                            esac
-                        done
+                        if [ "${#post_plan_gate_issues[@]}" -gt 0 ]; then
+                            for post_plan_issue in "${post_plan_gate_issues[@]}"; do
+                                case "$post_plan_issue" in
+                                    "plan refresh required:"*)
+                                        phase_warnings+=("post-plan freshness checkpoint pending for configured backlog sources")
+                                        ;;
+                                    *)
+                                        post_plan_actionable_gate_issues+=("$post_plan_issue")
+                                        ;;
+                                esac
+                            done
+                        fi
                         if [ "${#post_plan_actionable_gate_issues[@]}" -eq 0 ] && [ -n "$post_plan_repair_summary" ]; then
                             info "Build gate passed after post-plan markdown remediation."
                         fi
