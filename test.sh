@@ -412,7 +412,9 @@ EOF_REMOTE
         fi
         printf '%s\n' "$output" | grep -q "failed validation"
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
-        ! grep -q 'fixture-self-update' "$tmpd/invalid/ralphie.sh"
+        if grep -q 'fixture-self-update' "$tmpd/invalid/ralphie.sh"; then
+            return 1
+        fi
         test ! -e "$tmpd/invalid/.ralphie/self-update/update.lock"
 
         mkdir -p "$tmpd/insecure"
@@ -437,7 +439,9 @@ EOF_REMOTE
         fi
         printf '%s\n' "$output" | grep -q "another Ralphie self-update is still in progress"
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
-        ! grep -q 'fixture-self-update' "$tmpd/locked/ralphie.sh"
+        if grep -q 'fixture-self-update' "$tmpd/locked/ralphie.sh"; then
+            return 1
+        fi
 
         if command -v git >/dev/null 2>&1; then
             mkdir -p "$tmpd/dirty"
@@ -452,7 +456,9 @@ EOF_REMOTE
             fi
             printf '%s\n' "$output" | grep -q "local ralphie.sh has uncommitted changes"
             printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
-            ! grep -q 'fixture-self-update' "$tmpd/dirty/ralphie.sh"
+            if grep -q 'fixture-self-update' "$tmpd/dirty/ralphie.sh"; then
+                return 1
+            fi
             test ! -e "$tmpd/dirty/.ralphie/self-update/update.lock"
         fi
     )
