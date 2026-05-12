@@ -234,6 +234,13 @@ test_unit_state_roundtrip_and_checksum() {
         grep -q '^LAST_GATE_DECISION_SUMMARY="score=91 pass=true votes=3 next=build outcome=pass\\nvoting: reviewer agreement\\nexplainer: route forward"$' "$STATE_FILE"
         grep -q '^STATE_CHECKSUM=' "$STATE_FILE"
 
+        # Embedded checksum-looking text in state values must not be treated as
+        # the authoritative state checksum line.
+        LAST_GATE_DECISION_SUMMARY=$'body mentions STATE_CHECKSUM="bogus"\nbut it is only reviewer text'
+        save_state
+        load_state
+        printf '%s' "$LAST_GATE_DECISION_SUMMARY" | grep -q 'STATE_CHECKSUM="bogus"'
+
         # Tamper with state body to force checksum mismatch and verify clean failure.
         local tampered
         tampered="$(mktemp /tmp/ralphie-state-tampered.XXXXXX)"
@@ -281,6 +288,26 @@ EOF
     )
 }
 
+test_unit_balanced_lint_policy_is_soft() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        PHASE_NOOP_PROFILE="balanced"
+        PHASE_NOOP_POLICY_LINT=""
+        PHASE_NOOP_POLICY_LINT_EXPLICIT=false
+        STRICT_VALIDATION_NOOP=false
+        finalize_phase_noop_profile_config
+        [ "$(phase_noop_policy "lint")" = "soft" ]
+
+        STRICT_VALIDATION_NOOP=true
+        finalize_phase_noop_profile_config
+        [ "$(phase_noop_policy "lint")" = "hard" ]
+    )
+}
+
 test_unit_reviewer_payload_sanitization() {
     (
         set -euo pipefail
@@ -288,7 +315,7 @@ test_unit_reviewer_payload_sanitization() {
         source "$RALPHIE_FILE"
         assert_unit_runtime_isolated
 
-        local tmpd out_file cons_dir line html_file reason valid_file missing_verdict_file redacted placeholder stream_log stream_out quiet_log quiet_out streamed quiet_streamed
+        local tmpd out_file cons_dir line html_file reason valid_file missing_verdict_file duplicate_tags_file blocking_gaps_file redacted placeholder stream_log stream_out quiet_log quiet_out streamed quiet_streamed
         tmpd="$(mktemp -d /tmp/ralphie-review-unit.XXXXXX)"
 
         out_file="$tmpd/handoff.out"
@@ -383,6 +410,27 @@ test_unit_reviewer_payload_sanitization() {
         } > "$valid_file"
         [ -z "$(review_output_invalid_reason "$valid_file" "consensus")" ]
 
+        duplicate_tags_file="$tmpd/duplicate-tags.out"
+        {
+            printf '<score>88</score>\n'
+            printf '<score>99</score>\n'
+            printf '<verdict>GO</verdict>\n'
+            printf '<next_phase>build</next_phase>\n'
+            printf '<gaps>none</gaps>\n'
+        } > "$duplicate_tags_file"
+        reason="$(review_output_invalid_reason "$duplicate_tags_file" "consensus")"
+        printf '%s' "$reason" | grep -q 'exactly one <score>'
+
+        blocking_gaps_file="$tmpd/blocking-gaps.out"
+        {
+            printf '<score>95</score>\n'
+            printf '<verdict>GO</verdict>\n'
+            printf '<next_phase>build</next_phase>\n'
+            printf '<gaps>live proof missing</gaps>\n'
+        } > "$blocking_gaps_file"
+        reason="$(review_output_invalid_reason "$blocking_gaps_file" "consensus")"
+        printf '%s' "$reason" | grep -q 'blocking <gaps>'
+
         missing_verdict_file="$tmpd/missing-verdict.out"
         {
             printf '<score>88</score>\n'
@@ -413,6 +461,124 @@ test_unit_reviewer_payload_sanitization() {
         if contains_control_chars "$line"; then
             return 1
         fi
+    )
+}
+
+test_unit_consensus_requires_unanimous_reviewer_quorum() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd
+        tmpd="$(mktemp -d /tmp/ralphie-consensus-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        LOG_DIR="$tmpd/logs"
+        CONSENSUS_DIR="$tmpd/consensus"
+        mkdir -p "$PROJECT_DIR" "$LOG_DIR" "$CONSENSUS_DIR"
+        CODEX_HEALTHY=true
+        CLAUDE_HEALTHY=false
+        CODEX_CMD="$(command -v true)"
+        CONSENSUS_REVIEWERS=3
+        CONSENSUS_SCORE_THRESHOLD=80
+        PROMPT_PLAN_FILE="$tmpd/prompt.md"
+        printf 'prompt\n' > "$PROMPT_PLAN_FILE"
+
+        run_swarm_reviewer() {
+            local reviewer_index="$1" _prompt_file="$2" _log_file="$3" output_file="$4" status_file="$5"
+            if [ "$reviewer_index" -eq 3 ]; then
+                printf 'status=failure\nengine=stub\nfailure_reason=simulated reviewer outage\n' > "$status_file"
+                return 1
+            fi
+            {
+                printf '<score>96</score>\n'
+                printf '<verdict>GO</verdict>\n'
+                printf '<next_phase>build</next_phase>\n'
+                printf '<gaps>none</gaps>\n'
+            } > "$output_file"
+            printf 'status=success\nengine=stub\n' > "$status_file"
+            return 0
+        }
+
+        if run_swarm_consensus "plan-gate" "$PROMPT_PLAN_FILE"; then
+            return 1
+        fi
+        [ "$LAST_CONSENSUS_RESPONDED_VOTES" = "2" ]
+        [ "$LAST_CONSENSUS_FAILURE_KIND" = "infra" ]
+        printf '%s' "$LAST_CONSENSUS_FAILURE_REASON" | grep -q 'insufficient reviewer responses (2/3)'
+    )
+}
+
+test_unit_consensus_next_phase_requires_majority() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd
+        tmpd="$(mktemp -d /tmp/ralphie-consensus-route-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        LOG_DIR="$tmpd/logs"
+        CONSENSUS_DIR="$tmpd/consensus"
+        mkdir -p "$PROJECT_DIR" "$LOG_DIR" "$CONSENSUS_DIR"
+        CODEX_HEALTHY=true
+        CLAUDE_HEALTHY=false
+        CODEX_CMD="$(command -v true)"
+        CONSENSUS_REVIEWERS=3
+        CONSENSUS_SCORE_THRESHOLD=80
+        PROMPT_BUILD_FILE="$tmpd/prompt.md"
+        printf 'prompt\n' > "$PROMPT_BUILD_FILE"
+
+        run_swarm_reviewer() {
+            local reviewer_index="$1" _prompt_file="$2" _log_file="$3" output_file="$4" status_file="$5"
+            local next_phase
+            case "$reviewer_index" in
+                1) next_phase="test" ;;
+                2) next_phase="lint" ;;
+                *) next_phase="document" ;;
+            esac
+            {
+                printf '<score>96</score>\n'
+                printf '<verdict>GO</verdict>\n'
+                printf '<next_phase>%s</next_phase>\n' "$next_phase"
+                printf '<gaps>none</gaps>\n'
+            } > "$output_file"
+            printf 'status=success\nengine=stub\n' > "$status_file"
+            return 0
+        }
+
+        run_swarm_consensus "build-gate" "$PROMPT_BUILD_FILE"
+        [ "$LAST_CONSENSUS_PASS" = "true" ]
+        [ "$LAST_CONSENSUS_NEXT_PHASE" = "test" ]
+        printf '%s' "$LAST_CONSENSUS_NEXT_PHASE_REASON" | grep -q 'no majority'
+    )
+}
+
+test_unit_terminal_done_guard_requires_actual_passes() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        REQUIRE_LINT_BEFORE_DONE=true
+        REQUIRE_DOCUMENT_BEFORE_DONE=true
+        REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE=false
+        PHASE_TRANSITION_HISTORY=(
+            "test(attempt 1)->refactor|pass|ok"
+            "refactor(attempt 1)->test|pass|ok"
+            "test(attempt 2)->lint|pass|ok"
+            "lint(attempt 1)->document|pass|ok"
+        )
+
+        enforce_terminal_done_requirements "document" "done" >/dev/null
+        [ "$LAST_DONE_GUARD_NEXT_PHASE" = "document" ]
+        printf '%s' "$LAST_DONE_GUARD_REASON" | grep -q 'missing required pre-done phases: document'
+
+        enforce_terminal_done_requirements "document" "done" true >/dev/null
+        [ "$LAST_DONE_GUARD_NEXT_PHASE" = "done" ]
     )
 }
 
@@ -1716,8 +1882,8 @@ run_agent_with_prompt() {
 2. Complete the remaining phase sequence.
 PLAN
     fi
-    printf 'ok\n' > "$log_file"
-    printf 'ok\n' > "$output_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
     return 0
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
@@ -1752,7 +1918,7 @@ run_swarm_consensus() {
 main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
 grep -q "Retrying consensus without consuming phase attempt" "$PWD/run.out" "$PWD/run.err"
 grep -q "All phases completed. Session done." "$PWD/run.out"
-[ "$(wc -l < "$PWD/agent-calls.log" | tr -d ' ')" -eq 6 ]
+[ "$(wc -l < "$PWD/agent-calls.log" | tr -d ' ')" -eq 7 ]
 EOF
     chmod +x "$ws/harness.sh"
     "$ws/harness.sh"
@@ -1842,8 +2008,8 @@ run_agent_with_prompt() {
 1. Run the routing loop harness.
 PLAN
     fi
-    printf 'ok\n' > "$log_file"
-    printf 'ok\n' > "$output_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
     return 0
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
@@ -1922,8 +2088,8 @@ PLAN
 - [x] Refresh the steering source as part of PLAN.
 STEERING
     fi
-    printf 'ok\n' > "$log_file"
-    printf 'ok\n' > "$output_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
     printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
     return 0
 }
@@ -2016,8 +2182,8 @@ STEERING
             printf 'build-discovered backlog change %s\n' "$__build_calls" >> research/STEERING.md
         fi
     fi
-    printf 'ok\n' > "$log_file"
-    printf 'ok\n' > "$output_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
     return 0
 }
 run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
@@ -2106,8 +2272,8 @@ run_agent_with_prompt() {
 1. Route through required terminal phases.
 PLAN
     fi
-    printf 'ok\n' > "$log_file"
-    printf 'ok\n' > "$output_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
     printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
     return 0
 }
@@ -2132,15 +2298,15 @@ run_swarm_consensus() {
     return 0
 }
 main --no-resume > "$PWD/run.out" 2> "$PWD/run.err"
+grep -q "Terminal guard remapped next phase: done -> refactor" "$PWD/run.out" "$PWD/run.err"
 grep -q "Terminal guard remapped next phase: done -> lint" "$PWD/run.out" "$PWD/run.err"
 grep -q "Terminal guard remapped next phase: done -> document" "$PWD/run.out" "$PWD/run.err"
+grep -q ">>> Entering phase 'refactor' <<<" "$PWD/run.out"
+[ "$(grep -c '^test$' "$PWD/phases.log" | tr -d ' ')" -ge 2 ]
 grep -q ">>> Entering phase 'lint' <<<" "$PWD/run.out"
 grep -q ">>> Entering phase 'document' <<<" "$PWD/run.out"
 grep -q "All phases completed. Session done." "$PWD/run.out"
 grep -q 'CURRENT_PHASE="done"' "$PWD/.ralphie/state.env"
-if grep -q '^refactor$' "$PWD/phases.log"; then
-    exit 1
-fi
 EOF
     chmod +x "$ws/harness.sh"
     "$ws/harness.sh"
@@ -2171,7 +2337,7 @@ __durability_counter=0
 run_agent_with_prompt() {
     local _prompt="$1" log_file="$2" output_file="$3"
     __durability_counter=$((__durability_counter + 1))
-    printf 'stub run %s\n' "$__durability_counter" > "$log_file"
+    printf 'stub run %s\nVerification command: `true` passed.\n' "$__durability_counter" > "$log_file"
     if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
         cat > IMPLEMENTATION_PLAN.md <<'PLAN'
 # Implementation Plan
@@ -2196,6 +2362,7 @@ Assumptions made:
 Blockers/risks:
 - none
 Phase status: complete.
+Verification command: `true` passed.
 MSG
     printf 'mutation-%s\n' "$__durability_counter" >> durability-mutation.log
     return 0
@@ -2295,105 +2462,28 @@ EOF
 }
 
 test_integration_clean_terminal_done_reroute_on_hold() {
-    local ws
-    ws="$(make_workspace)"
-    cat > "$ws/harness.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")"
-export RALPHIE_RESUME_REQUESTED=true
-export RALPHIE_AUTO_UPDATE=false
-export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
-export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
-export RALPHIE_AUTO_INIT_GIT_IF_MISSING=false
-export RALPHIE_NOTIFICATIONS_ENABLED=false
-export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
-export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
-export RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS=1
-export RALPHIE_REQUIRE_LINT_BEFORE_DONE=false
-export RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE=false
-export RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE=false
-export RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD=false
-cat > .gitignore <<'IGNORE'
-.ralphie/
-logs/
-consensus/
-research/
-PROMPT_*.md
-.ralphie.lock
-.env
-.env.*
-completion_log/
-HUMAN_INSTRUCTIONS.md
-research/HUMAN_FEEDBACK.md
-coverage/
-.nyc_output/
-htmlcov/
-.specify/
-specs/
-harness.sh
-run.out
-run.err
-IGNORE
-cat > IMPLEMENTATION_PLAN.md <<'PLAN'
-# Implementation Plan
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
 
-## Goal
-- Exercise clean terminal done reroute after a hold.
+        PROJECT_DIR="$(mktemp -d /tmp/ralphie-clean-terminal.XXXXXX)"
+        CONSENSUS_REVIEWERS=3
+        LAST_CONSENSUS_PASS=false
+        LAST_CONSENSUS_FAILURE_KIND="quality"
+        LAST_CONSENSUS_RESPONDED_VOTES=3
+        LAST_CONSENSUS_NEXT_PHASE_VOTES=3
+        if consensus_clean_terminal_hold_reroute_allowed "build" "done"; then
+            return 1
+        fi
 
-## Acceptance Criteria
-- A clean worktree plus unanimous done recommendation exits the build loop.
-
-## Actionable Tasks
-1. Confirm there is no more local build work.
-PLAN
-git init -q
-git config user.name "Durability Test"
-git config user.email "durability@example.test"
-git add .gitignore ralphie.sh IMPLEMENTATION_PLAN.md
-git commit -q -m init
-source ./ralphie.sh
-load_state() {
-    CURRENT_PHASE="build"
-    CURRENT_PHASE_INDEX=1
-    CURRENT_PHASE_ATTEMPT=1
-    PHASE_ATTEMPT_IN_PROGRESS=true
-    ITERATION_COUNT=1
-    SESSION_ATTEMPT_COUNT=0
-    return 0
-}
-ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
-probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
-run_first_deploy_engine_override_wizard() { return 0; }
-run_first_deploy_notification_wizard() { return 0; }
-run_startup_operational_probe() { return 0; }
-build_is_preapproved() { return 0; }
-run_agent_with_prompt() {
-    local _prompt="$1" log_file="$2" output_file="$3"
-    printf 'clean terminal reroute log\n' > "$log_file"
-    printf 'nothing left to build locally\n' > "$output_file"
-    return 0
-}
-run_handoff_validation() { LAST_HANDOFF_SCORE=20; LAST_HANDOFF_VERDICT=HOLD; LAST_HANDOFF_GAPS=no_mutation_done; return 1; }
-run_swarm_consensus() {
-    LAST_CONSENSUS_SCORE=20
-    LAST_CONSENSUS_PASS=false
-    LAST_CONSENSUS_RESPONDED_VOTES=3
-    LAST_CONSENSUS_NEXT_PHASE_VOTES=3
-    LAST_CONSENSUS_FAILURE_KIND="quality"
-    LAST_CONSENSUS_FAILURE_REASON="consensus HOLD (done recommended)"
-    LAST_CONSENSUS_SUMMARY="unanimous clean done recommendation"
-    LAST_CONSENSUS_NEXT_PHASE="done"
-    LAST_CONSENSUS_NEXT_PHASE_REASON="no local build work remains"
-    return 1
-}
-main --resume > "$PWD/run.out" 2> "$PWD/run.err"
-grep -q "Allowing clean terminal reroute recommendation 'done'" "$PWD/run.out" "$PWD/run.err"
-grep -q "All phases completed. Session done." "$PWD/run.out"
-grep -q 'CURRENT_PHASE="done"' "$PWD/.ralphie/state.env"
-EOF
-    chmod +x "$ws/harness.sh"
-    "$ws/harness.sh"
+        LAST_CONSENSUS_PASS=true
+        LAST_CONSENSUS_FAILURE_KIND="none"
+        if ! consensus_clean_terminal_hold_reroute_allowed "document" "done"; then
+            return 1
+        fi
+    )
 }
 
 test_integration_resume_done_short_circuit() {
@@ -2552,8 +2642,8 @@ run_agent_with_prompt() {
 2. Complete the remaining phase sequence.
 PLAN
     fi
-    printf 'resume run %s\n' "$__resume_counter" > "$log_file"
-    printf 'resume output %s\n' "$__resume_counter" > "$output_file"
+    printf 'resume run %s\nVerification command: `true` passed.\n' "$__resume_counter" > "$log_file"
+    printf 'resume output %s\nVerification command: `true` passed.\n' "$__resume_counter" > "$output_file"
     printf 'resume-mutation-%s\n' "$__resume_counter" >> resume-mutation.log
     return 0
 }
@@ -2619,7 +2709,11 @@ main() {
     run_case "cli_help_does_not_mutate_state" test_cli_help_does_not_mutate_state
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum
     run_case "unit_config_fuzz_and_precedence" test_unit_config_fuzz_and_precedence
+    run_case "unit_balanced_lint_policy_is_soft" test_unit_balanced_lint_policy_is_soft
     run_case "unit_reviewer_payload_sanitization" test_unit_reviewer_payload_sanitization
+    run_case "unit_consensus_requires_unanimous_reviewer_quorum" test_unit_consensus_requires_unanimous_reviewer_quorum
+    run_case "unit_consensus_next_phase_requires_majority" test_unit_consensus_next_phase_requires_majority
+    run_case "unit_terminal_done_guard_requires_actual_passes" test_unit_terminal_done_guard_requires_actual_passes
     run_case "unit_auth_challenge_redaction_is_precise" test_unit_auth_challenge_redaction_is_precise
     run_case "unit_empty_array_guard_is_bash32_safe" test_unit_empty_array_guard_is_bash32_safe
     run_case "unit_tts_narration_styles" test_unit_tts_narration_styles
