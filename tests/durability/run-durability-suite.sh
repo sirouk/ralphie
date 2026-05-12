@@ -1525,6 +1525,49 @@ test_unit_save_state_or_exit_enforces_stop() {
     )
 }
 
+test_unit_plan_freshness_ignores_plan_artifact_edits() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd before after
+        tmpd="$(mktemp -d /tmp/ralphie-plan-freshness-unit.XXXXXX)"
+        trap 'rm -rf "$tmpd"' RETURN
+
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        LOG_DIR="$PROJECT_DIR/logs"
+        PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+        DEFAULT_BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md"
+        BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md"
+        REQUIRE_PLAN_FRESHNESS_FOR_BUILD=true
+        PLAN_FRESHNESS_FINGERPRINT=""
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR" "$LOG_DIR"
+
+        cat > "$PLAN_FILE" <<'PLAN'
+# Implementation Plan
+
+- [ ] Keep the terminal backlog guard pointed at the plan.
+PLAN
+
+        before="$(backlog_sources_fingerprint)"
+        record_plan_freshness_checkpoint >/dev/null
+        printf '\n- [x] BUILD updated its own plan artifact.\n' >> "$PLAN_FILE"
+        after="$(backlog_sources_fingerprint)"
+
+        [ "$before" = "$after" ]
+        if backlog_sources_newer_than_plan "$PLAN_FILE"; then
+            fail "plan artifact edit incorrectly invalidated freshness"
+            return 1
+        fi
+        [ "$(backlog_freshness_source_display_list)" = "configured external backlog sources" ]
+        backlog_source_display_list | grep -q "IMPLEMENTATION_PLAN.md"
+        backlog_has_unchecked_local_tasks
+    )
+}
+
 test_unit_auto_commit_scoped_to_manifest_delta() {
     (
         set -euo pipefail
@@ -2596,6 +2639,7 @@ main() {
     run_case "unit_manifest_modes_light_and_deep" test_unit_manifest_modes_light_and_deep
     run_case "unit_markdown_repair_dry_run_backup_and_scope" test_unit_markdown_repair_dry_run_backup_and_scope
     run_case "unit_save_state_or_exit_enforces_stop" test_unit_save_state_or_exit_enforces_stop
+    run_case "unit_plan_freshness_ignores_plan_artifact_edits" test_unit_plan_freshness_ignores_plan_artifact_edits
     run_case "unit_auto_commit_scoped_to_manifest_delta" test_unit_auto_commit_scoped_to_manifest_delta
     run_case "unit_auto_commit_skips_preexisting_dirty_overlap" test_unit_auto_commit_skips_preexisting_dirty_overlap
     run_case "integration_happy_path" test_integration_happy_path

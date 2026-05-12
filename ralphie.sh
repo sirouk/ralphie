@@ -7076,6 +7076,22 @@ collect_backlog_source_files() {
     printf '%s\n' "${resolved[@]}" | awk '!seen[$0]++'
 }
 
+collect_backlog_freshness_source_files() {
+    local source_file
+
+    while IFS= read -r source_file; do
+        [ -n "$source_file" ] || continue
+        # The plan file is the artifact PLAN produces, not an upstream source
+        # that should force PLAN to refresh itself. Keep it in the general
+        # backlog list so terminal unchecked-task guards still work, but omit it
+        # from freshness fingerprints and stale-source mtimes.
+        if [ -n "${PLAN_FILE:-}" ] && [ "$source_file" = "$PLAN_FILE" ]; then
+            continue
+        fi
+        printf '%s\n' "$source_file"
+    done < <(collect_backlog_source_files)
+}
+
 backlog_source_display_list() {
     local source_file rel_path
     local -a labels=()
@@ -7097,6 +7113,27 @@ backlog_source_display_list() {
     fi
 }
 
+backlog_freshness_source_display_list() {
+    local source_file rel_path
+    local -a labels=()
+
+    while IFS= read -r source_file; do
+        [ -n "$source_file" ] || continue
+        rel_path="$(path_relative_to_project "$source_file")"
+        if [ -n "$rel_path" ] && [ "$rel_path" != "$source_file" ]; then
+            labels+=("$(path_for_display "$rel_path")")
+        else
+            labels+=("$(path_for_display "$source_file")")
+        fi
+    done < <(collect_backlog_freshness_source_files)
+
+    if [ "${#labels[@]}" -eq 0 ]; then
+        printf '%s' "configured external backlog sources"
+    else
+        join_with_commas "${labels[@]}"
+    fi
+}
+
 backlog_sources_fingerprint() {
     local source_file rel_path file_hash
 
@@ -7112,7 +7149,7 @@ backlog_sources_fingerprint() {
             else
                 printf 'missing\t%s\n' "$rel_path"
             fi
-        done < <(collect_backlog_source_files)
+        done < <(collect_backlog_freshness_source_files)
     } | sha256_stream_sum
 }
 
@@ -7126,7 +7163,7 @@ record_plan_freshness_checkpoint() {
     fi
 
     PLAN_FRESHNESS_FINGERPRINT="$fingerprint"
-    info "Plan freshness checkpoint recorded for $(backlog_source_display_list)."
+    info "Plan freshness checkpoint recorded for $(backlog_freshness_source_display_list)."
     return 0
 }
 
@@ -7175,8 +7212,8 @@ backlog_sources_newer_than_plan() {
             if [ "$current_fingerprint" = "$PLAN_FRESHNESS_FINGERPRINT" ]; then
                 return 1
             fi
-            LAST_BACKLOG_STALE_SOURCES="$(backlog_source_display_list)"
-            [ -n "$LAST_BACKLOG_STALE_SOURCES" ] || LAST_BACKLOG_STALE_SOURCES="configured backlog sources"
+            LAST_BACKLOG_STALE_SOURCES="$(backlog_freshness_source_display_list)"
+            [ -n "$LAST_BACKLOG_STALE_SOURCES" ] || LAST_BACKLOG_STALE_SOURCES="configured external backlog sources"
             return 0
         fi
     fi
@@ -7200,7 +7237,7 @@ backlog_sources_newer_than_plan() {
                 stale_sources+=("$(path_for_display "$source_file")")
             fi
         fi
-    done < <(collect_backlog_source_files)
+    done < <(collect_backlog_freshness_source_files)
 
     if [ "${#stale_sources[@]}" -eq 0 ]; then
         return 1
