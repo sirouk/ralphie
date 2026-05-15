@@ -125,67 +125,52 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 Ralphie keeps two separate pieces of operator state:
 
 - `.ralphie/state.env` stores the current phase, phase attempt, iteration
-  counters, and completion state. `--resume` is the default, so plain
-  `./ralphie.sh` tries to load this file.
+  counters, route history, and completion state. `--resume` is the default, so
+  plain `./ralphie.sh` tries to load this file.
 - `.ralphie/project-bootstrap.md` stores the project type, objective,
   constraints, success criteria, architecture/technology preferences, and
-  plan→build consent. `--rebootstrap` refreshes this file; it does not disable
-  resume by itself.
+  plan-to-build consent. `--rebootstrap` refreshes this file; it does **not**
+  disable resume by itself.
 
-Plain `./ralphie.sh` therefore means "continue the current mission." That is
-the right default after a crash, timeout, pause, or terminal disconnect because
-Ralphie can restore the exact phase and attempt from `.ralphie/state.env`.
-It is also why plain `./ralphie.sh` is not a good way to start unrelated work
-after a completed loop: if state says `CURRENT_PHASE=done`, Ralphie will resume
-that completed mission and exit done again.
+Plain `./ralphie.sh` means **continue the current mission**. That is the right
+default after a crash, timeout, pause, or terminal disconnect because Ralphie
+can restore the exact phase and attempt from `.ralphie/state.env`. It is also
+why plain `./ralphie.sh` is not the right launch mode for unrelated work after a
+completed loop: if state says `CURRENT_PHASE=done`, Ralphie will resume that
+completed mission and exit done again.
 
 After a mission has met its goals, treat the next objective as a new mission
-instead of resuming the old one. The safest operator pattern is:
+instead of resuming the old one. The hardened operator pattern is:
 
 1. Checkpoint the completed work with a commit, tag, or other intentional
    project-local snapshot.
-2. Update `IMPLEMENTATION_PLAN.md` so it names the new active objective and
-   links any detailed steering/backlog source.
-3. Optionally create a focused steering file such as
-   `research/RALPHIE_NEXT_FOCUS_STEERING.md` for the next slice.
-4. Make remaining work machine-readable if it must block `done`. Ralphie's
-   terminal backlog guard scans unchecked markdown tasks in configured backlog
-   sources; prose-only future slices may be documented but may not block
-   completion. Prefer explicit checkboxes:
+2. Update `.ralphie/project-goals.md` and/or `IMPLEMENTATION_PLAN.md` so the
+   next active objective is explicit.
+3. Keep large steering docs as **reference** material unless their checkboxes
+   are truly live backlog. A steering/spec file can be named from
+   `.ralphie/project-goals.md`; it does not have to be listed in
+   `--backlog-sources`.
+4. Keep `IMPLEMENTATION_PLAN.md` as the active backlog source unless you have a
+   second file that is intentionally acting as a current checklist.
+5. Launch the new mission with `--no-resume`.
 
-```markdown
-- [x] Slice 1: Completed previous focus
-- [ ] Slice 2: Next focus
-- [ ] Slice 3: Later focus
+Prepared fresh mission, when you have already updated project goals / active
+backlog:
+
+```bash
+# update project-goals/backlog somehow
+./ralphie.sh --no-resume --backlog-sources 'IMPLEMENTATION_PLAN.md,AGENTS.md'
 ```
 
-5. Choose a launch mode.
-
 Interactive fresh mission, when you want Ralphie to ask the bootstrap
-questions:
+questions again:
 
 ```bash
 ./ralphie.sh \
   --no-resume \
   --rebootstrap \
-  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
+  --backlog-sources 'IMPLEMENTATION_PLAN.md,AGENTS.md'
 ```
-
-Prepared fresh mission, when you have already edited
-`.ralphie/project-bootstrap.md` and do not want the questionnaire:
-
-```bash
-./ralphie.sh \
-  --no-resume \
-  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
-```
-
-For the prepared path, make sure `.ralphie/project-bootstrap.md` is complete
-and intentionally pre-seeded with `interactive_prompted: true` and the desired
-`build_consent`. If the file is missing, invalid, or marked
-`interactive_prompted: false` in an interactive terminal, Ralphie will prompt
-to refresh it. Do not pass `--rebootstrap` on the prepared path; that flag
-means "ask again and rewrite bootstrap context."
 
 Use `--resume` or plain `./ralphie.sh` again only after that new mission has
 started and you want Ralphie to continue the same in-flight work.
@@ -195,17 +180,94 @@ same and you want to correct or enrich bootstrap intent while preserving the
 current phase state. Do not manually delete `.ralphie/state.env` for normal
 operator steering; the resume flags are the intended reset boundary.
 
-`IMPLEMENTATION_PLAN.md` is Ralphie's canonical active plan artifact and the
-default backlog source. Use a separate steering file for mission-specific
-detail when the plan would otherwise become crowded; list that steering file in
-`--backlog-sources` so plan freshness and done guards see it. A good steering
-file is short, current, and explicit:
+#### Reference sources vs. backlog sources
 
-After a PLAN phase passes, Ralphie records a fingerprint of the configured
-backlog sources in `.ralphie/state.env`. BUILD freshness checks compare against
-that checkpoint, so a valid plan refresh can update `IMPLEMENTATION_PLAN.md`
-and any listed steering files in one phase without causing a false stale-plan
-loop. If a listed source changes later, Ralphie routes back through PLAN.
+Ralphie has powerful freshness and terminal-done guards, but those guards only
+know about files listed as backlog sources. Do not put broad constitutions,
+historical audits, long steering docs, or future-roadmap checklists in
+`--backlog-sources` unless every unchecked task in those files should block
+terminal `done`.
+
+Use this split:
+
+- **Guardrails:** `AGENTS.md`, `.specify/memory/constitution.md`, project
+  operating rules.
+- **Reference:** design docs, large steering docs, architecture notes,
+  historical audit files. Mention these from `.ralphie/project-goals.md` or
+  `IMPLEMENTATION_PLAN.md` so PLAN can read them.
+- **Active backlog:** `IMPLEMENTATION_PLAN.md`, plus any small current-slice
+  checklist that should block `done`.
+- **Evidence:** completion logs, build notes, test reports. These should inform
+  PLAN/TEST but should not usually be backlog sources.
+
+If remaining work must block `done`, make it machine-readable in the active
+backlog. Ralphie's terminal backlog guard scans unchecked markdown tasks in
+configured backlog sources; prose-only future slices may be documented but may
+not block completion. Prefer explicit checkboxes:
+
+```markdown
+- [x] Slice 1: Completed previous focus
+- [ ] Slice 2: Next focus
+- [ ] Slice 3: Later focus
+```
+
+After a PLAN phase passes, Ralphie records a fingerprint of configured backlog
+sources in `.ralphie/state.env`. BUILD freshness checks compare against that
+checkpoint. If a listed source changes later, Ralphie routes back through PLAN.
+This protects against stale plans, but it also means incorrectly listed
+reference files can cause plan loops or terminal-done deadlocks.
+
+#### What plain `./ralphie.sh` does
+
+With no flags, Ralphie:
+
+1. Loads `.ralphie/config.env` if present.
+2. Uses `--resume` behavior by default.
+3. Loads `.ralphie/state.env` if it exists and passes checksum validation.
+4. Runs startup probes and engine health checks.
+5. Reuses `.ralphie/project-bootstrap.md` if it is valid.
+6. Prompts only when interactive input is available **and** bootstrap or
+   first-deploy setup needs attention.
+7. Enters the persisted phase/attempt, or starts at PLAN if there is no valid
+   state.
+
+So yes, Ralphie can ask questions, but it does not ask every time. A no-flag
+run is intentionally optimized for durable resumption. To force questions for a
+new mission, use `--no-resume --rebootstrap`.
+
+Current interactive prompt surfaces include:
+
+- project bootstrap (`new` vs `existing`, objective, constraints, success
+  criteria, architecture, technology, goals/context, build consent);
+- first-deploy engine override wizard;
+- first-deploy notification wizard.
+
+If no terminal is attached, Ralphie uses deterministic fallback bootstrap
+values and defaults build consent to false.
+
+#### Recommended future mission mode
+
+For long-lived autonomous engineering, the ideal interface is a first-class
+mission command rather than asking operators to remember the safe flag
+combination. A future Ralphie should grow something like:
+
+```bash
+./ralphie.sh mission start \
+  --name "Crew Training" \
+  --reference research/RALPHIE_CREW_TRAINING_STEERING.md \
+  --backlog IMPLEMENTATION_PLAN.md \
+  --guardrail AGENTS.md
+```
+
+That mode should create a new mission epoch, preserve history, reset phase to
+PLAN, classify source roles, and prevent a prior `CURRENT_PHASE=done` state from
+being mistaken for completion of the new objective. Until that exists,
+`--no-resume --backlog-sources 'IMPLEMENTATION_PLAN.md,AGENTS.md'` is the
+durable prepared-mission launch pattern.
+
+A small current-slice steering or goals block should stay short, explicit, and
+bounded. This shape works well when pasted into `.ralphie/project-goals.md` or
+linked from `IMPLEMENTATION_PLAN.md` as reference context:
 
 ````markdown
 # Ralphie Steering: Next Focus
@@ -301,7 +363,8 @@ Behavior summary:
 
 ## Interrupt Controls
 
-In interactive mode, pressing `Ctrl+C` opens a control menu:
+In interactive mode, pressing `Ctrl+C` stops managed child processes, persists
+state, and opens a control menu:
 
 - `r` resume immediately (default)
 - `l` toggle live engine output on/off
@@ -310,6 +373,16 @@ In interactive mode, pressing `Ctrl+C` opens a control menu:
 - `h` help
 
 The current `engine-output-to-stdout` mode is preserved in session state and reused on resume.
+
+If you press `Ctrl+C` again while the interrupt menu is already open, Ralphie
+exits immediately after cleanup. In non-interactive contexts there is no menu:
+an interrupt triggers cleanup, state persistence, managed process termination,
+lock release, and exit.
+
+Use `p` when you want the most durable pause/resume boundary. The next plain
+`./ralphie.sh` run resumes that same mission from saved state. Use
+`--no-resume` only when you intentionally want a new mission/fresh phase loop
+instead of continuing the paused one.
 
 ## Deterministic Stack Discovery
 
