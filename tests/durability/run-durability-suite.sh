@@ -1734,6 +1734,40 @@ PLAN
     )
 }
 
+test_unit_backlog_sources_include_final_entry() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd sources_count fingerprint_before fingerprint_after
+        tmpd="$(mktemp -d /tmp/ralphie-backlog-source-list-unit.XXXXXX)"
+        trap 'rm -rf "$tmpd"' RETURN
+
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+        BACKLOG_SOURCES="research/FIRST.md,research/SECOND.md"
+        DEFAULT_BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md"
+        mkdir -p "$PROJECT_DIR/research" "$CONFIG_DIR"
+
+        printf '# First\n' > "$PROJECT_DIR/research/FIRST.md"
+        printf '# Second\n' > "$PROJECT_DIR/research/SECOND.md"
+        printf '# Plan\n' > "$PLAN_FILE"
+
+        sources_count="$(collect_backlog_source_files | wc -l | tr -d ' ')"
+        [ "$sources_count" = "2" ]
+        collect_backlog_source_files | grep -q "$PROJECT_DIR/research/FIRST.md"
+        collect_backlog_source_files | grep -q "$PROJECT_DIR/research/SECOND.md"
+
+        fingerprint_before="$(backlog_sources_fingerprint)"
+        printf '\n- [x] changed final source\n' >> "$PROJECT_DIR/research/SECOND.md"
+        fingerprint_after="$(backlog_sources_fingerprint)"
+        [ "$fingerprint_before" != "$fingerprint_after" ]
+    )
+}
+
 test_unit_auto_commit_scoped_to_manifest_delta() {
     (
         set -euo pipefail
@@ -2093,7 +2127,17 @@ STEERING
     printf '%s-mut\n' "$phase_name" >> "$PWD/mutations.log"
     return 0
 }
-run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+run_handoff_validation() {
+    local _phase="$1" prompt_file="$2"
+    if grep -q "post-plan freshness checkpoint pending" "$prompt_file"; then
+        printf 'stale freshness warning reached handoff reviewer\n' >&2
+        return 1
+    fi
+    LAST_HANDOFF_SCORE=95
+    LAST_HANDOFF_VERDICT=GO
+    LAST_HANDOFF_GAPS=none
+    return 0
+}
 run_swarm_consensus() {
     local stage="$1"
     local base="${stage%-gate}"
@@ -2734,6 +2778,7 @@ main() {
     run_case "unit_markdown_repair_dry_run_backup_and_scope" test_unit_markdown_repair_dry_run_backup_and_scope
     run_case "unit_save_state_or_exit_enforces_stop" test_unit_save_state_or_exit_enforces_stop
     run_case "unit_plan_freshness_ignores_plan_artifact_edits" test_unit_plan_freshness_ignores_plan_artifact_edits
+    run_case "unit_backlog_sources_include_final_entry" test_unit_backlog_sources_include_final_entry
     run_case "unit_auto_commit_scoped_to_manifest_delta" test_unit_auto_commit_scoped_to_manifest_delta
     run_case "unit_auto_commit_skips_preexisting_dirty_overlap" test_unit_auto_commit_skips_preexisting_dirty_overlap
     run_case "integration_happy_path" test_integration_happy_path

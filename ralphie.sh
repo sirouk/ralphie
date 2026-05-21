@@ -7225,7 +7225,7 @@ collect_backlog_source_files() {
             *) abs_path="$PROJECT_DIR/$normalized" ;;
         esac
         resolved+=("$abs_path")
-    done < <(printf '%s' "$sources_trimmed" | tr ',' '\n')
+    done < <(printf '%s\n' "$sources_trimmed" | tr ',' '\n')
 
     if [ "${#resolved[@]}" -eq 0 ]; then
         resolved+=("$PLAN_FILE")
@@ -9231,6 +9231,7 @@ main() {
                         local -a post_plan_gate_issues=()
                         local -a post_plan_actionable_gate_issues=()
                         local post_plan_issue
+                        local post_plan_freshness_pending="false"
                         mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
                         local post_plan_repair_summary=""
                         if is_true "$AUTO_REPAIR_MARKDOWN_ARTIFACTS" && ! markdown_artifacts_are_clean; then
@@ -9244,13 +9245,31 @@ main() {
                             for post_plan_issue in "${post_plan_gate_issues[@]}"; do
                                 case "$post_plan_issue" in
                                     "plan refresh required:"*)
-                                        phase_warnings+=("post-plan freshness checkpoint pending for configured backlog sources")
+                                        post_plan_freshness_pending="true"
                                         ;;
                                     *)
                                         post_plan_actionable_gate_issues+=("$post_plan_issue")
                                         ;;
                                 esac
                             done
+                        fi
+                        if is_true "$post_plan_freshness_pending" && [ "${#post_plan_actionable_gate_issues[@]}" -eq 0 ]; then
+                            if record_plan_freshness_checkpoint; then
+                                post_plan_freshness_pending="false"
+                                mapfile -t post_plan_gate_issues < <(collect_build_prerequisites_issues)
+                                for post_plan_issue in "${post_plan_gate_issues[@]}"; do
+                                    case "$post_plan_issue" in
+                                        "plan refresh required:"*)
+                                            post_plan_actionable_gate_issues+=("plan freshness checkpoint remained stale after recording")
+                                            ;;
+                                        *)
+                                            post_plan_actionable_gate_issues+=("$post_plan_issue")
+                                            ;;
+                                    esac
+                                done
+                            else
+                                post_plan_actionable_gate_issues+=("plan freshness checkpoint could not be recorded after plan")
+                            fi
                         fi
                         if [ "${#post_plan_actionable_gate_issues[@]}" -eq 0 ] && [ -n "$post_plan_repair_summary" ]; then
                             info "Build gate passed after post-plan markdown remediation."
