@@ -379,6 +379,19 @@ main "$@"
 EOF_REMOTE
         chmod +x "$tmpd/remote-ralphie.sh"
 
+        mkdir -p "$tmpd/default-on"
+        cp ./ralphie.sh "$tmpd/default-on/ralphie.sh"
+        chmod +x "$tmpd/default-on/ralphie.sh"
+        if [ -n "$timeout_cmd" ]; then
+            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/default-on/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/default-on/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
+        grep -q 'SCRIPT_VERSION="fixture-self-update"' "$tmpd/default-on/ralphie.sh"
+        ls "$tmpd/default-on/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
+        test ! -e "$tmpd/default-on/.ralphie/self-update/update.lock"
+
         if [ -n "$timeout_cmd" ]; then
             output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/project/ralphie.sh" --no-resume 2>&1)"
         else

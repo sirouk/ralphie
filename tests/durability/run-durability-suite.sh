@@ -556,6 +556,39 @@ test_unit_consensus_next_phase_requires_majority() {
     )
 }
 
+test_unit_clean_go_score_relaxation_respects_explicit_thresholds() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        CONSENSUS_SCORE_THRESHOLD=93
+        CONSENSUS_CLEAN_GO_SCORE_FLOOR=80
+        CONSENSUS_SCORE_THRESHOLD_EXPLICIT=false
+
+        if review_gaps_are_blocking "None."; then
+            return 1
+        fi
+        if ! review_gaps_are_blocking "missing validation command"; then
+            return 1
+        fi
+
+        review_score_passes_threshold 88 true
+        if review_score_passes_threshold 78 true; then
+            return 1
+        fi
+        if review_score_passes_threshold 88 false; then
+            return 1
+        fi
+
+        CONSENSUS_SCORE_THRESHOLD_EXPLICIT=true
+        if review_score_passes_threshold 88 true; then
+            return 1
+        fi
+    )
+}
+
 test_unit_terminal_done_guard_requires_actual_passes() {
     (
         set -euo pipefail
@@ -579,6 +612,53 @@ test_unit_terminal_done_guard_requires_actual_passes() {
 
         enforce_terminal_done_requirements "document" "done" true >/dev/null
         [ "$LAST_DONE_GUARD_NEXT_PHASE" = "done" ]
+    )
+}
+
+test_unit_terminal_done_guard_allows_no_local_work_handoff_plan() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd
+        tmpd="$(mktemp -d /tmp/ralphie-terminal-handoff-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+        BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md"
+        mkdir -p "$PROJECT_DIR"
+
+        cat > "$PLAN_FILE" <<'EOF_PLAN'
+# Implementation Plan
+
+## Goal
+- Close the mission without local code changes.
+
+## Acceptance Criteria
+- Reviewers agree the repository is already complete for this request.
+
+## Handoff
+- No local implementation tasks remain.
+- Ready for handoff.
+- [ ] Operator proof window: run authorized live proof with credentials.
+- [ ] Operator/product decision window: resolve policy decisions.
+- [ ] Operator/security risk window: choose residual-risk acceptance or stronger isolation.
+- [ ] Future local repair window: if a proof or policy decision exposes a concrete source defect, add a new local row.
+EOF_PLAN
+
+        REQUIRE_LINT_BEFORE_DONE=true
+        REQUIRE_DOCUMENT_BEFORE_DONE=true
+        REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE=true
+        PHASE_TRANSITION_HISTORY=()
+
+        plan_is_semantically_actionable "$PLAN_FILE"
+        enforce_terminal_done_requirements "plan" "done" true >/dev/null
+        [ "$LAST_DONE_GUARD_NEXT_PHASE" = "done" ]
+
+        printf '\n- [ ] Add local code change before done.\n' >> "$PLAN_FILE"
+        enforce_terminal_done_requirements "plan" "done" true >/dev/null
+        [ "$LAST_DONE_GUARD_NEXT_PHASE" != "done" ]
     )
 }
 
@@ -1256,6 +1336,44 @@ test_unit_noninteractive_bootstrap_requires_build_consent() {
 
         grep -q '^interactive_prompted: false$' "$PROJECT_BOOTSTRAP_FILE"
         grep -q '^build_consent: false$' "$PROJECT_BOOTSTRAP_FILE"
+    )
+}
+
+test_unit_valid_noninteractive_bootstrap_does_not_reprompt_on_tty() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$RALPHIE_FILE"
+        assert_unit_runtime_isolated
+
+        local tmpd
+        tmpd="$(mktemp -d /tmp/ralphie-bootstrap-no-reprompt-unit.XXXXXX)"
+        PROJECT_DIR="$tmpd/project"
+        CONFIG_DIR="$PROJECT_DIR/.ralphie"
+        PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+        PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+        CONFIG_FILE="$CONFIG_DIR/config.env"
+        mkdir -p "$PROJECT_DIR" "$CONFIG_DIR"
+
+        write_bootstrap_context_file \
+            "existing" \
+            "Improve project with a deterministic implementation path." \
+            "false" \
+            "false" \
+            "No explicit constraints provided." \
+            "All required phase gates pass." \
+            "false" \
+            "" \
+            "No explicit structure preference provided." \
+            "No explicit technology preference provided."
+
+        is_tty_input_available() { return 0; }
+        prompt_yes_no() { fail "valid saved bootstrap should not reprompt"; return 1; }
+        prompt_optional_line() { fail "valid saved bootstrap should not reprompt"; return 1; }
+        prompt_multiline_block() { fail "valid saved bootstrap should not reprompt"; return 1; }
+
+        ensure_project_bootstrap
+        grep -q '^interactive_prompted: false$' "$PROJECT_BOOTSTRAP_FILE"
     )
 }
 
@@ -2017,6 +2135,7 @@ export RALPHIE_NOTIFICATIONS_ENABLED=false
 export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
 export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
 export RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS=0
+export RALPHIE_PHASE_PAIR_CYCLE_LIMIT=0
 export CONFIDENCE_STAGNATION_LIMIT=2
 export RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS=0
 source ./ralphie.sh
@@ -2066,6 +2185,81 @@ run_swarm_consensus() {
 main --no-resume > "$PWD/run.out" 2> "$PWD/run.err" || true
 grep -q "routing stagnated" "$PWD/run.out" "$PWD/run.err"
 grep -q "RB_ROUTING_STAGNATION" "$PWD/.ralphie/reasons.log"
+EOF
+    chmod +x "$ws/harness.sh"
+    "$ws/harness.sh"
+}
+
+test_integration_phase_pair_cycle_guard_barks_on_ping_pong() {
+    local ws
+    ws="$(make_workspace)"
+    cat > "$ws/harness.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+export RALPHIE_RESUME_REQUESTED=false
+export RALPHIE_AUTO_UPDATE=false
+export RALPHIE_STARTUP_OPERATIONAL_PROBE=false
+export RALPHIE_AUTO_COMMIT_ON_PHASE_PASS=false
+export RALPHIE_NOTIFICATIONS_ENABLED=false
+export RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED=true
+export RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED=true
+export RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS=0
+export RALPHIE_PHASE_PAIR_CYCLE_LIMIT=3
+export CONFIDENCE_STAGNATION_LIMIT=99
+export RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS=0
+source ./ralphie.sh
+ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
+probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+run_first_deploy_engine_override_wizard() { return 0; }
+run_first_deploy_notification_wizard() { return 0; }
+run_startup_operational_probe() { return 0; }
+build_is_preapproved() { return 0; }
+__build_routes=0
+run_agent_with_prompt() {
+    local _prompt="$1" log_file="$2" output_file="$3"
+    if grep -q "Ralphie Plan Phase Prompt" "$_prompt" 2>/dev/null; then
+        cat > IMPLEMENTATION_PLAN.md <<'PLAN'
+# Implementation Plan
+
+## Goal
+- Exercise the phase-pair cycle guard.
+
+## Acceptance Criteria
+- Ralphie barks loudly when consensus bounces between the same two phases.
+
+## Actionable Tasks
+1. Enter the plan/build ping-pong harness.
+PLAN
+    fi
+    printf 'ok\nVerification command: `true` passed.\n' > "$log_file"
+    printf 'ok\nVerification command: `true` passed.\n' > "$output_file"
+    return 0
+}
+run_handoff_validation() { LAST_HANDOFF_SCORE=95; LAST_HANDOFF_VERDICT=GO; LAST_HANDOFF_GAPS=none; return 0; }
+run_swarm_consensus() {
+    local stage="$1"
+    local base="${stage%-gate}"
+    LAST_CONSENSUS_SCORE=95
+    LAST_CONSENSUS_PASS=true
+    LAST_CONSENSUS_RESPONDED_VOTES=3
+    LAST_CONSENSUS_SUMMARY="phase pair loop stub"
+    if [ "$base" = "build" ]; then
+        __build_routes=$((__build_routes + 1))
+        LAST_CONSENSUS_NEXT_PHASE="plan"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="loop reason $__build_routes"
+    else
+        LAST_CONSENSUS_NEXT_PHASE="$(phase_default_next "$base")"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="forward"
+    fi
+    return 0
+}
+main --no-resume > "$PWD/run.out" 2> "$PWD/run.err" || true
+grep -q "PHASE ROUTING LOOP DETECTED" "$PWD/run.out" "$PWD/run.err"
+grep -q "RB_PHASE_PAIR_ROUTING_LOOP" "$PWD/.ralphie/reasons.log"
+if grep -q "RB_ROUTING_STAGNATION" "$PWD/.ralphie/reasons.log" "$PWD/run.out" "$PWD/run.err" 2>/dev/null; then
+    exit 1
+fi
 EOF
     chmod +x "$ws/harness.sh"
     "$ws/harness.sh"
@@ -2518,12 +2712,16 @@ test_integration_clean_terminal_done_reroute_on_hold() {
         LAST_CONSENSUS_FAILURE_KIND="quality"
         LAST_CONSENSUS_RESPONDED_VOTES=3
         LAST_CONSENSUS_NEXT_PHASE_VOTES=3
+        LAST_CONSENSUS_GO_VOTES=0
+        LAST_CONSENSUS_BLOCKING_GAP_VOTES=0
         if consensus_clean_terminal_hold_reroute_allowed "build" "done"; then
             return 1
         fi
 
         LAST_CONSENSUS_PASS=true
         LAST_CONSENSUS_FAILURE_KIND="none"
+        LAST_CONSENSUS_GO_VOTES=3
+        LAST_CONSENSUS_BLOCKING_GAP_VOTES=0
         if ! consensus_clean_terminal_hold_reroute_allowed "document" "done"; then
             return 1
         fi
@@ -2757,7 +2955,9 @@ main() {
     run_case "unit_reviewer_payload_sanitization" test_unit_reviewer_payload_sanitization
     run_case "unit_consensus_requires_unanimous_reviewer_quorum" test_unit_consensus_requires_unanimous_reviewer_quorum
     run_case "unit_consensus_next_phase_requires_majority" test_unit_consensus_next_phase_requires_majority
+    run_case "unit_clean_go_score_relaxation_respects_explicit_thresholds" test_unit_clean_go_score_relaxation_respects_explicit_thresholds
     run_case "unit_terminal_done_guard_requires_actual_passes" test_unit_terminal_done_guard_requires_actual_passes
+    run_case "unit_terminal_done_guard_allows_no_local_work_handoff_plan" test_unit_terminal_done_guard_allows_no_local_work_handoff_plan
     run_case "unit_auth_challenge_redaction_is_precise" test_unit_auth_challenge_redaction_is_precise
     run_case "unit_empty_array_guard_is_bash32_safe" test_unit_empty_array_guard_is_bash32_safe
     run_case "unit_tts_narration_styles" test_unit_tts_narration_styles
@@ -2769,6 +2969,7 @@ main() {
     run_case "unit_bootstrap_accept_blocked_no_change_guard" test_unit_bootstrap_accept_blocked_no_change_guard
     run_case "unit_append_bootstrap_context_includes_arch_and_tech" test_unit_append_bootstrap_context_includes_arch_and_tech
     run_case "unit_noninteractive_bootstrap_requires_build_consent" test_unit_noninteractive_bootstrap_requires_build_consent
+    run_case "unit_valid_noninteractive_bootstrap_does_not_reprompt_on_tty" test_unit_valid_noninteractive_bootstrap_does_not_reprompt_on_tty
     run_case "unit_prompt_read_line_shows_prompt_with_piped_stdin" test_unit_prompt_read_line_shows_prompt_with_piped_stdin
     run_case "unit_idle_output_watchdog_recycles_hung_process" test_unit_idle_output_watchdog_recycles_hung_process
     run_case "unit_idle_output_watchdog_kills_child_process" test_unit_idle_output_watchdog_kills_child_process
@@ -2785,6 +2986,7 @@ main() {
     run_case "integration_consensus_infra_retry_without_attempt_decrement" test_integration_consensus_infra_retry_without_attempt_decrement
     run_case "integration_unlimited_phase_attempts_stagnation_guard" test_integration_unlimited_phase_attempts_stagnation_guard
     run_case "integration_unlimited_routing_stagnation_guard" test_integration_unlimited_routing_stagnation_guard
+    run_case "integration_phase_pair_cycle_guard_barks_on_ping_pong" test_integration_phase_pair_cycle_guard_barks_on_ping_pong
     run_case "integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh" test_integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh
     run_case "integration_plan_freshness_reroutes_do_not_count_as_routing_stagnation" test_integration_plan_freshness_reroutes_do_not_count_as_routing_stagnation
     run_case "integration_terminal_done_guard_requires_lint_and_document" test_integration_terminal_done_guard_requires_lint_and_document

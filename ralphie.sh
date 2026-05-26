@@ -345,12 +345,35 @@ review_gaps_are_blocking() {
 
     normalized="$(sanitize_text_for_log "$gaps" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     normalized="$(printf '%s' "$normalized" | sed 's/[[:space:]]\+/ /g')"
+    normalized="$(printf '%s' "$normalized" | sed 's/[[:space:]]*[.,;:][[:space:]]*$//')"
     case "$normalized" in
-        ""|none|n/a|na|"no gaps"|"no blockers"|"no blocking gaps"|"none blocking"|"none blocking;"|"no explicit gaps")
+        ""|none|n/a|na|"not applicable"|"no gaps"|"no blockers"|"no blocking gaps"|"none blocking"|"no explicit gaps"|"no explicit blockers")
             return 1
             ;;
     esac
     return 0
+}
+
+consensus_clean_go_relaxation_allowed() {
+    is_true "${CONSENSUS_SCORE_THRESHOLD_EXPLICIT:-false}" && return 1
+    is_number "${CONSENSUS_SCORE_THRESHOLD:-}" || return 1
+    is_number "${CONSENSUS_CLEAN_GO_SCORE_FLOOR:-}" || return 1
+    [ "$CONSENSUS_SCORE_THRESHOLD" -gt "$CONSENSUS_CLEAN_GO_SCORE_FLOOR" ] || return 1
+    return 0
+}
+
+review_score_passes_threshold() {
+    local score="${1:-0}"
+    local clean_go="${2:-false}"
+
+    is_number "$score" || return 1
+    if [ "$score" -ge "$CONSENSUS_SCORE_THRESHOLD" ]; then
+        return 0
+    fi
+    if is_true "$clean_go" && consensus_clean_go_relaxation_allowed && [ "$score" -ge "$CONSENSUS_CLEAN_GO_SCORE_FLOOR" ]; then
+        return 0
+    fi
+    return 1
 }
 
 extract_review_score() {
@@ -759,7 +782,7 @@ is_allowed_config_key() {
         RUN_AGENT_MAX_ATTEMPTS|RUN_AGENT_RETRY_DELAY_SECONDS|RUN_AGENT_RETRY_VERBOSE|\
         ENGINE_OUTPUT_TO_STDOUT|ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS|STRICT_VALIDATION_NOOP|PHASE_COMPLETION_MAX_ATTEMPTS|\
         PHASE_COMPLETION_RETRY_DELAY_SECONDS|PHASE_COMPLETION_RETRY_VERBOSE|\
-        MAX_CONSENSUS_ROUTING_ATTEMPTS|REQUIRE_LINT_BEFORE_DONE|REQUIRE_DOCUMENT_BEFORE_DONE|\
+        MAX_CONSENSUS_ROUTING_ATTEMPTS|PHASE_PAIR_CYCLE_LIMIT|REQUIRE_LINT_BEFORE_DONE|REQUIRE_DOCUMENT_BEFORE_DONE|\
         REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE|REQUIRE_PLAN_FRESHNESS_FOR_BUILD|BACKLOG_SOURCES|\
         PHASE_NOOP_POLICY_PLAN|PHASE_NOOP_POLICY_BUILD|\
         PHASE_NOOP_POLICY_TEST|PHASE_NOOP_POLICY_REFACTOR|PHASE_NOOP_POLICY_LINT|\
@@ -1067,7 +1090,8 @@ Core options:
   --phase-wallclock-limit-seconds N       Wall-clock limit per phase attempt (0 = disabled)
   --phase-completion-retry-delay-seconds N Delay in seconds between completion retries
   --phase-completion-retry-verbose bool   Verbose phase completion retry logging (true|false)
-  --max-consensus-routing-attempts N      Max adaptive consensus reroutes per run (0=unlimited)
+  --max-consensus-routing-attempts N      Max adaptive backtracking reroutes per run (0=unlimited)
+  --phase-pair-cycle-limit N             Stop after N consecutive routes across the same phase pair (0=disabled)
   --consensus-score-threshold N           Minimum consensus/handoff pass score (0-100)
   --run-agent-max-attempts N              Max inference retries per agent run
   --run-agent-retry-delay-seconds N       Delay in seconds between inference retries
@@ -1113,6 +1137,12 @@ Additional runtime env knobs:
   RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS    Fetch timeout for single-file self-update
   RALPHIE_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS  Seconds to wait for concurrent self-update lock
   RALPHIE_PHASE_MANIFEST_MODE            Worktree manifest mode: light|deep
+  RALPHIE_SWARM_MAX_PARALLEL             Max parallel reviewer lanes where supported
+  RALPHIE_CONFIDENCE_TARGET              Target confidence score for agent prompts
+  RALPHIE_SWARM_CONSENSUS_TIMEOUT        Reviewer timeout in seconds
+  RALPHIE_CONFIDENCE_STAGNATION_LIMIT    Repeated unchanged signature limit before stopping
+  RALPHIE_CONSENSUS_SCORE_THRESHOLD      Minimum consensus/handoff pass score (0-100)
+  RALPHIE_CONSENSUS_CLEAN_GO_SCORE_FLOOR Clean GO floor for non-explicit high thresholds (0-100)
   RALPHIE_AUTO_REPAIR_MARKDOWN_DRY_RUN   Preview markdown repairs without mutating files (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_BACKUP    Save markdown backup+diff artifacts before mutation (true|false)
   RALPHIE_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED  Restrict markdown repair targets to this-session changed files
@@ -1135,6 +1165,7 @@ Additional runtime env knobs:
   RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES   Reminder cadence (minutes) for sustained incident series
   RALPHIE_NOTIFICATION_WIZARD_BOOTSTRAPPED  First-deploy notification setup prompt sentinel (true|false)
   RALPHIE_PHASE_WALLCLOCK_LIMIT_SECONDS     Wall-clock limit per phase attempt (seconds, 0=disabled)
+  RALPHIE_PHASE_PAIR_CYCLE_LIMIT             Same-pair phase bounce limit (0=disabled)
   RALPHIE_REQUIRE_LINT_BEFORE_DONE          Require at least one passed lint phase before terminal done routing
   RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE      Require at least one passed document phase before terminal done routing
   RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE  Require local configured backlog sources to be clear before terminal done routing
@@ -1233,8 +1264,14 @@ parse_args() {
                 require_non_negative_int "MAX_CONSENSUS_ROUTING_ATTEMPTS" "$MAX_CONSENSUS_ROUTING_ATTEMPTS"
                 shift 2
                 ;;
+            --phase-pair-cycle-limit)
+                PHASE_PAIR_CYCLE_LIMIT="$(parse_arg_value "--phase-pair-cycle-limit" "${2:-}")"
+                require_non_negative_int "PHASE_PAIR_CYCLE_LIMIT" "$PHASE_PAIR_CYCLE_LIMIT"
+                shift 2
+                ;;
             --consensus-score-threshold)
                 CONSENSUS_SCORE_THRESHOLD="$(parse_arg_value "--consensus-score-threshold" "${2:-}")"
+                CONSENSUS_SCORE_THRESHOLD_EXPLICIT=true
                 require_non_negative_int "CONSENSUS_SCORE_THRESHOLD" "$CONSENSUS_SCORE_THRESHOLD"
                 if [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
                     err "Invalid value for --consensus-score-threshold: $CONSENSUS_SCORE_THRESHOLD (expected 0-100)"
@@ -1468,27 +1505,16 @@ DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
 DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup when missing
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
-DEFAULT_AUTO_UPDATE="false"                  # check remote script and replace before startup
+DEFAULT_AUTO_UPDATE="true"                   # check remote script and replace before startup
 DEFAULT_AUTO_UPDATE_URL=""                   # explicit raw ralphie.sh URL; derived from GitHub origin when empty
 DEFAULT_AUTO_UPDATE_ALLOW_DIRTY="false"      # refuse to overwrite local ralphie.sh edits by default
 DEFAULT_AUTO_UPDATE_ALLOW_INSECURE="false"   # refuse plaintext HTTP update URLs by default
-DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS=20       # network timeout for single-file self-update fetch
-DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=30  # wait for concurrent startup self-update
-DEFAULT_COMMAND_TIMEOUT_SECONDS=0           # Tolerant default: disable command timeouts unless overridden
-DEFAULT_MAX_ITERATIONS=0                    # 0 means infinite
-DEFAULT_MAX_SESSION_CYCLES=0                # 0 means infinite across all phases
 DEFAULT_RALPHIE_QUALITY_LEVEL="standard"    # minimal|standard|high
-DEFAULT_RUN_AGENT_MAX_ATTEMPTS=5
-DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=5
 DEFAULT_RUN_AGENT_RETRY_VERBOSE="true"
-DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS=600  # recycle hung engine runs after prolonged no-output stalls (0=disabled)
 DEFAULT_RESUME_REQUESTED="true"
 DEFAULT_REBOOTSTRAP_REQUESTED="false"
 DEFAULT_STRICT_VALIDATION_NOOP="false"
-DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=3     # Lenient default; tighten via flags/presets for CI
-DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
 DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE="true"
-DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=4
 DEFAULT_ENGINE_OUTPUT_TO_STDOUT="true"
 ENGINE_OUTPUT_TO_STDOUT_EXPLICIT="false"
 ENGINE_OUTPUT_TO_STDOUT_OVERRIDE=""
@@ -1505,26 +1531,19 @@ PHASE_NOOP_POLICY_TEST_EXPLICIT=false
 PHASE_NOOP_POLICY_REFACTOR_EXPLICIT=false
 PHASE_NOOP_POLICY_LINT_EXPLICIT=false
 PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT=false
-DEFAULT_SESSION_TOKEN_BUDGET=0               # 0 means unlimited
-DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0 # 0 means no cost accounting
-DEFAULT_SESSION_COST_BUDGET_CENTS=0           # 0 means unlimited
+CONSENSUS_SCORE_THRESHOLD_EXPLICIT=false
 DEFAULT_AUTO_REPAIR_MARKDOWN_ARTIFACTS="true" # sanitize common local/engine leaks when gate blocked
 DEFAULT_AUTO_REPAIR_MARKDOWN_DRY_RUN="false"  # preview-only remediation mode (no file mutations)
 DEFAULT_AUTO_REPAIR_MARKDOWN_BACKUP="true"    # write backup+diff artifacts before markdown mutation
 DEFAULT_AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED="false" # optional scope limiter for markdown remediation
 DEFAULT_MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="" # optional ERE for intentional documented paths
 DEFAULT_PHASE_MANIFEST_MODE="light"           # light|deep manifest capture strategy
-DEFAULT_SWARM_CONSENSUS_TIMEOUT=240             # CI-safe: 4m cap for consensus reviewers
-DEFAULT_CONSENSUS_SCORE_THRESHOLD=70             # minimum avg score for consensus/handoff to pass
 DEFAULT_REQUIRE_LINT_BEFORE_DONE="true"          # terminal guard: require lint pass before done
 DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE="true"      # terminal guard: require document pass before done
 DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="true" # terminal guard: block done while local unchecked backlog tasks remain
 DEFAULT_REQUIRE_PLAN_FRESHNESS_FOR_BUILD="true"  # route guard: stale plan vs backlog sources must remap to plan
 DEFAULT_BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md" # comma-separated markdown backlog sources
-DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=5             # attempts before refusing to proceed
-DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5       # exponential backoff base
 DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE="true"        # log retry activity at startup/loop boundaries
-DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT=15               # seconds to wait for smoke-test canary response
 DEFAULT_STARTUP_OPERATIONAL_PROBE="true"          # run startup self-checks for runtime confidence
 DEFAULT_ENGINE_OVERRIDES_BOOTSTRAPPED="false"     # first-deploy interactive engine override prompt sentinel
 DEFAULT_NOTIFICATIONS_ENABLED="false"              # master notifications toggle
@@ -1535,10 +1554,38 @@ DEFAULT_NOTIFY_TTS_STYLE="ralph_wiggum"            # narration text style (ralph
 DEFAULT_NOTIFY_CHUTES_TTS_URL="https://chutes-kokoro.chutes.ai/speak"
 DEFAULT_NOTIFY_CHUTES_VOICE="am_puck"
 DEFAULT_NOTIFY_CHUTES_SPEED="1.24"
+DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED="false"  # first-deploy notification setup prompt sentinel
+
+# Mission limits, budgets, watchdogs, and quality thresholds.
+# Defaults favor patient unattended work. A value of 0 means unlimited/disabled
+# only where noted; loop and stagnation guards stay finite by default.
+DEFAULT_COMMAND_TIMEOUT_SECONDS=0                  # 0 disables whole-command timeout
+DEFAULT_MAX_ITERATIONS=0                           # 0 means infinite
+DEFAULT_MAX_SESSION_CYCLES=0                       # 0 means infinite across all phases
+DEFAULT_SESSION_TOKEN_BUDGET=0                     # 0 means unlimited
+DEFAULT_SESSION_TOKEN_RATE_CENTS_PER_MILLION=0     # 0 means no cost accounting
+DEFAULT_SESSION_COST_BUDGET_CENTS=0                # 0 means unlimited
+DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS=0            # 0 disables phase wall-clock limit
+DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS=45             # network timeout for single-file self-update fetch
+DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=60        # wait for concurrent startup self-update
+DEFAULT_RUN_AGENT_MAX_ATTEMPTS=6                   # transient engine hiccup retries per agent run
+DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=8            # exponential backoff base for inference retries
+DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS=900     # recycle hung engine runs after prolonged no-output stalls (0=disabled)
+DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=5            # phase-local completion attempts before backtracking/blocking
+DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=10
+DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=0           # 0 means unlimited adaptive backtracking reroutes
+DEFAULT_PHASE_PAIR_CYCLE_LIMIT=10                  # stop repeated A<->B phase bounces after this many consecutive crossings
+DEFAULT_CONFIDENCE_STAGNATION_LIMIT=10             # stop unchanged retry/routing signatures after this many repeats
+DEFAULT_SWARM_MAX_PARALLEL=2
+DEFAULT_CONFIDENCE_TARGET=85
+DEFAULT_SWARM_CONSENSUS_TIMEOUT=600                # reviewer timeout; explicit CI presets can lower it
+DEFAULT_CONSENSUS_SCORE_THRESHOLD=70               # minimum avg score for consensus/handoff to pass
+DEFAULT_CONSENSUS_CLEAN_GO_SCORE_FLOOR=80          # non-explicit high thresholds may relax to this on clean unanimous GO
+DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS=6               # startup/loop readiness attempts before refusing to proceed
+DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS=5        # exponential backoff base
+DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT=20               # seconds to wait for smoke-test canary response
 DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=90       # suppress duplicate notification events in a short window
 DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES=10        # reminder cadence for ongoing incident series
-DEFAULT_NOTIFICATION_WIZARD_BOOTSTRAPPED="false"  # first-deploy notification setup prompt sentinel
-DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS=0            # Default: disabled; enable for CI with presets below
 # Preset hints (not enforced):
 #   CI_SAFE: PHASE_COMPLETION_MAX_ATTEMPTS=2, PHASE_WALLCLOCK_LIMIT_SECONDS=900, COMMAND_TIMEOUT_SECONDS=600, SWARM_CONSENSUS_TIMEOUT=240
 #   IMPATIENT: PHASE_COMPLETION_MAX_ATTEMPTS=1, PHASE_WALLCLOCK_LIMIT_SECONDS=300, COMMAND_TIMEOUT_SECONDS=300, PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
@@ -1557,9 +1604,9 @@ AUTO_UPDATE_TIMEOUT_SECONDS="${AUTO_UPDATE_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE
 AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"
 PHASE_WALLCLOCK_LIMIT_SECONDS="${PHASE_WALLCLOCK_LIMIT_SECONDS:-$DEFAULT_PHASE_WALLCLOCK_LIMIT_SECONDS}"
 RALPHIE_QUALITY_LEVEL="${RALPHIE_QUALITY_LEVEL:-$DEFAULT_RALPHIE_QUALITY_LEVEL}"
-SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-2}"
-CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-85}"
-CONFIDENCE_STAGNATION_LIMIT="${CONFIDENCE_STAGNATION_LIMIT:-3}"
+SWARM_MAX_PARALLEL="${SWARM_MAX_PARALLEL:-$DEFAULT_SWARM_MAX_PARALLEL}"
+CONFIDENCE_TARGET="${CONFIDENCE_TARGET:-$DEFAULT_CONFIDENCE_TARGET}"
+CONFIDENCE_STAGNATION_LIMIT="${CONFIDENCE_STAGNATION_LIMIT:-$DEFAULT_CONFIDENCE_STAGNATION_LIMIT}"
 AUTO_PLAN_BACKFILL_ON_IDLE_BUILD="${AUTO_PLAN_BACKFILL_ON_IDLE_BUILD:-true}"
 AUTO_ENGINE_PREFERENCE="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
 AUTO_INIT_GIT_IF_MISSING="${AUTO_INIT_GIT_IF_MISSING:-$DEFAULT_AUTO_INIT_GIT_IF_MISSING}"
@@ -1580,6 +1627,7 @@ PHASE_COMPLETION_MAX_ATTEMPTS="${PHASE_COMPLETION_MAX_ATTEMPTS:-$DEFAULT_PHASE_C
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${PHASE_COMPLETION_RETRY_VERBOSE:-$DEFAULT_PHASE_COMPLETION_RETRY_VERBOSE}"
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${MAX_CONSENSUS_ROUTING_ATTEMPTS:-$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS}"
+PHASE_PAIR_CYCLE_LIMIT="${PHASE_PAIR_CYCLE_LIMIT:-$DEFAULT_PHASE_PAIR_CYCLE_LIMIT}"
 REQUIRE_LINT_BEFORE_DONE="${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
 REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
@@ -1603,6 +1651,7 @@ MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX="${MARKDOWN_LOCAL_PATH_ALLOWLIST_REGEX:-$DEF
 PHASE_MANIFEST_MODE="${PHASE_MANIFEST_MODE:-$DEFAULT_PHASE_MANIFEST_MODE}"
 SWARM_CONSENSUS_TIMEOUT="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
 CONSENSUS_SCORE_THRESHOLD="${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
+CONSENSUS_CLEAN_GO_SCORE_FLOOR="${CONSENSUS_CLEAN_GO_SCORE_FLOOR:-$DEFAULT_CONSENSUS_CLEAN_GO_SCORE_FLOOR}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
 ENGINE_HEALTH_RETRY_VERBOSE="${ENGINE_HEALTH_RETRY_VERBOSE:-$DEFAULT_ENGINE_HEALTH_RETRY_VERBOSE}"
@@ -1626,6 +1675,9 @@ TG_CHAT_ID="${TG_CHAT_ID:-}"
 CHUTES_API_KEY="${CHUTES_API_KEY:-}"
 
 if [ -f "$CONFIG_FILE" ]; then
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?(RALPHIE_)?CONSENSUS_SCORE_THRESHOLD[[:space:]]*=' "$CONFIG_FILE" 2>/dev/null; then
+        CONSENSUS_SCORE_THRESHOLD_EXPLICIT=true
+    fi
     load_config_file_safe "$CONFIG_FILE"
 fi
 
@@ -1647,11 +1699,15 @@ PHASE_COMPLETION_MAX_ATTEMPTS="${RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS:-$PHASE_C
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${RALPHIE_PHASE_COMPLETION_RETRY_VERBOSE:-$PHASE_COMPLETION_RETRY_VERBOSE}"
 MAX_CONSENSUS_ROUTING_ATTEMPTS="${RALPHIE_MAX_CONSENSUS_ROUTING_ATTEMPTS:-$MAX_CONSENSUS_ROUTING_ATTEMPTS}"
+PHASE_PAIR_CYCLE_LIMIT="${RALPHIE_PHASE_PAIR_CYCLE_LIMIT:-$PHASE_PAIR_CYCLE_LIMIT}"
 REQUIRE_LINT_BEFORE_DONE="${RALPHIE_REQUIRE_LINT_BEFORE_DONE:-$REQUIRE_LINT_BEFORE_DONE}"
 REQUIRE_DOCUMENT_BEFORE_DONE="${RALPHIE_REQUIRE_DOCUMENT_BEFORE_DONE:-$REQUIRE_DOCUMENT_BEFORE_DONE}"
 REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE="${RALPHIE_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
 REQUIRE_PLAN_FRESHNESS_FOR_BUILD="${RALPHIE_REQUIRE_PLAN_FRESHNESS_FOR_BUILD:-$REQUIRE_PLAN_FRESHNESS_FOR_BUILD}"
 BACKLOG_SOURCES="${RALPHIE_BACKLOG_SOURCES:-$BACKLOG_SOURCES}"
+SWARM_MAX_PARALLEL="${RALPHIE_SWARM_MAX_PARALLEL:-$SWARM_MAX_PARALLEL}"
+CONFIDENCE_TARGET="${RALPHIE_CONFIDENCE_TARGET:-$CONFIDENCE_TARGET}"
+CONFIDENCE_STAGNATION_LIMIT="${RALPHIE_CONFIDENCE_STAGNATION_LIMIT:-$CONFIDENCE_STAGNATION_LIMIT}"
 SWARM_CONSENSUS_TIMEOUT="${RALPHIE_SWARM_CONSENSUS_TIMEOUT:-$SWARM_CONSENSUS_TIMEOUT}"
 ENGINE_HEALTH_MAX_ATTEMPTS="${RALPHIE_ENGINE_HEALTH_MAX_ATTEMPTS:-$ENGINE_HEALTH_MAX_ATTEMPTS}"
 ENGINE_HEALTH_RETRY_DELAY_SECONDS="${RALPHIE_ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
@@ -1697,6 +1753,7 @@ CLAUDE_MODEL="${RALPHIE_CLAUDE_MODEL:-${CLAUDE_MODEL:-}}"
 CLAUDE_THINKING_OVERRIDE="${RALPHIE_CLAUDE_THINKING_OVERRIDE:-$CLAUDE_THINKING_OVERRIDE}"
 STARTUP_OPERATIONAL_PROBE="${RALPHIE_STARTUP_OPERATIONAL_PROBE:-$STARTUP_OPERATIONAL_PROBE}"
 CONSENSUS_SCORE_THRESHOLD="${RALPHIE_CONSENSUS_SCORE_THRESHOLD:-$CONSENSUS_SCORE_THRESHOLD}"
+CONSENSUS_CLEAN_GO_SCORE_FLOOR="${RALPHIE_CONSENSUS_CLEAN_GO_SCORE_FLOOR:-$CONSENSUS_CLEAN_GO_SCORE_FLOOR}"
 ENGINE_OVERRIDES_BOOTSTRAPPED="${RALPHIE_ENGINE_OVERRIDES_BOOTSTRAPPED:-$ENGINE_OVERRIDES_BOOTSTRAPPED}"
 NOTIFICATIONS_ENABLED="${RALPHIE_NOTIFICATIONS_ENABLED:-$NOTIFICATIONS_ENABLED}"
 NOTIFY_TELEGRAM_ENABLED="${RALPHIE_NOTIFY_TELEGRAM_ENABLED:-$NOTIFY_TELEGRAM_ENABLED}"
@@ -1722,6 +1779,7 @@ if printenv PHASE_NOOP_POLICY_TEST >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOO
 if printenv PHASE_NOOP_POLICY_REFACTOR >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_REFACTOR >/dev/null 2>&1; then PHASE_NOOP_POLICY_REFACTOR_EXPLICIT=true; fi
 if printenv PHASE_NOOP_POLICY_LINT >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_LINT >/dev/null 2>&1; then PHASE_NOOP_POLICY_LINT_EXPLICIT=true; fi
 if printenv PHASE_NOOP_POLICY_DOCUMENT >/dev/null 2>&1 || printenv RALPHIE_PHASE_NOOP_POLICY_DOCUMENT >/dev/null 2>&1; then PHASE_NOOP_POLICY_DOCUMENT_EXPLICIT=true; fi
+if printenv CONSENSUS_SCORE_THRESHOLD >/dev/null 2>&1 || printenv RALPHIE_CONSENSUS_SCORE_THRESHOLD >/dev/null 2>&1; then CONSENSUS_SCORE_THRESHOLD_EXPLICIT=true; fi
 
 # Validate engine selection
 ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
@@ -1770,7 +1828,7 @@ if ! is_number "$AUTO_UPDATE_TIMEOUT_SECONDS" || [ "$AUTO_UPDATE_TIMEOUT_SECONDS
     AUTO_UPDATE_TIMEOUT_SECONDS="$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS"
 fi
 
-if ! is_number "$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS"; then
+if ! is_number "$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS" || [ "$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS" -lt 0 ]; then
     warn "Invalid AUTO_UPDATE_LOCK_TIMEOUT_SECONDS '$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS'. Falling back to '$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS'."
     AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS"
 fi
@@ -1844,6 +1902,10 @@ esac
 if ! is_number "$CONSENSUS_SCORE_THRESHOLD" || [ "$CONSENSUS_SCORE_THRESHOLD" -lt 0 ] || [ "$CONSENSUS_SCORE_THRESHOLD" -gt 100 ]; then
     warn "Invalid CONSENSUS_SCORE_THRESHOLD '$CONSENSUS_SCORE_THRESHOLD'. Falling back to '$DEFAULT_CONSENSUS_SCORE_THRESHOLD'."
     CONSENSUS_SCORE_THRESHOLD="$DEFAULT_CONSENSUS_SCORE_THRESHOLD"
+fi
+if ! is_number "$CONSENSUS_CLEAN_GO_SCORE_FLOOR" || [ "$CONSENSUS_CLEAN_GO_SCORE_FLOOR" -lt 0 ] || [ "$CONSENSUS_CLEAN_GO_SCORE_FLOOR" -gt 100 ]; then
+    warn "Invalid CONSENSUS_CLEAN_GO_SCORE_FLOOR '$CONSENSUS_CLEAN_GO_SCORE_FLOOR'. Falling back to '$DEFAULT_CONSENSUS_CLEAN_GO_SCORE_FLOOR'."
+    CONSENSUS_CLEAN_GO_SCORE_FLOOR="$DEFAULT_CONSENSUS_CLEAN_GO_SCORE_FLOOR"
 fi
 
 REQUIRE_LINT_BEFORE_DONE="$(to_lower "$REQUIRE_LINT_BEFORE_DONE")"
@@ -2018,6 +2080,8 @@ LAST_CONSENSUS_NEXT_PHASE="done"
 LAST_CONSENSUS_NEXT_PHASE_REASON="no consensus recommendation"
 LAST_CONSENSUS_RESPONDED_VOTES=0
 LAST_CONSENSUS_NEXT_PHASE_VOTES=0
+LAST_CONSENSUS_GO_VOTES=0
+LAST_CONSENSUS_BLOCKING_GAP_VOTES=0
 LAST_CONSENSUS_FAILURE_KIND="none"
 LAST_CONSENSUS_FAILURE_REASON=""
 LAST_DONE_GUARD_REASON=""
@@ -2351,7 +2415,7 @@ self_update_check_and_reexec() {
     }
     chmod 700 "$update_dir" 2>/dev/null || true
     update_lock_dir="$update_dir/update.lock"
-    if ! self_update_acquire_lock "$update_lock_dir" "${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-30}"; then
+    if ! self_update_acquire_lock "$update_lock_dir" "${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"; then
         warn "Auto-update skipped: another Ralphie self-update is still in progress."
         return 0
     fi
@@ -2383,7 +2447,7 @@ self_update_check_and_reexec() {
     }
 
     info "Auto-update: checking remote ralphie.sh from $(redact_endpoint_for_log "$update_url")."
-    if ! self_update_download_to_file "$update_url" "$tmp_candidate" "${AUTO_UPDATE_TIMEOUT_SECONDS:-20}"; then
+    if ! self_update_download_to_file "$update_url" "$tmp_candidate" "${AUTO_UPDATE_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS}"; then
         warn "Auto-update skipped: failed to fetch remote ralphie.sh."
         rm -f "$tmp_candidate"
         self_update_release_lock "$update_lock_dir"
@@ -3416,23 +3480,18 @@ ensure_project_bootstrap() {
     if [ "$REBOOTSTRAP_REQUESTED" = true ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ] || ! bootstrap_context_is_valid; then
         needs_prompt="true"
     fi
-    if is_tty_input_available && [ "$existing_interactive_prompted" = "false" ] && [ -f "$PROJECT_BOOTSTRAP_FILE" ]; then
-        needs_prompt="true"
-    fi
 
     if [ "$needs_prompt" = "true" ]; then
         if [ -f "$PROJECT_BOOTSTRAP_FILE" ] && ! bootstrap_context_is_valid; then
             warn "Existing project bootstrap file is invalid or incomplete. Rebuilding context."
         elif [ "$REBOOTSTRAP_REQUESTED" = true ]; then
             warn "Rebuilding project bootstrap context due to --rebootstrap request."
-        elif is_tty_input_available && [ "$existing_interactive_prompted" = "false" ]; then
-            info "Previous bootstrap was collected non-interactively; refreshing bootstrap context now."
         fi
     fi
 
     if is_true "$needs_prompt" && is_tty_input_available; then
         interactive_source="true"
-        if [ "$REBOOTSTRAP_REQUESTED" = true ] || ! bootstrap_context_is_valid || [ "$existing_interactive_prompted" = "false" ] || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        if [ "$REBOOTSTRAP_REQUESTED" = true ] || ! bootstrap_context_is_valid || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
             if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "n")" = "true" ]; then
                 project_type="new"
             fi
@@ -5603,10 +5662,10 @@ run_agent_with_prompt() {
     local max_run_attempts="${RUN_AGENT_MAX_ATTEMPTS}"
     local retry_delay="${RUN_AGENT_RETRY_DELAY_SECONDS}"
     if ! is_number "$max_run_attempts" || [ "$max_run_attempts" -lt 1 ]; then
-        max_run_attempts=3
+        max_run_attempts="$DEFAULT_RUN_AGENT_MAX_ATTEMPTS"
     fi
     if ! is_number "$retry_delay" || [ "$retry_delay" -lt 0 ]; then
-        retry_delay=5
+        retry_delay="$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS"
     fi
 
     while [ "$attempt" -le "$max_run_attempts" ]; do
@@ -5942,6 +6001,8 @@ run_swarm_consensus() {
     LAST_CONSENSUS_NEXT_PHASE_REASON="insufficient consensus responses"
     LAST_CONSENSUS_RESPONDED_VOTES=0
     LAST_CONSENSUS_NEXT_PHASE_VOTES=0
+    LAST_CONSENSUS_GO_VOTES=0
+    LAST_CONSENSUS_BLOCKING_GAP_VOTES=0
     LAST_CONSENSUS_FAILURE_KIND="none"
     LAST_CONSENSUS_FAILURE_REASON=""
     mkdir -p "$consensus_dir"
@@ -6069,7 +6130,7 @@ run_swarm_consensus() {
         fi
     done
     # Wait for all reviewers with a safety timeout to prevent infinite hangs
-    local swarm_timeout="${SWARM_CONSENSUS_TIMEOUT:-600}"
+    local swarm_timeout="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
     is_number "$swarm_timeout" || swarm_timeout=600
     local swarm_start swarm_elapsed
     swarm_start="$(date +%s)"
@@ -6111,6 +6172,7 @@ run_swarm_consensus() {
 
     local total_score=0
     local go_votes=0
+    local blocking_gap_votes=0
     local responded_votes=0
     local required_votes="$count"
     local avg_score=0
@@ -6180,6 +6242,9 @@ run_swarm_consensus() {
         fi
 
         [ "$status" = "success" ] && [ "$verdict" = "GO" ] && go_votes=$((go_votes + 1))
+        if [ "$status" = "success" ] && review_gaps_are_blocking "$verdict_gaps"; then
+            blocking_gap_votes=$((blocking_gap_votes + 1))
+        fi
         summary_lines+=("reviewer_$((idx + 1)):engine=$engine status=$status score=$score verdict=$verdict next=$next_phase reason=$next_phase_reason gaps=$verdict_gaps")
         idx=$((idx + 1))
     done
@@ -6255,13 +6320,19 @@ run_swarm_consensus() {
     LAST_CONSENSUS_NEXT_PHASE_REASON="$next_phase_vote_reason"
     LAST_CONSENSUS_RESPONDED_VOTES="$responded_votes"
     LAST_CONSENSUS_NEXT_PHASE_VOTES="$highest_next_votes"
+    LAST_CONSENSUS_GO_VOTES="$go_votes"
+    LAST_CONSENSUS_BLOCKING_GAP_VOTES="$blocking_gap_votes"
     LAST_CONSENSUS_SCORE="$avg_score"
     if [ "${#summary_lines[@]}" -gt 0 ]; then
         LAST_CONSENSUS_SUMMARY="$(printf '%s; ' "${summary_lines[@]}")"
     else
         LAST_CONSENSUS_SUMMARY=""
     fi
-    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$avg_score" -ge "$CONSENSUS_SCORE_THRESHOLD" ]; then
+    local clean_consensus_go=false
+    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$blocking_gap_votes" -eq 0 ]; then
+        clean_consensus_go=true
+    fi
+    if [ "$responded_votes" -ge "$required_votes" ] && [ "$go_votes" -ge "$required_votes" ] && [ "$blocking_gap_votes" -eq 0 ] && review_score_passes_threshold "$avg_score" "$clean_consensus_go"; then
         LAST_CONSENSUS_PASS=true
         LAST_CONSENSUS_FAILURE_KIND="none"
         LAST_CONSENSUS_FAILURE_REASON=""
@@ -6276,7 +6347,7 @@ run_swarm_consensus() {
             LAST_CONSENSUS_FAILURE_REASON="insufficient reviewer responses ($responded_votes/$required_votes)"
         else
             LAST_CONSENSUS_FAILURE_KIND="quality"
-            LAST_CONSENSUS_FAILURE_REASON="consensus HOLD (go_votes=$go_votes/$required_votes, avg_score=$avg_score, threshold=$CONSENSUS_SCORE_THRESHOLD)"
+            LAST_CONSENSUS_FAILURE_REASON="consensus HOLD (go_votes=$go_votes/$required_votes, blocking_gaps=$blocking_gap_votes/$responded_votes, avg_score=$avg_score, threshold=$CONSENSUS_SCORE_THRESHOLD)"
         fi
     fi
     ACTIVE_ENGINE="$saved_engine"
@@ -6418,11 +6489,15 @@ run_handoff_validation() {
         [ "$status" = "success" ] || status="failure"
     fi
 
-    if [ "$status" = "success" ] && is_number "$LAST_HANDOFF_SCORE" && [ "$LAST_HANDOFF_SCORE" -ge "$CONSENSUS_SCORE_THRESHOLD" ] && [ "$LAST_HANDOFF_VERDICT" = "GO" ]; then
+    local handoff_clean_go=false
+    if [ "$LAST_HANDOFF_VERDICT" = "GO" ] && ! review_gaps_are_blocking "$LAST_HANDOFF_GAPS"; then
+        handoff_clean_go=true
+    fi
+    if [ "$status" = "success" ] && is_number "$LAST_HANDOFF_SCORE" && [ "$LAST_HANDOFF_VERDICT" = "GO" ] && ! review_gaps_are_blocking "$LAST_HANDOFF_GAPS" && review_score_passes_threshold "$LAST_HANDOFF_SCORE" "$handoff_clean_go"; then
         return 0
     fi
 
-    log_reason_code "RB_PHASE_HANDOFF_VALIDATOR_HOLD" "Handoff validation failed for $phase (score=${LAST_HANDOFF_SCORE}, verdict=${LAST_HANDOFF_VERDICT})"
+    log_reason_code "RB_PHASE_HANDOFF_VALIDATOR_HOLD" "Handoff validation failed for $phase (score=${LAST_HANDOFF_SCORE}, verdict=${LAST_HANDOFF_VERDICT}, gaps=${LAST_HANDOFF_GAPS})"
     return 1
 }
 
@@ -6701,7 +6776,11 @@ consensus_clean_terminal_hold_reroute_allowed() {
     [ "${LAST_CONSENSUS_FAILURE_KIND:-}" = "none" ] || return 1
     is_number "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" || return 1
     is_number "${LAST_CONSENSUS_NEXT_PHASE_VOTES:-0}" || return 1
+    is_number "${LAST_CONSENSUS_GO_VOTES:-0}" || return 1
+    is_number "${LAST_CONSENSUS_BLOCKING_GAP_VOTES:-0}" || return 1
     [ "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" -eq "$(get_reviewer_count)" ] || return 1
+    [ "${LAST_CONSENSUS_GO_VOTES:-0}" -eq "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" ] || return 1
+    [ "${LAST_CONSENSUS_BLOCKING_GAP_VOTES:-0}" -eq 0 ] || return 1
     [ "${LAST_CONSENSUS_NEXT_PHASE_VOTES:-0}" -eq "${LAST_CONSENSUS_RESPONDED_VOTES:-0}" ] || return 1
 
     if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 && git_has_local_changes; then
@@ -7198,6 +7277,12 @@ markdown_has_unchecked_local_tasks() {
                 if (lower ~ /open[[:space:]]*\[[[:space:]]*external[[:space:]]*\]/ || lower ~ /external-only/ || lower ~ /\[[[:space:]]*external[[:space:]]*\]/) {
                     next
                 }
+                if (lower ~ /operator[[:space:]\/-]*(proof|product|decision|security|risk|window)|authorized.*(credentials|live|proof)|live[[:space:]-]+proof|proof[[:space:]-]+window|policy[[:space:]-]+decision|residual[[:space:]-]+risk|external[[:space:]-]+proof|separate[[:space:]-]+proof[[:space:]-]+window/) {
+                    next
+                }
+                if (lower ~ /future/ && lower ~ /(if|when|after|once|later|exposes?|creates?|requires?)/) {
+                    next
+                }
                 print
             }
         ' "$markdown_file" 2>/dev/null || true
@@ -7328,6 +7413,21 @@ record_plan_freshness_checkpoint() {
 plan_has_unchecked_local_tasks() {
     local plan_file="${1:-$PLAN_FILE}"
     markdown_has_unchecked_local_tasks "$plan_file"
+}
+
+plan_has_terminal_or_handoff_intent() {
+    local plan_file="${1:-$PLAN_FILE}"
+    [ -f "$plan_file" ] || return 1
+
+    grep -qiE '(no[[:space:]]+(local|code|implementation|repository|repo)[[:space:]]+(changes?|tasks?|work|actions?)|no[[:space:]]+actionable[[:space:]]+(local[[:space:]]+)?(tasks?|work|changes?)|nothing[[:space:]]+to[[:space:]]+(build|implement|change)|already[[:space:]]+(complete|done|satisfied)|external[-[:space:]]+only|external[[:space:]]+(handoff|queue|dependency|blocker)|handoff[-[:space:]]+ready|ready[[:space:]]+for[[:space:]]+handoff)' "$plan_file" 2>/dev/null
+}
+
+project_terminal_or_handoff_ready() {
+    plan_has_terminal_or_handoff_intent "$PLAN_FILE" || return 1
+    if is_true "$REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE" && backlog_has_unchecked_local_tasks; then
+        return 1
+    fi
+    return 0
 }
 
 backlog_has_unchecked_local_tasks() {
@@ -7478,6 +7578,13 @@ enforce_terminal_done_requirements() {
         document_satisfied=true
     fi
 
+    if is_true "$current_phase_passed" && project_terminal_or_handoff_ready; then
+        LAST_DONE_GUARD_NEXT_PHASE="done"
+        LAST_DONE_GUARD_REASON="terminal guard allowed done: plan declares no local work or handoff-ready state and local backlog is clear"
+        echo "done"
+        return 0
+    fi
+
     if [ "$test_satisfied" != "true" ]; then
         missing_required+=("test")
     fi
@@ -7535,6 +7642,28 @@ phase_index_or_done() {
         done) echo 6; return 0 ;;
         *) echo -1; return 1 ;;
     esac
+}
+
+phase_pair_cycle_key() {
+    local phase_a="${1:-}"
+    local phase_b="${2:-}"
+    local index_a index_b
+
+    [ -n "$phase_a" ] && [ -n "$phase_b" ] || return 1
+    [ "$phase_a" != "$phase_b" ] || return 1
+    [ "$phase_a" != "done" ] && [ "$phase_b" != "done" ] || return 1
+    is_phase_or_done "$phase_a" && is_phase_or_done "$phase_b" || return 1
+
+    index_a="$(phase_index_or_done "$phase_a")"
+    index_b="$(phase_index_or_done "$phase_b")"
+    is_number "$index_a" && is_number "$index_b" || return 1
+    [ "$index_a" -ge 0 ] && [ "$index_b" -ge 0 ] || return 1
+
+    if [ "$index_a" -le "$index_b" ]; then
+        printf '%s<->%s' "$phase_a" "$phase_b"
+    else
+        printf '%s<->%s' "$phase_b" "$phase_a"
+    fi
 }
 
 phase_transition_history_append() {
@@ -8107,6 +8236,7 @@ plan_is_semantically_actionable() {
 
     local has_goal=false
     local has_validation=false
+    local has_action_path=false
     local task_count=0
 
     if grep -qiE '(^|#{1,6}[[:space:]]*)(goal|scope|objectives?|overview|context)\b|^[[:space:]]*(goal|scope|objectives?|overview|context)[[:space:]]*:' "$plan_file" 2>/dev/null; then
@@ -8119,8 +8249,11 @@ plan_is_semantically_actionable() {
         has_validation=true
     fi
     task_count="$(plan_task_count "$plan_file")"
+    if [ "${task_count:-0}" -ge 1 ] || plan_has_terminal_or_handoff_intent "$plan_file"; then
+        has_action_path=true
+    fi
 
-    if is_true "$has_goal" && is_true "$has_validation" && [ "${task_count:-0}" -ge 1 ]; then
+    if is_true "$has_goal" && is_true "$has_validation" && is_true "$has_action_path"; then
         return 0
     fi
     return 1
@@ -8282,7 +8415,7 @@ Outputs (required)
 - `research/DEPENDENCY_RESEARCH.md` documenting stack components and alternatives.
 - `research/COVERAGE_MATRIX.md` with coverage against goals.
 - `research/STACK_SNAPSHOT.md` with ranked stack hypotheses, deterministic confidence score, and alternatives.
-- `IMPLEMENTATION_PLAN.md` with goal, validation criteria, and actionable tasks.
+- `IMPLEMENTATION_PLAN.md` with goal, validation criteria, and actionable tasks; if there is no local implementation work, state the no-local-work or handoff-ready conclusion explicitly.
 - If `IMPLEMENTATION_PLAN.md` contains `ralphie_fallback_placeholder: true`, replace it with a project-specific plan and remove that marker before declaring PLAN complete.
 - `consensus/build_gate.md` if needed for blockers.
 
@@ -8681,7 +8814,7 @@ build_phase_prompt_with_feedback() {
                 echo "- $blocker"
             done
             if [ "$phase" = "plan" ] && printf '%s\n' "${failures[@]}" | grep -qi "plan is not semantically actionable"; then
-                echo "- Plan gate contract: include an explicit Goal section, an Acceptance Criteria/Validation section, and actionable checklist tasks ('- [ ]')."
+                echo "- Plan gate contract: include an explicit Goal section, Acceptance Criteria/Validation, and either actionable checklist tasks ('- [ ]') or a clear no-local-work / handoff-ready conclusion."
             fi
         fi
         echo "- Preserve existing work; only generate missing/repairable artifacts and rerun this phase."
@@ -8760,6 +8893,8 @@ print_session_config_banner() {
     info "auto_update_url: $(redact_endpoint_for_log "$AUTO_UPDATE_URL")"
     info "auto_update_allow_dirty: ${AUTO_UPDATE_ALLOW_DIRTY:-$DEFAULT_AUTO_UPDATE_ALLOW_DIRTY}"
     info "auto_update_allow_insecure: ${AUTO_UPDATE_ALLOW_INSECURE:-$DEFAULT_AUTO_UPDATE_ALLOW_INSECURE}"
+    info "auto_update_timeout_seconds: ${AUTO_UPDATE_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_TIMEOUT_SECONDS}"
+    info "auto_update_lock_timeout_seconds: ${AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"
     info "max_session_cycles: ${MAX_SESSION_CYCLES:-0} (0=unlimited)"
     info "session_token_budget: ${SESSION_TOKEN_BUDGET:-0} (0=unlimited)"
     info "session_token_rate_cents_per_million: ${SESSION_TOKEN_RATE_CENTS_PER_MILLION:-0}"
@@ -8772,6 +8907,9 @@ print_session_config_banner() {
     info "run_agent_retry_delay_seconds: ${RUN_AGENT_RETRY_DELAY_SECONDS:-0}"
     info "run_agent_retry_verbose: ${RUN_AGENT_RETRY_VERBOSE:-false}"
     info "engine_idle_output_timeout_seconds: $(phase_attempt_limit_display "${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-0}")"
+    info "engine_health_max_attempts: ${ENGINE_HEALTH_MAX_ATTEMPTS:-$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS}"
+    info "engine_health_retry_delay_seconds: ${ENGINE_HEALTH_RETRY_DELAY_SECONDS:-$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS}"
+    info "engine_smoke_test_timeout: ${ENGINE_SMOKE_TEST_TIMEOUT:-$DEFAULT_ENGINE_SMOKE_TEST_TIMEOUT}"
     info "auto_init_git_if_missing: ${AUTO_INIT_GIT_IF_MISSING:-false}"
     info "auto_commit_on_phase_pass: ${AUTO_COMMIT_ON_PHASE_PASS:-false}"
     info "auto_engine_preference: ${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
@@ -8802,8 +8940,14 @@ print_session_config_banner() {
     info "chutes_speed: ${NOTIFY_CHUTES_SPEED:-$DEFAULT_NOTIFY_CHUTES_SPEED}"
     info "startup_operational_probe: ${STARTUP_OPERATIONAL_PROBE:-$DEFAULT_STARTUP_OPERATIONAL_PROBE}"
     info "engine_output_to_stdout: ${ENGINE_OUTPUT_TO_STDOUT:-true}"
-    info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0}"
+    info "max_consensus_routing_attempts: ${MAX_CONSENSUS_ROUTING_ATTEMPTS:-0} (0=unlimited backtracking reroutes)"
+    info "phase_pair_cycle_limit: ${PHASE_PAIR_CYCLE_LIMIT:-$DEFAULT_PHASE_PAIR_CYCLE_LIMIT} (0=disabled)"
+    info "confidence_stagnation_limit: ${CONFIDENCE_STAGNATION_LIMIT:-$DEFAULT_CONFIDENCE_STAGNATION_LIMIT}"
+    info "swarm_consensus_timeout: ${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
+    info "swarm_max_parallel: ${SWARM_MAX_PARALLEL:-$DEFAULT_SWARM_MAX_PARALLEL}"
+    info "confidence_target: ${CONFIDENCE_TARGET:-$DEFAULT_CONFIDENCE_TARGET}"
     info "consensus_score_threshold: ${CONSENSUS_SCORE_THRESHOLD:-$DEFAULT_CONSENSUS_SCORE_THRESHOLD}"
+    info "consensus_clean_go_score_floor: ${CONSENSUS_CLEAN_GO_SCORE_FLOOR:-$DEFAULT_CONSENSUS_CLEAN_GO_SCORE_FLOOR} (threshold_explicit=${CONSENSUS_SCORE_THRESHOLD_EXPLICIT:-false})"
     info "require_lint_before_done: ${REQUIRE_LINT_BEFORE_DONE:-$DEFAULT_REQUIRE_LINT_BEFORE_DONE}"
     info "require_document_before_done: ${REQUIRE_DOCUMENT_BEFORE_DONE:-$DEFAULT_REQUIRE_DOCUMENT_BEFORE_DONE}"
     info "require_plan_backlog_clear_before_done: ${REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE:-$DEFAULT_REQUIRE_PLAN_BACKLOG_CLEAR_BEFORE_DONE}"
@@ -8881,16 +9025,37 @@ main() {
         MAX_SESSION_CYCLES=0
     fi
     if ! is_number "$PHASE_COMPLETION_MAX_ATTEMPTS" || [ "$PHASE_COMPLETION_MAX_ATTEMPTS" -lt 0 ]; then
-        PHASE_COMPLETION_MAX_ATTEMPTS=3
+        PHASE_COMPLETION_MAX_ATTEMPTS="$DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS"
     fi
     if ! is_number "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" || [ "$PHASE_COMPLETION_RETRY_DELAY_SECONDS" -lt 0 ]; then
-        PHASE_COMPLETION_RETRY_DELAY_SECONDS=5
+        PHASE_COMPLETION_RETRY_DELAY_SECONDS="$DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS"
+    fi
+    if ! is_number "$RUN_AGENT_MAX_ATTEMPTS" || [ "$RUN_AGENT_MAX_ATTEMPTS" -lt 1 ]; then
+        RUN_AGENT_MAX_ATTEMPTS="$DEFAULT_RUN_AGENT_MAX_ATTEMPTS"
+    fi
+    if ! is_number "$RUN_AGENT_RETRY_DELAY_SECONDS" || [ "$RUN_AGENT_RETRY_DELAY_SECONDS" -lt 0 ]; then
+        RUN_AGENT_RETRY_DELAY_SECONDS="$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS"
+    fi
+    if ! is_number "$ENGINE_HEALTH_MAX_ATTEMPTS" || [ "$ENGINE_HEALTH_MAX_ATTEMPTS" -lt 1 ]; then
+        ENGINE_HEALTH_MAX_ATTEMPTS="$DEFAULT_ENGINE_HEALTH_MAX_ATTEMPTS"
+    fi
+    if ! is_number "$ENGINE_HEALTH_RETRY_DELAY_SECONDS" || [ "$ENGINE_HEALTH_RETRY_DELAY_SECONDS" -lt 0 ]; then
+        ENGINE_HEALTH_RETRY_DELAY_SECONDS="$DEFAULT_ENGINE_HEALTH_RETRY_DELAY_SECONDS"
+    fi
+    if ! is_number "$SWARM_MAX_PARALLEL" || [ "$SWARM_MAX_PARALLEL" -lt 1 ]; then
+        SWARM_MAX_PARALLEL="$DEFAULT_SWARM_MAX_PARALLEL"
+    fi
+    if ! is_number "$CONFIDENCE_TARGET" || [ "$CONFIDENCE_TARGET" -lt 0 ] || [ "$CONFIDENCE_TARGET" -gt 100 ]; then
+        CONFIDENCE_TARGET="$DEFAULT_CONFIDENCE_TARGET"
     fi
     if ! is_number "$CONFIDENCE_STAGNATION_LIMIT" || [ "$CONFIDENCE_STAGNATION_LIMIT" -lt 1 ]; then
-        CONFIDENCE_STAGNATION_LIMIT=3
+        CONFIDENCE_STAGNATION_LIMIT="$DEFAULT_CONFIDENCE_STAGNATION_LIMIT"
     fi
     if ! is_number "$MAX_CONSENSUS_ROUTING_ATTEMPTS" || [ "$MAX_CONSENSUS_ROUTING_ATTEMPTS" -lt 0 ]; then
         MAX_CONSENSUS_ROUTING_ATTEMPTS="$DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS"
+    fi
+    if ! is_number "$PHASE_PAIR_CYCLE_LIMIT" || [ "$PHASE_PAIR_CYCLE_LIMIT" -lt 0 ]; then
+        PHASE_PAIR_CYCLE_LIMIT="$DEFAULT_PHASE_PAIR_CYCLE_LIMIT"
     fi
     if ! is_number "$MAX_ITERATIONS" || [ "$MAX_ITERATIONS" -lt 0 ]; then
         MAX_ITERATIONS=0
@@ -8979,6 +9144,8 @@ main() {
     local consensus_route_count=0
     local routing_stagnation_signature=""
     local routing_stagnation_count=0
+    local routing_pair_cycle_key=""
+    local routing_pair_cycle_count=0
     local engine_override_bootstrap_checked="false"
     local notification_wizard_bootstrap_checked="false"
     local session_start_notified="false"
@@ -9405,8 +9572,8 @@ main() {
                             local consensus_failure_reason
                             local consensus_stagnation_limit
                             consensus_failure_reason="${LAST_CONSENSUS_FAILURE_REASON:-infrastructure failure}"
-                            consensus_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-3}"
-                            is_number "$consensus_stagnation_limit" || consensus_stagnation_limit=3
+                            consensus_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-$DEFAULT_CONFIDENCE_STAGNATION_LIMIT}"
+                            is_number "$consensus_stagnation_limit" || consensus_stagnation_limit="$DEFAULT_CONFIDENCE_STAGNATION_LIMIT"
                             if [ "$consensus_stagnation_limit" -lt 1 ]; then
                                 consensus_stagnation_limit=1
                             fi
@@ -9581,8 +9748,8 @@ main() {
                         phase_stagnation_signature="$failure_signature"
                         phase_stagnation_count=1
                     fi
-                    phase_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-3}"
-                    is_number "$phase_stagnation_limit" || phase_stagnation_limit=3
+                    phase_stagnation_limit="${CONFIDENCE_STAGNATION_LIMIT:-$DEFAULT_CONFIDENCE_STAGNATION_LIMIT}"
+                    is_number "$phase_stagnation_limit" || phase_stagnation_limit="$DEFAULT_CONFIDENCE_STAGNATION_LIMIT"
                     if [ "$phase_stagnation_limit" -lt 1 ]; then
                         phase_stagnation_limit=1
                     fi
@@ -9724,13 +9891,41 @@ main() {
                 if [ "$phase_next_target" = "done" ] || [ "$route_index" -ne "$expected_route_index" ]; then
                     notify_event "phase_decision" "reroute_pass" "phase=$phase rerouted_to=$phase_next_target reason=${phase_route_reason:-none}" || true
                 fi
+                local route_is_plan_freshness
+                route_is_plan_freshness="false"
+                case "${phase_route_reason:-}" in
+                    "plan refresh required:"*) route_is_plan_freshness="true" ;;
+                esac
+                if is_true "$route_is_plan_freshness"; then
+                    routing_pair_cycle_key=""
+                    routing_pair_cycle_count=0
+                else
+                    local current_pair_cycle_key
+                    current_pair_cycle_key="$(phase_pair_cycle_key "$phase" "$phase_next_target" 2>/dev/null || true)"
+                    if [ -n "$current_pair_cycle_key" ]; then
+                        if [ "$current_pair_cycle_key" = "$routing_pair_cycle_key" ]; then
+                            routing_pair_cycle_count=$((routing_pair_cycle_count + 1))
+                        else
+                            routing_pair_cycle_key="$current_pair_cycle_key"
+                            routing_pair_cycle_count=1
+                        fi
+                        if [ "$PHASE_PAIR_CYCLE_LIMIT" -gt 0 ] && [ "$routing_pair_cycle_count" -ge "$PHASE_PAIR_CYCLE_LIMIT" ]; then
+                            warn "PHASE ROUTING LOOP DETECTED: Ralphie crossed ${routing_pair_cycle_key} ${routing_pair_cycle_count} consecutive times."
+                            warn "Stopping instead of spinning. Resolve the blocker causing ${phase} -> ${phase_next_target}, then resume."
+                            log_reason_code "RB_PHASE_PAIR_ROUTING_LOOP" "phase pair ${routing_pair_cycle_key} repeated ${routing_pair_cycle_count}/${PHASE_PAIR_CYCLE_LIMIT} consecutive crossings; last route ${phase}->${phase_next_target}: ${phase_route_reason:-no explicit rationale}"
+                            write_gate_feedback "$phase" "phase-pair routing loop detected: ${routing_pair_cycle_key} repeated ${routing_pair_cycle_count}/${PHASE_PAIR_CYCLE_LIMIT}" "last route: ${phase} -> ${phase_next_target}" "reason: ${phase_route_reason:-no explicit rationale}"
+                            notify_event "session_error" "phase_pair_routing_loop" "pair=${routing_pair_cycle_key} count=${routing_pair_cycle_count}/${PHASE_PAIR_CYCLE_LIMIT} last=${phase}->${phase_next_target}" || true
+                            should_exit="true"
+                            PHASE_ATTEMPT_IN_PROGRESS="false"
+                            save_state_or_exit "phase-pair routing loop checkpoint ($phase->$phase_next_target)"
+                            break
+                        fi
+                    else
+                        routing_pair_cycle_key=""
+                        routing_pair_cycle_count=0
+                    fi
+                fi
                 if [ "$route_index" -lt "$phase_index" ]; then
-                    local route_is_plan_freshness
-                    route_is_plan_freshness="false"
-                    case "${phase_route_reason:-}" in
-                        "plan refresh required:"*) route_is_plan_freshness="true" ;;
-                    esac
-
                     if is_true "$route_is_plan_freshness"; then
                         routing_stagnation_signature=""
                         routing_stagnation_count=0
