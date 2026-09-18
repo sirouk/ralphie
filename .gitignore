@@ -1,13 +1,6 @@
-.env
-.env.*
-logs/
-consensus/
-completion_log/
+# Ralphie runtime state, created in whatever project Ralphie is planted in.
 .ralphie/
-HUMAN_INSTRUCTIONS.md
-research/HUMAN_FEEDBACK.md
-coverage/
-.nyc_output/
-htmlcov/
-tests/durability/artifacts/
-harness-mutation-audit.txt
+
+# Editor and OS noise
+.DS_Store
+*.swp
