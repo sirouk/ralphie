@@ -127,15 +127,28 @@ VERBOSE="${RALPHIE_VERBOSE:-0}"
 # than a noisy one.
 QUIET="${RALPHIE_QUIET:-0}"
 
-say()  { printf '%s\n' "$*"; }
+# A launcher can pass SIGPIPE as ignored (including CI runners). Bash cannot
+# install a trap for a signal ignored at exec, so check terminal writes too.
+# Do this after printf returns: bash 3.2 must retire its failed buffer before
+# EXIT forks command substitutions that write ledger data.
+terminal_printf() {
+    local code=0
+    printf "$@" || code=$?
+    if [ "$code" -ne 0 ] && [ -p /dev/stdout ]; then
+        on_pipe
+        return 141
+    fi
+    return "$code"
+}
+say()  { terminal_printf '%s\n' "$*"; }
 # The quiet guard is `||`, never `&& return`, so a suppressed line still
 # reports success. Several functions end on `[ ... ] && dim "..."`, and turning
 # a silenced line into a failed one would abort the run under `set -e`.
-info() { is_true "$QUIET" || printf '%s%s%s\n' "$C_BLU" "$*" "$C_OFF"; }
-good() { printf '%s%s%s\n' "$C_GRN" "$*" "$C_OFF"; }
+info() { is_true "$QUIET" || terminal_printf '%s%s%s\n' "$C_BLU" "$*" "$C_OFF"; }
+good() { terminal_printf '%s%s%s\n' "$C_GRN" "$*" "$C_OFF"; }
 warn() { printf '%s%s%s\n' "$C_YEL" "$*" "$C_OFF" >&2; }
 err()  { printf '%s%s%s\n' "$C_RED" "$*" "$C_OFF" >&2; }
-dim()  { is_true "$QUIET" || printf '%s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+dim()  { is_true "$QUIET" || terminal_printf '%s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 dbg()  { is_true "$VERBOSE" && printf '%s  . %s%s\n' "$C_DIM" "$*" "$C_OFF" >&2 || true; }
 die()  { err "ralphie: $*"; exit 1; }
 
@@ -874,7 +887,7 @@ on_exit() {
 
 on_int() {
     INTERRUPTED=1
-    printf '\n'
+    say ""
     warn "interrupted - finishing safely"
     if [ "$OWNS_RUN" = "1" ]; then
         # Whatever the engine wrote before the signal is Ralphie's work. Without
@@ -3671,7 +3684,7 @@ cycle_begin() {
     CY_MAY_COMMIT=1       # policy: is this cycle allowed to save its work?
     # The blank line is the banner's other half: under --quiet it would be the
     # only thing left of the separator, one empty line per cycle for ever.
-    is_true "$QUIET" || printf '\n'
+    is_true "$QUIET" || say ""
     info "── cycle $CY_N ─────────────────────────────────────────────"
     ensure_dirs
     # An agent that deletes .ralphie/ used to take the objective with it, and

@@ -3807,6 +3807,9 @@ fi
 if want "release-sigpipe"; then
     # Replay AUDIT14 C4 on bash 3.2: a closed reader must not poison EXIT's
     # command substitutions with buffered terminal output.
+    # Set ignore BEFORE exec, not after sourcing: Bash cannot undo inherited
+    # SIG_IGN, which is how GitHub runners exposed this on both Linux and macOS.
+    for pipe_mode in normal ignored; do
     for cut in 1 3 6; do
         d="$(new_project)"
         mkdir -p "$d/.ralphie"
@@ -3814,14 +3817,17 @@ if want "release-sigpipe"; then
         printf 'seed\n' > "$d/seed.txt"
         ( cd "$d" && git add -A && git commit -qm seed )
         make_mock_engine "$d/mock" nothing
-        ( cd "$d" && env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 NO_COLOR=1 \
+        ( cd "$d" || exit 1
+          [ "$pipe_mode" != ignored ] || trap '' PIPE
+          env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 NO_COLOR=1 \
             RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS="" MOCK_LAST_PROMPT="$d/prompt" \
             /bin/bash ./ralphie.sh --once --engine custom 'add a line' 2>/dev/null ) |
             head -n "$cut" >/dev/null
         rc=${PIPESTATUS[0]}
-        check "closed stdout ($cut lines) exits 141" "141" "$rc"
-        check "closed stdout ($cut lines) preserves ledger JSON" "0" "$(json_bad_lines "$d/.ralphie/events.jsonl")"
-        check_contains "closed stdout ($cut lines) records actual exit reason" '"code":"141"' "$(cat "$d/.ralphie/events.jsonl")"
+        check "closed stdout ($pipe_mode, $cut lines) exits 141" "141" "$rc"
+        check "closed stdout ($pipe_mode, $cut lines) preserves ledger JSON" "0" "$(json_bad_lines "$d/.ralphie/events.jsonl")"
+        check_contains "closed stdout ($pipe_mode, $cut lines) records actual exit reason" '"code":"141"' "$(cat "$d/.ralphie/events.jsonl")"
+    done
     done
 fi
 
