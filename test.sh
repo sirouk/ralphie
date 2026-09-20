@@ -19,7 +19,14 @@ TMPROOT="${TMPDIR:-/tmp}/ralphie-tests.$$"
 FILTER="${1:-}"
 # A floor, not a target. An unfiltered run that counts fewer than this has lost
 # results somewhere, whatever it prints. Raise it when the suite grows.
-MIN_EXPECTED_ASSERTIONS=550
+#
+# It is the LAST line of defence, not the first. Left at 550 against a suite of
+# 642, it allowed 92 assertions to vanish in silence -- and 18 duly did, when
+# one unbound variable aborted a group and the run still printed PASS. Two
+# stronger guards now sit in front of it: every result is counted twice through
+# independent paths and the totals must agree, and every `( load_lib ... )`
+# group must report that it reached its own end.
+MIN_EXPECTED_ASSERTIONS=655
 [ "$FILTER" = "-v" ] && { set -x; FILTER=""; }
 
 cleanup() { chmod -R u+w "$TMPROOT" 2>/dev/null; rm -rf "$TMPROOT" 2>/dev/null; }
@@ -36,10 +43,41 @@ dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
 # variables would let a failure inside a subshell print FAIL and still report
 # an all-green suite, which is the worst thing a test harness can do.
 TALLY="$TMPROOT/tally"; mkdir -p "$TALLY"
-ok()   { printf '%s\n' "$1" >> "$TALLY/pass"; printf '  \033[1;32mok\033[0m   %s\n' "$1"; }
-no()   { printf '%s\n' "$1" >> "$TALLY/fail"; printf '  \033[1;31mFAIL\033[0m %s\n       %s\n' "$1" "${2:-}"; }
-skip() { printf '%s\n' "$1" >> "$TALLY/skip"; printf '  \033[2m--   %s (%s)\033[0m\n' "$1" "${2:-}"; }
+# Deliberately OUTSIDE $TALLY: a result that could not be counted has to be
+# recorded somewhere that does not share the failure that lost it.
+LOST_FILE="$TMPROOT/results-that-could-not-be-counted"
+
+# EVERY result is counted TWICE: once in its own bucket, and once in `all`.
+# The two totals are compared at the end, and a disagreement fails the run.
+#
+# Measured, on this very suite: making `$TALLY/fail` a directory silenced every
+# failure -- the append failed, the FAIL line still printed on screen, and the
+# summary reported "PASS 642 passed" and exited 0, identical to a clean run.
+# Guarding only "did we count anything at all" protected the pass counter and
+# left the fail counter -- the one that matters -- completely unprotected.
+# A harness that can lose a failure is worse than no harness.
+_count() {
+    # Both counters live under $TALLY, so ONE permission change silences both
+    # and the comparison then reads 0 == 0 and reports success. Each write is
+    # therefore checked where it happens, and a failure drops a marker in a
+    # DIFFERENT directory -- the one thing the report can still believe.
+    local okc=0
+    printf '%s\n' "$2" >> "$TALLY/$1"      2>/dev/null || okc=1
+    printf '%s\n' "$1 $2" >> "$TALLY/all"  2>/dev/null || okc=1
+    [ "$okc" -eq 0 ] || printf '%s %s\n' "$1" "$2" >> "$LOST_FILE" 2>/dev/null || true
+}
+ok()   { _count pass "$1"; printf '  \033[1;32mok\033[0m   %s\n' "$1"; }
+no()   { _count fail "$1"; printf '  \033[1;31mFAIL\033[0m %s\n       %s\n' "$1" "${2:-}"; }
+skip() { _count skip "$1"; printf '  \033[2m--   %s (%s)\033[0m\n' "$1" "${2:-}"; }
 tally() { [ -f "$TALLY/$1" ] && wc -l < "$TALLY/$1" | tr -d ' \n' || printf '0'; }
+tally_kind() {
+    # `grep -c` prints 0 AND exits 1 when nothing matches, so a `|| printf 0`
+    # fallback appends a SECOND zero and the comparison reads "0" vs "00".
+    # The exact trap AGENTS.md documents, hit while writing the guard against it.
+    local n=0
+    [ -f "$TALLY/all" ] && n="$(grep -c "^$1 " "$TALLY/all" 2>/dev/null || true)"
+    printf '%s' "$(printf '%s' "${n:-0}" | tr -d ' \n')"
+}
 
 check() { # check <name> <expect> <actual>
     if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$2] got [$3]"; fi
@@ -48,7 +86,70 @@ check_contains() {
     case "$3" in *"$2"*) ok "$1";; *) no "$1" "expected to contain [$2], got [$(printf '%s' "$3" | head -c 200)]";; esac
 }
 check_ok() { if [ "$2" -eq 0 ]; then ok "$1"; else no "$1" "exit $2"; fi; }
+# check_lacks <name> <forbidden> <haystack>
+# The inverse of check_contains, and it FIRST proves the haystack is non-empty.
+# 52 assertions were written `case "$out" in *bad*) no;; *) ok;; esac`, and a
+# run that produced no output at all passed every one of them -- so a crash
+# before the first line of output read as 52 successes.
+check_lacks() {
+    if [ -z "$3" ]; then no "$1" "nothing was produced, so this proves nothing"; return; fi
+    case "$3" in *"$2"*) no "$1" "found [$2] in the output";; *) ok "$1";; esac
+}
+# check_lacks_any <name> <haystack> <forbidden>...
+# For the cases that forbid MORE THAN ONE thing. Written as a bare `a*|*b`
+# argument, bash read the `|` as a PIPE: the assertion became two commands, `$3`
+# was unbound under `set -u`, the enclosing subshell died, and nine assertions
+# -- including "no secret is ever committed" -- stopped running entirely while
+# the suite still printed PASS. Patterns are separate, quoted arguments now, so
+# that spelling is not expressible.
+check_lacks_any() {
+    local name="$1" hay="$2" p; shift 2
+    if [ -z "$hay" ]; then no "$name" "nothing was produced, so this proves nothing"; return; fi
+    for p in "$@"; do
+        case "$hay" in *"$p"*) no "$name" "found [$p] in the output"; return;; esac
+    done
+    ok "$name"
+}
 check_fails() { if [ "$2" -ne 0 ]; then ok "$1"; else no "$1" "expected non-zero exit"; fi; }
+
+# json_bad_lines <file> [ignore-literal]
+# Counts lines that are not valid JSON objects. AGENTS.md's portability list
+# says not to assume python3, and without it the substitution was empty and the
+# assertion went RED for a non-defect -- on exactly the minimal container this
+# file is written for. Falls back to a shape check that is weaker but honest.
+json_bad_lines() {
+    local f="$1" ignore="${2:-}"
+    [ -s "$f" ] || { printf '0'; return; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$f" "$ignore" <<'PY'
+import json, sys
+f, ignore = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
+bad = 0
+try:
+    fh = open(f)
+except OSError:
+    print(0); raise SystemExit
+for line in fh:
+    line = line.strip()
+    if not line or (ignore and line == ignore):
+        continue
+    try:
+        json.loads(line)
+    except Exception:
+        bad += 1
+print(bad)
+PY
+    else
+        # Every record Ralphie writes opens with {"ts":" and closes with }.
+        awk -v ign="$ignore" '
+            { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+            line == "" { next }
+            ign != "" && line == ign { next }
+            line ~ /^\{"ts":".*\}$/ { next }
+            { n++ }
+            END { print n+0 }' "$f"
+    fi
+}
 
 want() { case "$1" in *"$FILTER"*) return 0;; *) return 1;; esac; }
 
@@ -63,7 +164,13 @@ new_project() {
     local d="$TMPROOT/p$RANDOM$RANDOM"
     mkdir -p "$d"
     cp "$RALPHIE" "$d/ralphie.sh"; chmod +x "$d/ralphie.sh"
-    ( cd "$d" && git init -q && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+    # The branch is PINNED. A bare `git init` inherits the machine's
+    # `init.defaultBranch`, so on any host set to `main` -- modern git installs
+    # and many corporate defaults -- three tests that hard-code `master` failed
+    # with "MERGE_HEAD is gone", which reads to a newcomer as "Ralphie destroys
+    # merges". The suite must measure Ralphie, never the host's git config.
+    ( cd "$d" && { git init -q -b master 2>/dev/null || { git init -q && git symbolic-ref HEAD refs/heads/master; }; } \
+                 && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
     printf '%s' "$d"
 }
 
@@ -145,6 +252,563 @@ printf '\n'
 dim "ralphie test suite"
 dim "=================="
 printf '\n'
+
+
+
+
+
+if want "acceptance-durability"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      ledger_init
+      OBJECTIVE="same explicit objective"; set_objective
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG=true; acceptance_prepare
+      first="$ACCEPT_BIND"
+      CY_MAY_COMMIT=1; ACCEPT_CHANGED=1; COMMIT_FAILED=0; CY_SELF_EDIT=0
+      acceptance_note_work
+      RALPHIE_LEDGER_MAX=1; RALPHIE_LEDGER_GENERATIONS=2
+      for n in 1 2 3 4 5 6; do event test rotation "$n"; rotate_ledger; done
+      acceptance_intact; check_ok "rotation does not invalidate live binding" $?
+      grep -l '"status":"binding"' "$EVENTS_FILE" "$EVENTS_FILE".[0-9]* >/dev/null
+      check_fails "binding event has left all retained generations" $?
+      ACCEPT_OLD_OBJECTIVE="$(state_get objective_hash '')"
+      ACCEPT_EXPLICIT=0; OBJECTIVE=""; set_objective; acceptance_prepare
+      check_ok "resume after retention window retains requirement" $?
+      check "durable resume binding" "$first" "$ACCEPT_BIND"
+      check "durable resume work" 1 "$ACCEPT_WORK"
+      OBJECTIVE="same explicit objective"; set_objective; acceptance_prepare
+      check_ok "identical explicit objective keeps requirement" $?
+      check "identical explicit objective retains identity" "$first" "$ACCEPT_BIND"
+      check "identical explicit objective retains work" 1 "$ACCEPT_WORK"
+      rm -f "$HOME_DIR/acceptance"
+      OBJECTIVE=""; acceptance_prepare
+      check_fails "config missing after rotation fails closed" $?
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG=true; acceptance_prepare
+      state_set acceptance_binding ''
+      ACCEPT_EXPLICIT=0; acceptance_prepare
+      check_fails "binding missing after rotation fails closed" $?
+      state_set objective_hash ''
+      ACCEPT_OLD_OBJECTIVE=""; OBJECTIVE="same explicit objective"
+      set_objective; acceptance_prepare
+      check_fails "missing state identity cannot clear identical objective binding" $?
+      cmd_forget
+      acceptance_prepare; check_ok "explicit forget clears orphaned config" $?
+      check "forget tombstone prevents stale config reactivation" "" "$ACCEPT_BIND"
+      true ) || no "acceptance-durability group completed" "aborted"
+fi
+
+if want "acceptance-identity"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      ledger_init
+      # Exact bytes, including final newlines, model load_spec's input. The
+      # same tests run with the integrated full-spec implementation too.
+      SPEC_FILE="$d/spec.txt"
+      printf 'full specification\n' > "$SPEC_FILE"
+      printf '%12000s' x >> "$SPEC_FILE"
+      printf '\n\n' >> "$SPEC_FILE"
+      OBJECTIVE=""; IFS= read -r -d '' OBJECTIVE < "$SPEC_FILE" || true
+      set_objective
+      check "objective identity hashes full spec bytes" "$(sha_of < "$SPEC_FILE")" "$(state_get objective_hash '')"
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG=true; acceptance_prepare
+      first="$ACCEPT_BIND"
+      ACCEPT_OLD_OBJECTIVE="$(state_get objective_hash '')"
+      ACCEPT_EXPLICIT=0; set_objective; acceptance_prepare
+      check_ok "identical spec acceptance prepares" $?
+      check "identical spec preserves binding" "$first" "$ACCEPT_BIND"
+      OBJECTIVE=""; set_objective; acceptance_prepare
+      check_ok "spec resume uses saved identity" $?
+      check "spec resume preserves binding" "$first" "$ACCEPT_BIND"
+      # A trailing newline is a real spec byte, not presentation whitespace.
+      printf '\n' >> "$SPEC_FILE"
+      OBJECTIVE=""; IFS= read -r -d '' OBJECTIVE < "$SPEC_FILE" || true
+      set_objective; acceptance_prepare
+      check_ok "new spec bytes reset acceptance" $?
+      check "new spec has no stale requirement" "" "$ACCEPT_BIND"
+      check "new spec exact-byte hash" "$(sha_of < "$SPEC_FILE")" "$(state_get objective_hash '')"
+      true ) || no "acceptance-identity group completed" "aborted"
+fi
+
+if want "objective-acceptance"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      ledger_init
+      OBJECTIVE="ship feature"; set_objective
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG='test -f finished'
+      acceptance_prepare; check_ok "acceptance command need not exist yet" $?
+      first="$ACCEPT_BIND"
+      CY_N=1; CY_MAY_COMMIT=1; GATES_GREEN=yes; GATES_NONE=0
+      acceptance_verify
+      check "acceptance starts red" 0 "$ACCEPT_PASS"
+      REPORT_STATUS=done; REPORT_LESSON=""; REPORT_ASK=""; NOCHANGE_STREAK=0
+      cycle_learn; check "forged done cannot override acceptance" 0 $?
+      touch "$PROJECT/finished"
+      acceptance_verify
+      check "acceptance can become green" 1 "$ACCEPT_PASS"
+      acceptance_done; check_fails "baseline alone is not actual work" $?
+      ACCEPT_CHANGED=1; COMMIT_FAILED=0; CY_SELF_EDIT=0
+      acceptance_note_work
+      acceptance_done; check_ok "trusted changed work allows acceptance completion" $?
+      REPORT_STATUS=progress
+      cycle_learn; check "acceptance does not auto-stop progress" 0 $?
+      DONE_WHEN_GREEN=1
+      cycle_learn; check "opt-in green route requires acceptance" 10 $?
+      GATES_NONE=1; acceptance_verify
+      acceptance_done; check_fails "acceptance without health is not done" $?
+      GATES_NONE=0
+      OBJECTIVE=""; ACCEPT_EXPLICIT=0
+      acceptance_prepare; check_ok "acceptance resumes" $?
+      check "resume retains binding" "$first" "$ACCEPT_BIND"
+      check "resume retains actual work" 1 "$ACCEPT_WORK"
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG=true
+      acceptance_prepare; check_ok "changed command binds again" $?
+      check "changed command resets actual work" 0 "$ACCEPT_WORK"
+      [ "$first" != "$ACCEPT_BIND" ]; check_ok "changed command has new identity" $?
+      printf 'corrupt\n' > "$HOME_DIR/acceptance"
+      ACCEPT_EXPLICIT=0; acceptance_prepare
+      check_fails "corrupt config fails closed on resume" $?
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG=true; acceptance_prepare
+      rm -f "$HOME_DIR/acceptance"
+      ACCEPT_EXPLICIT=0; acceptance_prepare
+      check_fails "missing config fails closed on resume" $?
+      ACCEPT_OLD_OBJECTIVE="$(state_get objective_hash '')"
+      OBJECTIVE="a different objective"; set_objective
+      acceptance_prepare; check_ok "explicit new objective resets missing binding" $?
+      check "new objective has no inherited command" "" "$ACCEPT_CMD"
+      ACCEPT_EXPLICIT=1; ACCEPT_ARG='sleep 5'; acceptance_prepare
+      GATE_TIMEOUT=1; CY_N=2; acceptance_verify
+      check "watchdog timeout fails acceptance" 0 "$ACCEPT_PASS"
+      check_contains "watchdog evidence includes timeout rc" '"rc":"124"' "$(tail -5 "$EVENTS_FILE")"
+      printf 'tamper\n' > "$HOME_DIR/acceptance"
+      acceptance_verify; check "mid-run config tamper blocks pass" 0 "$ACCEPT_PASS"
+      check "config edits do not replace memory command" 'sleep 5' "$ACCEPT_CMD"
+      cmd_forget
+      OBJECTIVE=""; OBJECTIVE_MEM=""; ACCEPT_EXPLICIT=0
+      acceptance_prepare; check_ok "forget clears damaged requirement" $?
+      check "forget has no command" "" "$ACCEPT_CMD"
+      true ) || no "objective-acceptance group completed" "aborted"
+    for arg in '' '   ' $'true\nfalse' $'true\rfalse'; do
+        "$d/ralphie.sh" --accept "$arg" --help >/dev/null 2>&1
+        check_fails "invalid acceptance argument rejected" $?
+    done
+    "$d/ralphie.sh" --accept >/dev/null 2>&1
+    check_fails "missing acceptance argument rejected" $?
+    "$d/ralphie.sh" --accept true --accept false --help >/dev/null 2>&1
+    check_fails "duplicate acceptance argument rejected" $?
+fi
+
+
+if want "objective-acceptance-loop"; then
+    d="$(new_project)"
+    printf 'start\n' > "$d/work.txt"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    cat > "$d/mock-engine" <<'MOCK'
+#!/usr/bin/env bash
+cat > /dev/null
+printf 'work\n' >> work.txt
+printf '<<<RALPHIE\nstatus: done\nsummary: mock work\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$d/mock-engine"
+    ( cd "$d" && git add -A && git commit -qm init )
+    out="$(cd "$d" && RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS='autonomy gates' ./ralphie.sh --engine custom --no-update --once --accept 'test "$(wc -l < work.txt)" -ge 3' 'finish the work' 2>&1)"
+    check "acceptance red still saves incremental commit" 2 "$(git -C "$d" rev-list --count HEAD)"
+    check_contains "first cycle records acceptance fail" '"kind":"acceptance","status":"fail"' "$(cat "$d/.ralphie/events.jsonl")"
+    check_lacks "done report cannot bypass red acceptance" '"kind":"cycle","status":"done"' "$(cat "$d/.ralphie/events.jsonl")"
+    out="$(cd "$d" && RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS='autonomy gates' ./ralphie.sh --engine custom --no-update --once 2>&1)"
+    check_contains "resumed cycle independently passes acceptance" '"kind":"acceptance","status":"pass"' "$(cat "$d/.ralphie/events.jsonl")"
+    check_contains "second changed cycle completes objective" '"kind":"cycle","status":"done"' "$(cat "$d/.ralphie/events.jsonl")"
+    check "acceptance runs once per eligible verify" 2 "$(grep -c '"kind":"acceptance","status":"\(pass\|fail\)"' "$d/.ralphie/events.jsonl")"
+fi
+
+# -------------------------------------------------------------- spec input ----
+if want "spec-input"; then
+    d="$(new_project)"
+    spec_cwd="$TMPROOT/spec invocation"; mkdir -p "$spec_cwd"
+    spec_name="product spec.md"
+    printf '%s\n' '# Build the requested app' 'Keep all multiline requirements.' \
+        'Literal: $(touch SPEC_EXECUTED) `touch SPEC_BACKTICK` ; * $HOME' \
+        'FINAL-SPEC-REQUIREMENT' > "$spec_cwd/$spec_name"
+    cp "$spec_cwd/$spec_name" "$spec_cwd/original"
+    printf 'WRONG PLANTED DOCUMENT\n' > "$d/$spec_name"
+    make_mock_engine "$d/mock" nothing
+    export RALPHIE_ENGINE_CMD="$d/mock" MOCK_LAST_PROMPT="$d/prompt"
+    out="$(cd "$spec_cwd" && "$d/ralphie.sh" --no-update --engine custom --once --no-commit --gate true --spec "$spec_name" 2>&1)"
+    check_ok "spec-input: multiline path with spaces runs" $?
+    check_contains "spec-input: last requirement reaches mock" 'FINAL-SPEC-REQUIREMENT' "$(cat "$d/prompt")"
+    check_contains "spec-input: metacharacters reach mock literally" '$(touch SPEC_EXECUTED) `touch SPEC_BACKTICK` ; * $HOME' "$(cat "$d/prompt")"
+    check_lacks "spec-input: cwd wins over script directory" 'WRONG PLANTED DOCUMENT' "$(cat "$d/prompt")"
+    check "spec-input: original multiline content stored" "$(cat "$spec_cwd/original")" "$(cat "$d/.ralphie/OBJECTIVE.md")"
+    cmp -s "$spec_cwd/$spec_name" "$spec_cwd/original"; check_ok "spec-input: source unchanged" $?
+    check "spec-input: shell syntax not evaluated" '' "$(find "$d" "$spec_cwd" -name 'SPEC_EXECUTED' -o -name 'SPEC_BACKTICK')"
+    check "spec-input: source not staged" '' "$(git -C "$d" ls-files -- "$spec_name")"
+    printf 'CHANGED SOURCE MUST NOT BE USED\n' > "$spec_cwd/$spec_name"
+    out="$(cd "$spec_cwd" && "$d/ralphie.sh" --no-update --engine custom --once --no-commit 2>&1)"
+    check_ok "spec-input: resume without file option" $?
+    check_contains "spec-input: resume keeps stored content" 'FINAL-SPEC-REQUIREMENT' "$(cat "$d/prompt")"
+    check_lacks "spec-input: resume does not reread source" 'CHANGED SOURCE MUST NOT BE USED' "$(cat "$d/prompt")"
+
+    # The actual source inside the project is untracked operator work, not a
+    # file the new option is allowed to stage even during a committing run.
+    printf 'project-local source\n' > "$d/local spec.md"
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --gate true --spec 'local spec.md' 2>&1)"
+    check_ok "spec-input: project-local document accepted" $?
+    check "spec-input: source excluded from automatic staging" '' "$(git -C "$d" ls-files -- 'local spec.md')"
+    check "spec-input: project-local source unchanged" 'project-local source' "$(cat "$d/local spec.md")"
+
+    # A separate fresh project proves refusal happens before ledger setup and
+    # before even an engine presence/version probe can invoke the mock.
+    d="$(new_project)"
+    printf '#!/usr/bin/env bash\nprintf invoked >> "%s"\nexit 9\n' "$d/invoked" > "$d/mock"
+    chmod +x "$d/mock"
+    export RALPHIE_ENGINE_CMD="$d/mock"
+    mkdir "$d/directory"
+    printf 'unreadable\n' > "$d/unreadable"; chmod 000 "$d/unreadable"
+    printf '\000binary\n' > "$d/nul"
+    printf 'text\033escape\n' > "$d/control"
+    printf ' \t\n' > "$d/empty"
+    awk 'BEGIN {for(i=0;i<1048577;i++) printf "x"}' > "$d/large"
+    { printf '\033'; awk 'BEGIN {for(i=0;i<100000;i++) print "padding"}'; } > "$d/large-control"
+    for bad in missing directory nul control empty large large-control; do
+        out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --spec "$bad" 2>&1)"
+        rc=$?
+        check_fails "spec-input: refuses $bad" "$rc"
+        check_contains "spec-input: explains $bad refusal" '--spec' "$out"
+    done
+    if [ ! -r "$d/unreadable" ]; then
+        out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --spec unreadable 2>&1)"
+        check_fails "spec-input: refuses unreadable" $?
+    else skip "spec-input: refuses unreadable" 'user can read chmod-000 files'; fi
+    chmod 600 "$d/unreadable"
+    for args in objective positional duplicate empty-objective run-text non-run; do
+        case "$args" in
+            objective) set -- --objective other --spec unreadable;;
+            positional) set -- --spec unreadable other;;
+            duplicate) set -- --spec unreadable --spec unreadable;;
+            empty-objective) set -- --spec unreadable --objective '';;
+            run-text) set -- --spec unreadable run other;;
+            non-run) set -- --spec unreadable status;;
+        esac
+        out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once "$@" 2>&1)"
+        check_fails "spec-input: refuses ambiguous $args" $?
+    done
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --spec 2>&1)"
+    check_fails "spec-input: missing option value" $?
+    check "spec-input: failures never invoke engine" no "$([ -e "$d/invoked" ] && printf yes || printf no)"
+    check "spec-input: failures do not create ledger" no "$([ -e "$d/.ralphie" ] && printf yes || printf no)"
+
+    # Exact byte boundary, including UTF-8 and newlines, reaches the prompt.
+    make_mock_engine "$d/mock" nothing
+    export MOCK_LAST_PROMPT="$d/prompt"
+    { awk 'BEGIN {for(i=0;i<3994;i++) printf "x"}'; printf '\303\251END\n'; } > "$d/boundary"
+    check "spec-input: fixture is exactly 4000 bytes" 4000 "$(wc -c < "$d/boundary" | tr -d ' ')"
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --no-commit --gate true --spec boundary 2>&1)"
+    check_ok "spec-input: exact 4000 byte boundary accepted" $?
+    check_contains "spec-input: final boundary bytes reach engine" "$(printf '\303\251END')" "$(cat "$d/prompt")"
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --no-commit boundary 2>&1)"
+    check_ok "spec-input: positional path remains ordinary objective" $?
+    check "spec-input: positional path is not read" boundary "$(cat "$d/.ralphie/OBJECTIVE.md")"
+    blank="$TMPROOT/blank-spec-project"; mkdir -p "$blank"
+    cp "$RALPHIE" "$blank/ralphie.sh"
+    printf 'Build from an empty project.\n' > "$spec_cwd/blank.md"
+    out="$(cd "$spec_cwd" && "$blank/ralphie.sh" --no-update --engine custom --once --no-commit --gate true --spec blank.md 2>&1)"
+    check_ok "spec-input: blank project runs" $?
+    check "spec-input: blank project stores objective" 'Build from an empty project.' "$(cat "$blank/.ralphie/OBJECTIVE.md")"
+    unset RALPHIE_ENGINE_CMD MOCK_LAST_PROMPT
+fi
+
+# Large specs remain file-backed; the mock must read the referenced full file.
+if want "spec-large"; then
+    d="$(new_project)"
+    awk 'BEGIN {for(i=0;i<1048564;i++) printf "x"; printf "\nTAIL-RULE\n\n"}' > "$d/PLAN.md"
+    cp "$d/PLAN.md" "$TMPROOT/full-spec-original"
+    cat > "$d/mock" <<'MOCK'
+#!/usr/bin/env bash
+set -eu
+cat > "$MOCK_LAST_PROMPT"
+full="$(sed -n 's/^Full objective file: //p' "$MOCK_LAST_PROMPT")"
+[ -n "$full" ] && [ -f "$full" ]
+# A requirement beyond the prompt's excerpt must drive the built artifact.
+rule="$(tail -c 11 "$full" | tr -d '\n')"
+[ "$rule" = TAIL-RULE ]
+printf '%s\n' "$rule" > product.txt
+printf '%s\n' '- [x] TAIL-RULE -> product.txt -> acceptance.sh' > IMPLEMENTATION_PLAN.md
+printf '%s\n' '#!/bin/sh' 'test "$(cat product.txt)" = TAIL-RULE' > acceptance.sh
+printf '%s\n' 'sh acceptance.sh' > .ralphie/gates
+printf '<<<RALPHIE\nstatus: progress\nsummary: implemented tail requirement\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$d/mock"
+    export RALPHIE_ENGINE_CMD="$d/mock" MOCK_LAST_PROMPT="$d/prompt"
+    check "spec-large: exact cap fixture" 1048576 "$(wc -c < "$d/PLAN.md" | tr -d ' ')"
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --spec PLAN.md 2>&1)"
+    check_ok "spec-large: blank build at exact cap" $?
+    check "spec-large: final requirement implemented" TAIL-RULE "$(cat "$d/product.txt" 2>/dev/null)"
+    cmp -s "$TMPROOT/full-spec-original" "$d/.ralphie/OBJECTIVE.md"; check_ok "spec-large: exact stored bytes" $?
+    cmp -s "$TMPROOT/full-spec-original" "$d/PLAN.md"; check_ok "spec-large: supplied plan unchanged" $?
+    check "spec-large: supplied plan unstaged" '' "$(git -C "$d" ls-files -- PLAN.md)"
+    check_contains "spec-large: honest excerpt label" 'OBJECTIVE EXCERPT (first 4000 bytes only)' "$(cat "$d/prompt")"
+    check_contains "spec-large: entire-file instruction" 'Read this ENTIRE file' "$(cat "$d/prompt")"
+    check_lacks "spec-large: full tail absent from brief" TAIL-RULE "$(cat "$d/prompt")"
+    check_contains "spec-large: verifiable plan recorded" 'TAIL-RULE -> product.txt -> acceptance.sh' "$(cat "$d/IMPLEMENTATION_PLAN.md")"
+    git -C "$d" log -1 --format=%B > "$TMPROOT/spec-commit-message"
+    [ "$(wc -c < "$TMPROOT/spec-commit-message")" -lt 2000 ]; check_ok "spec-large: bounded commit message" $?
+    (cd "$d" && sh acceptance.sh); check_ok "spec-large: real acceptance gate passes" $?
+    printf 'BROKEN\n' > "$d/product.txt"
+    (cd "$d" && sh acceptance.sh); check_fails "spec-large: gate rejects broken output" $?
+    for small in "$d/prompt" "$d/.ralphie/state" "$d/.ralphie/events.jsonl"; do
+        [ "$(wc -c < "$small")" -lt 20000 ]; rc=$?
+        check_ok "spec-large: bounded $small" "$rc"
+    done
+    ( load_lib "$d"
+        h1="$(state_get objective_hash '')"
+        SPEC_FILE="$d/PLAN.md"; load_spec
+        want_hash="$(printf '%s' "$OBJECTIVE" | sha_of)"
+        check "spec-large: hash includes full bytes" "$want_hash" "$h1"
+        printf 'CHANGED\n' >> "$d/PLAN.md"
+        # A tail-only difference must produce a different identity.
+        OBJECTIVE="${OBJECTIVE%?}Z"; set_objective
+        h2="$(state_get objective_hash '')"
+        [ "$h1" != "$h2" ]; check_ok "spec-large: tail changes identity" $?
+        OBJECTIVE=""; SPEC_FILE=""
+        cp "$TMPROOT/full-spec-original" "$OBJECTIVE_FILE"
+        set_objective
+        printf 'weakened\n' > "$OBJECTIVE_FILE"
+        guard_objective
+        check_fails "spec-large: stored-source tamper detected" $?
+        cmp -s "$TMPROOT/full-spec-original" "$OBJECTIVE_FILE"; check_ok "spec-large: stored-source tamper restored" $?
+        printf 'keep\000LOST\n\n' > "$OBJECTIVE_FILE"
+        cp "$OBJECTIVE_FILE" "$TMPROOT/malformed-objective-original"
+        ( set_objective; guard_objective ) > "$TMPROOT/malformed-objective-output" 2>&1
+        check_fails "spec-large: malformed resume rejected" $?
+        check_contains "spec-large: malformed resume explained" 'NUL byte found' "$(cat "$TMPROOT/malformed-objective-output")"
+        cmp -s "$TMPROOT/malformed-objective-original" "$OBJECTIVE_FILE"; check_ok "spec-large: malformed resume leaves source intact" $?
+        cp "$TMPROOT/full-spec-original" "$OBJECTIVE_FILE"
+    true ); check_ok "spec-large: library group completed" $?
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --no-commit 2>&1)"
+    check_ok "spec-large: source changed resume" $?
+    check "spec-large: resume reads stored tail" TAIL-RULE "$(cat "$d/product.txt")"
+    rm "$d/PLAN.md"
+    out="$(cd "$d" && ./ralphie.sh --no-update --engine custom --once --no-commit 2>&1)"
+    check_ok "spec-large: source deleted resume" $?
+    cmp -s "$TMPROOT/full-spec-original" "$d/.ralphie/OBJECTIVE.md"; check_ok "spec-large: resume preserves every stored byte" $?
+    unset RALPHIE_ENGINE_CMD MOCK_LAST_PROMPT
+fi
+
+
+
+# Request fixtures use only native shell tools and the free custom engine.
+if want "request-publication"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      literal='literal $(touch INERT) `touch INERT2` \ tail'
+      request_command "$literal" >/dev/null; check_ok "request literal accepted" $?
+      request_scan; first="$REQUEST_IDS"
+      check "request bytes preserved" "$literal" "$(cat "$first")"
+      [ ! -e "$d/INERT" ]; check_ok "request shell text is inert" $?
+      [ ! -e "$STATE_FILE" ]; check_ok "producer does not initialize state" $?
+      printf 'bytes\nwith trailing lines\n\n' > "$d/input"
+      request_command --file input >/dev/null; check_ok "request file accepted" $?
+      cmp "$d/input" "$HOME_DIR/requests/slot-2/"*.txt; check_ok "request file exact bytes" $?
+      (request_command '') >/dev/null 2>&1; check_fails "empty request refused" $?
+      (request_command --file missing) >/dev/null 2>&1; check_fails "missing file refused" $?
+      (request_command --file "$d") >/dev/null 2>&1; check_fails "directory refused" $?
+      printf 'bad\000bytes' > "$d/binary"
+      (request_command --file binary) >/dev/null 2>&1; check_fails "NUL refused" $?
+      head -c 4097 /dev/zero | tr '\000' x > "$d/large"
+      (request_command --file large) >/dev/null 2>&1; check_fails "oversize refused" $?
+      ledger_init; OBJECTIVE_MEM=base
+      request_boundary; identity="$(state_get request_set '')"
+      state_set nochange_streak 2; NOCHANGE_STREAK=2
+      request_boundary
+      check "same membership does not reset progress" 2 "$NOCHANGE_STREAK"
+      request_pending; check_fails "same membership not pending" $?
+      request_command second >/dev/null
+      request_pending; check_ok "new membership pending" $?
+      REPORT_STATUS=done; GATES_GREEN=yes; REPORT_LESSON=''; REPORT_ASK=''; NOCHANGE_STREAK=0
+      cycle_learn; check_ok "pending request prevents done" $?
+      request_boundary
+      [ "$identity" != "$(state_get request_set '')" ]; check_ok "membership changes identity" $?
+      rm "$STATE_FILE"; request_boundary
+      request_prompt > "$d/prompt"
+      check_contains "state loss retains all active requirements" "$literal" "$(cat "$d/prompt")"
+      CY_PROMPT="$d/prompt"; request_ack
+      check_contains "list explains presentation only" "not implemented" "$(request_command list)"
+      true ) || no "request-publication group completed" "aborted"
+fi
+if want "request-archive"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      request_command 'retained requirement' >/dev/null
+      request_scan; first="$REQUEST_IDS"; name="${first##*/}"
+      REQUEST_CYCLE_IDS="$REQUEST_IDS"; CY_PROMPT=receipt-path; request_ack
+      mkdir "$HOME_DIR/requests/slot-32"; printf partial > "$HOME_DIR/requests/slot-32/.body"
+      lock_acquire
+      (request_command archive) > "$d/refused" 2>&1
+      check_fails "archive refuses live worker" $?
+      [ -f "$first" ]; check_ok "refused archive preserves active body" $?
+      lock_release
+      request_command archive > "$d/archived"; check_ok "stopped archive succeeds" $?
+      check_contains "archive never means completed" "NOT completed" "$(cat "$d/archived")"
+      archives=("$HOME_DIR/request-archives/"*)
+      check "archive preserves accepted bytes" 'retained requirement' "$(cat "${archives[0]}/slot-1/$name")"
+      check "archive preserves receipt" receipt-path "$(cat "${archives[0]}/slot-1/${name%.txt}.applied")"
+      check "archive preserves abandoned reservation" partial "$(cat "${archives[0]}/slot-32/.body")"
+      request_scan; check "archive resets active membership" '' "$REQUEST_IDS"
+      OBJECTIVE_MEM=base; state_set objective_hash exact-base; state_set objective_started exact-base; state_set request_set old-batch
+      request_boundary
+      check "empty batch preserves base identity" exact-base "$(state_get objective_hash '')"
+      check "empty batch clears old started identity" '' "$(state_get objective_started '')"
+      REQUEST_CYCLE_IDS="$REQUEST_IDS"; check "archive not injected" '' "$(request_prompt)"
+      # Crash-equivalent state immediately after the atomic directory rename.
+      request_command recoverable >/dev/null
+      mv "$HOME_DIR/requests" "$HOME_DIR/request-archives/interrupted"
+      request_command fresh >/dev/null; check_ok "publication recovers missing active directory" $?
+      check "interrupted archive retains body" recoverable "$(cat "$HOME_DIR/request-archives/interrupted/slot-1/"*.txt)"
+      request_command archive >/dev/null
+      for i in {1..32}; do request_command "capacity-$i" >/dev/null || break; done
+      check "32 active submissions accepted" 32 "$i"
+      (request_command overflow) >/dev/null 2>&1; check_fails "33rd active submission refused" $?
+      request_command archive >/dev/null
+      request_command recycled >/dev/null; check_ok "explicit archive recycles capacity" $?
+      mkdir "$HOME_DIR/request-write.lock"
+      printf '99999999\n' > "$HOME_DIR/request-write.lock/pid"
+      request_command after-killed-producer >/dev/null
+      check_ok "dead producer lock recovered" $?
+      true ) || no "request-archive group completed" "aborted"
+fi
+if want "request-race"; then
+    d="$(new_project)"
+    # Independent processes give each lock owner a real unique PID.
+    pids=''
+    for i in {1..8}; do
+        env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request "parallel-$i" > "$d/pub-$i" 2>&1 &
+        pids="$pids $!"
+    done
+    for p in $pids; do wait "$p"; check_ok "concurrent producer $p accepted" $?; done
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request archive > "$d/archive" 2>&1 & ap=$!
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request across-archive > "$d/across" 2>&1 & pp=$!
+    wait "$ap"; check_ok "archive racing publication succeeds" $?
+    wait "$pp"; check_ok "publication racing archive succeeds" $?
+    n="$(find "$d/.ralphie/requests" "$d/.ralphie/request-archives" -name '*.txt' | wc -l | tr -d ' ')"
+    check "publication cannot disappear across archive" 9 "$n"
+    n="$(find "$d/.ralphie/requests" "$d/.ralphie/request-archives" -name '*.txt' -exec cat {} \; | grep -o 'across-archive' | wc -l | tr -d ' ')"
+    check "racing body retained once" 1 "$n"
+fi
+if want "request-start-race"; then
+    d="$(new_project)"
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request retained >/dev/null
+    mkfifo "$d/ready" "$d/release"
+    cat > "$d/archive-driver" <<'DRIVER'
+export RALPHIE_LIB=1
+. "$1"
+mv() {
+    printf 'locked\n' > "$PROJECT/ready"
+    cat "$PROJECT/release" >/dev/null
+    command mv "$@"
+}
+request_command archive
+DRIVER
+    env RALPHIE_PROJECT="$d" /bin/bash "$d/archive-driver" "$RALPHIE" > "$d/archive-out" 2>&1 & ap=$!
+    ( sleep 30; kill "$ap" 2>/dev/null; printf 'timeout\n' > "$d/ready" ) & watchdog=$!
+    IFS= read -r ready < "$d/ready"
+    check "archive holds locks before rename" locked "$ready"
+    env RALPHIE_PROJECT="$d" RALPHIE_LIB=1 /bin/bash -c '. "$1"; lock_acquire' _ "$RALPHIE" > "$d/start-out" 2>&1
+    check_fails "worker start cannot cross archive rename" $?
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request after-rename > "$d/producer-out" 2>&1 & pp=$!
+    printf 'go\n' > "$d/release"
+    wait "$ap"; check_ok "paused archive completes" $?
+    wait "$pp"; check_ok "publication resumes after archive" $?
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+    check "new batch contains racing producer" after-rename "$(cat "$d/.ralphie/requests/slot-1/"*.txt)"
+    check "old batch retains prior producer" retained "$(cat "$d/.ralphie/request-archives/"*/slot-1/*.txt)"
+fi
+if want "request-live"; then
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie" "$d/hold"; printf 'true\n' > "$d/.ralphie/gates"
+    mkfifo "$d/hold/ready" "$d/hold/release"
+    cat > "$d/engine" <<'ENGINE'
+#!/bin/bash
+cat > "$RALPHIE_PROJECT/hold/prompt"
+printf 'ready\n' > "$RALPHIE_PROJECT/hold/ready"
+cat "$RALPHIE_PROJECT/hold/release" >/dev/null
+printf '<<<RALPHIE\nstatus: done\nsummary: mock\nRALPHIE>>>\n'
+ENGINE
+    chmod +x "$d/engine"
+    env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 RALPHIE_ENGINE_CMD="$d/engine" RALPHIE_ENGINE_CAPS='' \
+        /bin/bash "$RALPHIE" --once --engine custom --no-commit work > "$d/worker-out" 2>&1 & worker=$!
+    # A bounded watchdog prevents a broken fixture from wedging the suite.
+    ( sleep 45; kill "$worker" 2>/dev/null; printf 'timeout\n' > "$d/hold/ready" ) & watchdog=$!
+    IFS= read -r ready < "$d/hold/ready"
+    check "live engine handshake" ready "$ready"
+    cp "$d/.ralphie/state" "$d/before-state"; cp "$d/.ralphie/events.jsonl" "$d/before-events"
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request 'live new requirement' > "$d/submission" 2>&1
+    check_ok "submit while engine held" $?
+    cmp "$d/before-state" "$d/.ralphie/state"; check_ok "live producer preserves state" $?
+    cmp "$d/before-events" "$d/.ralphie/events.jsonl"; check_ok "live producer preserves ledger" $?
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request archive > "$d/refused" 2>&1
+    check_fails "live worker excludes archive" $?
+    check_lacks "current prompt snapshot unchanged" 'live new requirement' "$(cat "$d/hold/prompt")"
+    printf 'go\n' > "$d/hold/release"
+    wait "$worker"; check_ok "held cycle exits" $?
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+    make_mock_engine "$d/engine" nothing
+    env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 RALPHIE_ENGINE_CMD="$d/engine" RALPHIE_ENGINE_CAPS='' \
+        MOCK_LAST_PROMPT="$d/resumed" /bin/bash "$RALPHIE" --once --engine custom --no-commit --done-when-green > "$d/resume-out" 2>&1
+    check_ok "resume with pending request" $?
+    check_contains "next prompt presents live submission" 'live new requirement' "$(cat "$d/resumed")"
+fi
+
+
+if want "request-spec-acceptance"; then
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    printf 'base\n' > "$d/work.txt"
+    { printf 'Full specification\n'; head -c 6000 /dev/zero | tr '\000' s; printf '\nSPEC-TAIL\n\n'; } > "$d/spec.md"
+    cat > "$d/engine" <<'ENGINE'
+#!/bin/bash
+cat > "$RALPHIE_PROJECT/.ralphie/mock-prompt"
+cat "$RALPHIE_PROJECT/.ralphie/OBJECTIVE.md" > "$RALPHIE_PROJECT/.ralphie/mock-full-spec"
+if [ "${MAKE_WORK:-0}" = 1 ]; then printf 'work\n' >> "$RALPHIE_PROJECT/work.txt"; fi
+printf '<<<RALPHIE\nstatus: done\nsummary: combined fixture\nlesson: -\nask: -\nRALPHIE>>>\n'
+ENGINE
+    chmod +x "$d/engine"
+    git -C "$d" add .; git -C "$d" commit -qm initial
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request first >/dev/null
+    env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 RALPHIE_ENGINE_CMD="$d/engine" RALPHIE_ENGINE_CAPS='' MAKE_WORK=1 \
+        /bin/bash "$RALPHIE" --once --engine custom --spec "$d/spec.md" --accept true > "$d/first-out" 2>&1
+    check_ok "combined first work completes" $?
+    check_contains "full spec tail readable by engine" SPEC-TAIL "$(cat "$d/.ralphie/mock-full-spec")"
+    check_contains "first request reaches prompt" first "$(cat "$d/.ralphie/mock-prompt")"
+    cmp "$d/spec.md" "$d/.ralphie/OBJECTIVE.md"; check_ok "combined preserves every spec byte" $?
+    binding="$(sed -n 's/^acceptance_binding=//p' "$d/.ralphie/state")"
+    base="$(sed -n 's/^objective_hash=//p' "$d/.ralphie/state")"
+    check "spec exact identity" "$(sha_sum_of "$d/spec.md")" "$base"
+    env RALPHIE_PROJECT="$d" /bin/bash "$RALPHIE" request second >/dev/null
+    env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 RALPHIE_ENGINE_CMD="$d/engine" RALPHIE_ENGINE_CAPS='' \
+        /bin/bash "$RALPHIE" --once --engine custom --spec "$d/spec.md" > "$d/second-out" 2>&1
+    check_ok "identical spec with new request resumes" $?
+    check "new request retains acceptance binding" "$binding" "$(sed -n 's/^acceptance_binding=//p' "$d/.ralphie/state")"
+    check "request does not pollute base identity" "$base" "$(sed -n 's/^objective_hash=//p' "$d/.ralphie/state")"
+    check "new request clears old acceptance work" '' "$(sed -n 's/^acceptance_work=//p' "$d/.ralphie/state")"
+    check_lacks "no work cannot complete new request" 'status=done' "$(cat "$d/.ralphie/state")"
+    check_contains "resume includes new request" second "$(cat "$d/.ralphie/mock-prompt")"
+    ( load_lib "$d"
+      OBJECTIVE_EXPLICIT=0; SPEC_FILE="$d/spec.md"; load_spec
+      ACCEPT_OLD_OBJECTIVE="$(state_get objective_hash '')"; set_objective; acceptance_prepare
+      state_set nochange_streak 2; NOCHANGE_STREAK=2; request_boundary
+      check "same spec/request membership preserves streak" 2 "$NOCHANGE_STREAK"
+      check "same spec/request membership retains binding" "$binding" "$ACCEPT_BIND"
+      ACCEPT_WORK=1; ACCEPT_PASS=1; state_set acceptance_work "$ACCEPT_BIND"
+      request_command third >/dev/null; request_boundary
+      check "new boundary invalidates in-memory pass" 0 "$ACCEPT_PASS"
+      check "new boundary invalidates in-memory work" 0 "$ACCEPT_WORK"
+      true ) || no "request-spec-acceptance group completed" aborted
+    env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 RALPHIE_ENGINE_CMD="$d/engine" RALPHIE_ENGINE_CAPS='' MAKE_WORK=1 \
+        /bin/bash "$RALPHIE" --once --engine custom > "$d/third-out" 2>&1
+    check_ok "bare resume works on stored spec and requests" $?
+    check_contains "new actual work permits completion" status=done "$(cat "$d/.ralphie/state")"
+    check "completion retains acceptance binding" "$binding" "$(sed -n 's/^acceptance_binding=//p' "$d/.ralphie/state")"
+    cmp "$d/spec.md" "$d/.ralphie/OBJECTIVE.md"; check_ok "resume preserves exact full spec" $?
+fi
 
 # ---------------------------------------------------------------- static -----
 dim "static"
@@ -273,7 +937,7 @@ if want "quiet"; then
     dim "invisible"; check_ok "a suppressed line still returns 0" $?
     QUIET=0
 fi
-) 
+true )  || no "the sha group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 # --------------------------------------------------------------- ledger -----
 printf '\n'; dim "ledger"
@@ -347,7 +1011,7 @@ if want "gitignore"; then
     git -C "$d" check-ignore -q "$d/.ralphie/state" && ok "a run ignores ralphie's own state" || no "a run ignores ralphie's own state" "not ignored"
     [ -f "$d/.gitignore" ] && no "it does so without touching .gitignore" "gitignore written" || ok "it does so without touching .gitignore"
 fi
-)
+true )  || no "the state group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 # ----------------------------------------------------------------- lock -----
 printf '\n'; dim "lock"
@@ -362,7 +1026,7 @@ if want "stale-lock"; then
     mkdir -p "$LOCK_FILE"; printf '999999\n' > "$LOCK_FILE/pid"
     lock_acquire >/dev/null 2>&1; check_ok "a stale lock from a dead pid is cleared" $?; lock_release
 fi
-)
+true )  || no "the lock group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 # ---------------------------------------------------------------- gates -----
 printf '\n'; dim "gates"
@@ -423,7 +1087,66 @@ if want "gate-discovery"; then
     [ -f "$GATES_FILE" ] && ok "discovery writes a gates file" || no "discovery" "no file"
     grep -q '^#' "$GATES_FILE" && ok "the gates file explains itself" || no "gates file" "no comments"
 fi
-)
+true )  || no "the gate-trial group ran to completion" "it aborted part-way; every later assertion in it was lost"
+
+if want "release-env-selection"; then
+    d="$(new_project)"
+    # All provider names resolve to local shims, even when testing broken code.
+    mkdir -p "$d/providers"
+    for provider in prime-agent claude codex; do
+        printf '#!/bin/sh\nprintf "called\\n" >> "$PROVIDER_CALLS"\necho "authentication failed" >&2\nexit 1\n' > "$d/providers/$provider"
+        chmod +x "$d/providers/$provider"
+    done
+    make_mock_engine "$d/custom" authfail
+    ( export RALPHIE_ENGINE_CMD="$d/custom" PATH="$d/providers:$PATH"
+      export PROVIDER_CALLS="$d/provider-calls" MOCK_LAST_PROMPT="$d/last-prompt"
+      load_lib "$d"; ledger_init
+      check "env-only selection is explicit" 1 "$ENGINE_EXPLICIT"
+      ENGINE="$(engine_pick "")"
+      check "env-only selection chooses custom" custom "$ENGINE"
+      check "provider fallback shim is present" 0 "$(engine_present prime-agent; echo $?)"
+      printf 'do nothing\n' > "$RUN_DIR/prompt"
+      ENGINE_RETRIES=1 ENGINE_BACKOFF=0 engine_run_with_fallback oneshot "$RUN_DIR/prompt" "$RUN_DIR/log" "$RUN_DIR/out"
+      check_fails "failed env-selected custom stays failed" $?
+      check "custom actually received the prompt" 'do nothing' "$(cat "$d/last-prompt")"
+      check "failed custom never calls a provider" no "$([ -e "$PROVIDER_CALLS" ] && echo yes || echo no)"
+      RALPHIE_ENGINE_CMD="$d/missing"
+      picked="$(engine_pick "" 2>"$d/pick-error")"; rc=$?
+      check_fails "missing env-selected executable fails closed" "$rc"
+      check "missing custom does not select a provider" "" "$picked"
+      check "missing custom never probes a provider" no "$([ -e "$PROVIDER_CALLS" ] && echo yes || echo no)"
+      check_contains "missing custom explains the failure" 'custom engine is not installed' "$(cat "$d/pick-error")"
+      parse_args --engine codex
+      check "explicit CLI selection overrides env selection" codex "$(engine_pick "$ENGINE")"
+    true ) || no "the release-env-selection group ran to completion" "it aborted part-way"
+fi
+
+if want "release-requirements-gates"; then
+    d="$(new_project)"; ( load_lib "$d"; ledger_init
+        printf 'pytest\nruff\nmypy\n' > "$d/requirements.txt"
+        mkdir -p "$d/.venv/bin" "$d/src"
+        for tool in pytest ruff mypy; do
+            printf '#!/bin/sh\nexit 0\n' > "$d/.venv/bin/$tool"
+            chmod +x "$d/.venv/bin/$tool"
+        done
+        check_contains "requirements identifies Python" python "$(detect_stack)"
+        candidates="$(gate_candidates)"
+        check_contains "requirements proposes project pytest" '.venv/bin/pytest -q' "$candidates"
+        check_contains "requirements proposes project ruff" '.venv/bin/ruff check .' "$candidates"
+        check_contains "requirements proposes project mypy" '.venv/bin/mypy src' "$candidates"
+        discover_gates >"$d/discovery-log" 2>&1
+        check "requirements discovers three runnable checks" 3 "$(gates_count)"
+        : > "$GATES_FILE"
+        discover_gates >"$d/discovery-log" 2>&1
+        check "an existing empty gate file remains operator-owned" 0 "$(gates_count)"
+        guidance="$(cmd_gates)"
+        check_contains "empty gate guidance names manual gates" '--gate' "$guidance"
+        check_contains "empty gate guidance names rediscovery" 'gates --redetect' "$guidance"
+        check_contains "help explains workspace boundary" 'not child workspace packages' "$(usage)"
+        discover_gates 1 >"$d/discovery-log" 2>&1
+        check "explicit rediscovery restores Python candidates" 3 "$(gates_count)"
+    true ) || no "the release-requirements-gates group ran to completion" "it aborted part-way"
+fi
 
 # --------------------------------------------------------------- engine -----
 printf '\n'; dim "engine"
@@ -512,7 +1235,7 @@ if want "engine-custom"; then
       bash -c 'RALPHIE_LIB=1 . '"$d"'/ralphie.sh; engine_names' 2>&1)"
     case "$en" in *custom*) ok "a custom engine appears in the table";; *) no "a custom engine appears in the table" "$en";; esac
 fi
-)
+true )  || no "the engine-table group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 # --------------------------------------------------------------- report -----
 printf '\n'; dim "report"
@@ -541,7 +1264,63 @@ if want "memory"; then
     n="$(count_of grep '^- ' "$MEMORY_FILE")"
     [ "$n" -le 60 ] && ok "the memory file stays bounded" || no "memory bound" "$n lessons"
 fi
-)
+true )  || no "the parse-report group ran to completion" "it aborted part-way; every later assertion in it was lost"
+
+
+# Byte bounds protect prompts and new learning without rewriting source tasks.
+if want "context-bounds"; then
+    d="$(new_project)"; ( load_lib "$d"; ledger_init
+    huge="$(LC_ALL=C awk 'BEGIN { for (i=0;i<200000;i++) printf "x" }')"
+    printf -- '- [ ] short task\n- [ ] %s END-TASK\n' "$huge" > "$d/TODO.md"
+    mkdir -p "$d/docs"; printf -- '- [ ] nested task\n' > "$d/docs/TODO.md"
+    cp "$d/TODO.md" "$d/todo.before"
+    bl="$(backlog_items)"
+    check_contains "short task unchanged" "TODO.md:1:- [ ] short task" "$bl"
+    check_contains "nested source is unambiguous" "docs/TODO.md:1:" "$bl"
+    check_contains "long task points to full source" "[truncated; read full item at TODO.md:2]" "$bl"
+    [ "${#bl}" -lt 1200 ]; check_ok "huge task excerpt bounded" $?
+    cmp -s "$d/TODO.md" "$d/todo.before"; check_ok "task source untouched" $?
+    printf '## Q1  [open]\nshort question\n%s END-QUESTION\n' "$huge" > "$ASK_FILE"
+    cp "$ASK_FILE" "$d/ask.before"
+    a="$(asks_open)"
+    check_contains "short question unchanged" "    short question" "$a"
+    check_contains "question source pointer" "[truncated; read full question at .ralphie/ASK.md:3]" "$a"
+    [ "${#a}" -lt 1100 ]; check_ok "huge question bounded" $?
+    cmp -s "$ASK_FILE" "$d/ask.before"; check_ok "question source untouched" $?
+    remember "older useful lesson" >/dev/null 2>&1
+    remember "$huge" >/dev/null 2>&1
+    check_contains "stored lesson visibly shortened" "[truncated]" "$(cat "$MEMORY_FILE")"
+    [ "$(file_bytes "$MEMORY_FILE")" -lt 1100 ]; check_ok "huge lesson storage bounded" $?
+    [ "$(file_bytes "$EVENTS_FILE")" -lt 2500 ]; check_ok "learning ledger bounded too" $?
+    brief="$(lessons_brief)"
+    check_contains "older useful lesson survives huge lesson" "- older useful lesson" "$brief"
+    i=0; while [ "$i" -lt 8 ]; do remember "lesson $i $(printf '%s' "$huge" | head -c 850)" >/dev/null 2>&1; i=$((i+1)); done
+    brief="$(lessons_brief)"
+    [ "${#brief}" -le 4000 ]; check_ok "lesson prompt byte budget" $?
+    check_contains "lesson omission is visible" "[Older/oversized lessons omitted; see .ralphie/MEMORY.md]" "$brief"
+    bad="$(printf '%s\n' "$brief" | grep -vE '^(- |\[Older/)')"
+    check "no partial lesson lines" "" "$bad"
+    check_contains "newest lesson complete" "- lesson 7 " "$brief"
+    check_contains "older lessons stay stored" "- older useful lesson" "$(cat "$MEMORY_FILE")"
+    printf -- '- %s LEGACY\n' "$huge" >> "$MEMORY_FILE"
+    brief="$(lessons_brief)"
+    check_contains "legacy giant does not evict recent useful lessons" "- lesson 7 " "$brief"
+    [ "${#brief}" -le 4000 ]; check_ok "legacy giant prompt remains bounded" $?
+    CY_N=1; CY_MAY_COMMIT=1; GATES_GREEN=no; GATE_FAIL_CMD='test -f expected'
+    REPORT_SUMMARY='Tried "cache reset" but check still fails'
+    record_outcome >/dev/null 2>&1
+    h="$(history_brief)"
+    check_contains "history labels engine attempt" 'engine-reported attempt: Tried "cache reset"' "$h"
+    check_contains "history preserves gate evidence" "gates red: test -f expected" "$h"
+    ENGINE=custom; FOCUS_KIND=objective; FOCUS='repair'; OBJECTIVE_TEXT='repair'
+    build_prompt "$d/next-brief"
+    check_contains "next brief shows failed approach" 'engine-reported attempt: Tried "cache reset"' "$(cat "$d/next-brief")"
+    REPORT_SUMMARY="$huge"; record_outcome >/dev/null 2>&1
+    h="$(history_brief)"
+    check_contains "huge attempt visibly shortened" "[truncated]; gates red: test -f expected" "$h"
+    [ "${#h}" -lt 1500 ]; check_ok "failed approach history bounded" $?
+    true ) || no "context-bounds group completed" "aborted early"
+fi
 
 # ---------------------------------------------------------------- human -----
 printf '\n'; dim "human"
@@ -565,7 +1344,7 @@ if want "notify"; then
     notify "hello colony"; sleep 1
     check "the notify hook receives the message" "hello colony" "$(cat "$d/notified.txt" 2>/dev/null)"
 fi
-)
+true )  || no "the ask group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 # ----------------------------------------------------------------- loop -----
 printf '\n'; dim "loop (mock engine, no network)"
@@ -602,7 +1381,7 @@ if want "loop-red"; then
     out="$(run_loop_test "$d" fix)"
     check_contains "a still-red gate is reported" "still red" "$out"
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "red work is not committed" "committed anyway: $gl";; *) ok "red work is not committed";; esac
+    check_lacks "red work is not committed" ralphie "${gl}"
 fi
 
 if want "loop-nochange"; then
@@ -627,7 +1406,7 @@ if want "loop-quiet"; then
         ./ralphie.sh --once --quiet --engine custom ) > "$TMPROOT/quiet.out" 2> "$TMPROOT/quiet.err"
     check_ok "a quiet run still exits 0" $?
     qout="$(cat "$TMPROOT/quiet.out")"; qerr="$(cat "$TMPROOT/quiet.err")"
-    case "$qout" in *"cycle 1"*) no "--quiet drops the cycle banner" "$qout";; *) ok "--quiet drops the cycle banner";; esac
+    check_lacks "--quiet drops the cycle banner" "cycle 1" "${qout}"
     case "$qout" in *"focus:"*)   no "--quiet drops the cycle detail" "$qout";; *) ok "--quiet drops the cycle detail";; esac
     check_contains "--quiet keeps the gate verdict" "gates: green" "$qout"
     check_contains "--quiet keeps a warning on stderr" "changed nothing" "$qerr"
@@ -665,7 +1444,10 @@ if want "loop-transient-retry"; then
     out="$( cd "$d" && env MOCK_TARGET=x MOCK_LAST_PROMPT="$TMPROOT/last-prompt.txt" ENGINE_RETRIES=2 ENGINE_BACKOFF=1 \
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" \
         ./ralphie.sh --once --engine custom 2>&1 )"
-    check_contains "a transient failure is retried" "attempt 2" "$(grep -o 'attempt 2' "$d/.ralphie/events.jsonl" | head -1)attempt 2"
+    # The needle used to be concatenated onto the haystack, so this printed
+    # `ok` with an empty events file and with no events file at all.
+    check_contains "a transient failure is retried" "attempt 2" \
+        "$(grep -o 'attempt 2' "$d/.ralphie/events.jsonl" 2>/dev/null | head -1)"
     check_contains "a transient failure is classified" "transient" "$out$(cat "$d/.ralphie/events.jsonl")"
 fi
 
@@ -680,7 +1462,7 @@ if want "watchdog-buffered"; then
     out="$( cd "$d" && env ENGINE_IDLE_TIMEOUT=2 ENGINE_RETRIES=1 \
         RALPHIE_ENGINE_CMD="$d/slow" RALPHIE_ENGINE_CAPS="" \
         ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"no output for"*) no "a silent buffered engine survives" "watchdog killed it";; *) ok "a silent buffered engine survives";; esac
+    check_lacks "a silent buffered engine survives" "no output for" "${out}"
 
     # A streaming engine that really does go silent must still be killed.
     out="$( cd "$d" && env ENGINE_IDLE_TIMEOUT=2 ENGINE_RETRIES=1 \
@@ -725,6 +1507,50 @@ if want "loop-ask"; then
     check_contains "the ask command shows it" "postgres" "$out"
 fi
 
+if want "loop-protected-notices"; then
+    for history in baseline unborn; do
+        d="$(new_project)"
+        printf 'original\n' > "$d/mine.txt"
+        mkdir -p "$d/.ralphie"; printf 'test -f saved.txt\n' > "$d/.ralphie/gates"
+        if [ "$history" = baseline ]; then
+            ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+            printf 'operator work\n' > "$d/mine.txt"
+        fi
+        # Outside the project so the mock is not itself a protected path.
+        mock="$TMPROOT/notices-$history"
+        output="$TMPROOT/notices-$history.out"
+        before="$TMPROOT/notices-$history.before"
+        cat > "$mock" <<MOCK
+#!/usr/bin/env bash
+cat >/dev/null
+grep -q 'no baseline commit: existing protected files' "$output" && printf 'yes' > "$before"
+printf 'engine edit\n' >> mine.txt
+printf 'saved\n' > saved.txt
+printf '<<<RALPHIE\nstatus: progress\nsummary: saved new file\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+        chmod +x "$mock"
+        ( cd "$d" && env RALPHIE_PROJECT="$d" RALPHIE_ENGINE_CMD="$mock" RALPHIE_ENGINE_CAPS="" \
+            ./ralphie.sh --once --engine custom ) > "$output" 2>&1
+        check "$history notice cycle succeeds" 0 "$?"
+        out="$(cat "$output")"
+        check_contains "$history partial save is explicit" "protected changes remain unsaved in this commit" "$out"
+        check_contains "$history manual save guidance" "manually save the intended changes" "$out"
+        check "$history protected warning is bounded" 1 "$(grep -c 'protected changes remain unsaved in this commit' "$output")"
+        check "$history new file is saved" saved "$(git -C "$d" show HEAD:saved.txt 2>/dev/null)"
+        check_contains "$history engine edit remains on disk" "engine edit" "$(cat "$d/mine.txt")"
+        if [ "$history" = baseline ]; then
+            check "$history original commit is unchanged" original "$(git -C "$d" show HEAD:mine.txt)"
+            check_contains "$history operator edit remains on disk" "operator work" "$(cat "$d/mine.txt")"
+            check_lacks "$history has no unborn warning" "no baseline commit:" "$out"
+        else
+            git -C "$d" cat-file -e HEAD:mine.txt 2>/dev/null && no "unborn original is not committed" "mine.txt was saved" || ok "unborn original is not committed"
+            check_contains "unborn original remains on disk" original "$(cat "$d/mine.txt")"
+            check "unborn baseline guidance precedes engine spend" yes "$(cat "$before" 2>/dev/null)"
+            check_contains "unborn guidance avoids blind add" "do not add private files blindly" "$out"
+        fi
+    done
+fi
+
 if want "loop-predirty"; then
     d="$(new_project)"
     printf 'original\n' > "$d/mine.txt"
@@ -762,7 +1588,7 @@ if want "spacey-path"; then
     printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "y\\n" > "made here.txt"\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: spacey\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$sd/mock e"
     chmod +x "$sd/mock e"
     out="$( cd "$sd" && env RALPHIE_ENGINE_CMD="$sd/mock e" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"not installed"*) no "an engine path containing spaces is found" "reported not installed";; *) ok "an engine path containing spaces is found";; esac
+    check_lacks "an engine path containing spaces is found" "not installed" "${out}"
     check_contains "a project path containing spaces completes a cycle" "gates: green" "$out"
     gl="$( cd "$sd" && git log --oneline 2>&1 )"
     case "$gl" in *ralphie*) ok "work commits from a path containing spaces";; *) no "work commits from a path containing spaces" "$gl";; esac
@@ -783,7 +1609,7 @@ if want "gate-tamper"; then
     chmod +x "$d/cheat"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/cheat" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "deleting a gate never produces a commit" "it committed anyway";; *) ok "deleting a gate never produces a commit";; esac
+    check_lacks "deleting a gate never produces a commit" ralphie "${gl}"
     grep -qxF -- 'grep -q WORKING app.txt' "$d/.ralphie/gates" && ok "the deleted gate is restored" || no "the deleted gate is restored" "$(cat "$d/.ralphie/gates")"
     check_contains "the tampering is reported" "disappeared during this cycle" "$out"
     # A damaged cycle is reported as untrusted rather than as a measurement:
@@ -803,7 +1629,7 @@ if want "gate-tamper"; then
     chmod +x "$d2/adder"
     out="$( cd "$d2" && env RALPHIE_ENGINE_CMD="$d2/adder" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     grep -qxF -- 'test -f added.txt' "$d2/.ralphie/gates" && ok "a gate the engine adds is kept" || no "a gate the engine adds is kept"
-    case "$out" in *disappeared*) no "adding a gate is not treated as tampering" "flagged as tampering";; *) ok "adding a gate is not treated as tampering";; esac
+    check_lacks "adding a gate is not treated as tampering" disappeared "${out}"
     check_contains "the added gate is honoured in the same cycle" "gates: green" "$out"
 fi
 
@@ -819,12 +1645,54 @@ if want "state-nuked"; then
     printf '#!/usr/bin/env bash\ncat >/dev/null\nrm -rf .ralphie\nprintf "tidied\\n\\n<<<RALPHIE\\nstatus: done\\nsummary: tidied up\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/tidy"
     chmod +x "$d/tidy"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/tidy" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"No such file or directory"*) no "deleting .ralphie does not break the run" "path errors leaked";; *) ok "deleting .ralphie does not break the run";; esac
-    case "$out" in *"failed 3 attempts"*) no "the engine answer survives the deletion" "engine_run gave up";; *) ok "the engine answer survives the deletion";; esac
+    check_lacks "deleting .ralphie does not break the run" "No such file or directory" "${out}"
+    check_lacks "the engine answer survives the deletion" "failed 3 attempts" "${out}"
     grep -qxF -- 'grep -q WORKING app.txt' "$d/.ralphie/gates" 2>/dev/null && ok "gates are restored from memory" || no "gates are restored from memory" "$(cat "$d/.ralphie/gates" 2>&1)"
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "nothing is committed after state deletion" "it committed";; *) ok "nothing is committed after state deletion";; esac
+    check_lacks "nothing is committed after state deletion" ralphie "${gl}"
     [ -f "$d/.ralphie/state" ] && ok "the ledger directory is re-created" || no "the ledger directory is re-created"
+fi
+
+if want "completion-needs-gates"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      ledger_init
+      printf '# no health gates\n' > "$GATES_FILE"
+      ACCEPT_BIND=""; DONE_WHEN_GREEN=1; NOCHANGE_STREAK=0
+      REPORT_STATUS=done; REPORT_SUMMARY="claimed done"; REPORT_LESSON=""; REPORT_ASK=""
+      state_set status running
+      cycle_begin
+      cycle_observe; check "no-gate observe cannot complete" 0 "$?"
+      check "observe measured absence of health gates" 1 "$GATES_NONE"
+      check "no-gate observe keeps running" running "$(state_get status '')"
+      cycle_learn; check "no-gate done report cannot complete" 0 "$?"
+      check "no-gate learn keeps running" running "$(state_get status '')"
+      check_lacks "neither completion path records done without gates" '"kind":"cycle","status":"done"' "$(cat "$EVENTS_FILE")"
+      # Positive controls: the existing completion paths still work with gates.
+      printf 'true\n' > "$GATES_FILE"
+      cycle_begin
+      cycle_observe; check "green observe still completes" 10 "$?"
+      state_set status running
+      cycle_learn; check "green done report still completes" 10 "$?"
+      check "verified completion sets done" done "$(state_get status '')"
+      true ) || no "completion-needs-gates helper group completed" "aborted"
+
+    for report in done progress; do
+        d="$(new_project)"
+        mkdir -p "$d/.ralphie"; printf '# none\n' > "$d/.ralphie/gates"
+        printf 'start\n' > "$d/work.txt"
+        make_mock_engine "$d/mock-engine" fix
+        ( cd "$d" && git add -A && git commit -qm init )
+        out="$(cd "$d" && env MOCK_STATUS="$report" MOCK_TARGET="$d/work.txt" \
+            MOCK_LAST_PROMPT="$TMPROOT/completion-prompt" RALPHIE_ENGINE_CMD="$d/mock-engine" \
+            RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --no-update --engine custom --done-when-green 2>&1)"
+        check_ok "no-gate $report cycle exits normally" "$?"
+        check "no-gate $report run pauses instead of completing" paused "$(grep '^status=' "$d/.ralphie/state" | cut -d= -f2)"
+        check_contains "no-gate $report cycle is unverified" '"kind":"cycle","status":"unverified"' "$(cat "$d/.ralphie/events.jsonl")"
+        check_lacks "no-gate $report cycle never records done" '"kind":"cycle","status":"done"' "$(cat "$d/.ralphie/events.jsonl")"
+        check_lacks "no-gate $report output never claims completion" 'objective complete' "$out"
+        check_contains "no-gate $report commit stays unverified" 'NOT VERIFIED' "$(git -C "$d" log -1 --format=%B)"
+    done
 fi
 
 if want "unverified"; then
@@ -837,12 +1705,12 @@ if want "unverified"; then
     make_mock_engine "$d/mock-engine" fix
     out="$( cd "$d" && env MOCK_TARGET="$d/calc.py" MOCK_LAST_PROMPT="$TMPROOT/last-prompt.txt" \
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"gates: green"*) no "no gates is never called green" "claimed green";; *) ok "no gates is never called green";; esac
+    check_lacks "no gates is never called green" "gates: green" "${out}"
     check_contains "the operator is told nothing can be verified" "nothing here can be verified" "$out"
-    check_contains "committing unverified work says so" "committing unverified work" "$out"
+    check_contains "unverified work is explicitly reported" "unverified work - no gate exists to check it" "$out"
     msg="$( cd "$d" && git log -1 --format=%B 2>/dev/null )"
     case "$msg" in *"NOT VERIFIED"*) ok "the commit message admits it was not verified";; *) no "the commit message admits it was not verified" "$msg";; esac
-    case "$msg" in *"Gates green"*) no "the commit message does not claim green" "it claims green";; *) ok "the commit message does not claim green";; esac
+    check_lacks "the commit message does not claim green" "Gates green" "${msg}"
 fi
 
 if want "dirty-progress"; then
@@ -857,7 +1725,7 @@ if want "dirty-progress"; then
     printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "DONE\\n" >> calc.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: finished it\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/finish"
     chmod +x "$d/finish"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/finish" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"changed nothing"*) no "work on an already-dirty file is seen" "reported changed nothing";; *) ok "work on an already-dirty file is seen";; esac
+    check_lacks "work on an already-dirty file is seen" "changed nothing" "${out}"
     check_contains "the gate turning green is noticed" "gates: green" "$out"
     # The operator's edit and the agent's edit are in the SAME file, so the
     # verified tree cannot be committed without taking the operator's work too.
@@ -881,7 +1749,7 @@ if want "dirty-elsewhere"; then
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/finish2" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
     case "$gs" in *calc.py*) ok "work in untouched files is committed";; *) no "work in untouched files is committed" "[$gs] $out";; esac
-    case "$gs" in *mine.txt*) no "the operator's file is still excluded" "it was committed";; *) ok "the operator's file is still excluded";; esac
+    check_lacks "the operator's file is still excluded" mine.txt "${gs}"
 fi
 
 if want "concurrent-cmd"; then
@@ -941,7 +1809,7 @@ if want "option-value"; then
     # A reader that stops early must leave nothing on the console: neither a
     # killed-by-SIGPIPE message nor bash's "write error: Broken pipe".
     noise="$( cd "$d" && ./ralphie.sh status --json 2>&1 | head -c 40 | tail -c 12 )"
-    case "$noise" in *error*|*Broken*) no "a truncated read prints no error" "$noise";; *) ok "a truncated read prints no error";; esac
+    check_lacks_any "a truncated read prints no error" "${noise}" error Broken
     out="$( cd "$d" && ./ralphie.sh status --json 2>/dev/null )"
     case "$out" in *'"version"'*) ok "a full read is still complete JSON";; *) no "a full read is still complete JSON" "$out";; esac
 fi
@@ -973,13 +1841,13 @@ if want "secrets"; then
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/leaky" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
     for bad in .env big.bin node_modules; do
-        case "$gs" in *"$bad"*) no "an autonomous commit never includes $bad" "it was committed";; *) ok "an autonomous commit never includes $bad";; esac
+        check_lacks "an autonomous commit never includes $bad" "$bad" "${gs}"
     done
     case "$gs" in *feature.py*) ok "the real work is still committed";; *) no "the real work is still committed" "[$gs]";; esac
     check_contains "a possible secret is escalated to the operator" "held back" "$out"
     case "$out" in *"build artefact"*) ok "build output is noted, not escalated";; *) no "build output is noted, not escalated" "$out";; esac
     asks="$( cd "$d" && ./ralphie.sh ask 2>&1 )"
-    case "$asks" in *node_modules*) no "build output does not become a question" "node_modules was escalated";; *) ok "build output does not become a question";; esac
+    check_lacks "build output does not become a question" node_modules "${asks}"
     [ -f "$d/.env" ] && ok "the held-back file is left on disk, not destroyed" || no "the held-back file is left on disk"
 fi
 
@@ -1058,10 +1926,10 @@ if want "no-repo-edit"; then
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
     [ -f "$d/.gitignore" ] && no "the operator's .gitignore is never written" "it was created" || ok "the operator's .gitignore is never written"
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
-    case "$gs" in *.gitignore*) no "no housekeeping lands in the commit" "gitignore committed";; *) ok "no housekeeping lands in the commit";; esac
+    check_lacks "no housekeeping lands in the commit" .gitignore "${gs}"
     grep -qxF '.ralphie/' "$d/.git/info/exclude" 2>/dev/null && ok "the exclusion is local to the clone" || no "the exclusion is local to the clone"
     st="$( cd "$d" && git status --porcelain 2>/dev/null )"
-    case "$st" in *.ralphie*) no "ralphie state stays out of git status" "it is visible";; *) ok "ralphie state stays out of git status";; esac
+    check_lacks "ralphie state stays out of git status" .ralphie "${st}"
 fi
 
 if want "no-estimated-usage"; then
@@ -1074,9 +1942,9 @@ if want "no-estimated-usage"; then
     out="$( cd "$d" && env MOCK_TARGET="$d/calc.py" MOCK_LAST_PROMPT="$TMPROOT/last-prompt.txt" \
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     check "an engine without usage reports no tokens" "0" "$(grep '^tokens_spent=' "$d/.ralphie/state" 2>/dev/null | cut -d= -f2 | grep . || echo 0)"
-    case "$out" in *"tokens this run"*) no "no token figure is invented" "printed a token count";; *) ok "no token figure is invented";; esac
+    check_lacks "no token figure is invented" "tokens this run" "${out}"
     st="$( cd "$d" && ./ralphie.sh status 2>&1 )"
-    case "$st" in *"tokens "*) no "status shows no token line without data" "shown";; *) ok "status shows no token line without data";; esac
+    check_lacks "status shows no token line without data" "tokens " "${st}"
     js="$( cd "$d" && ./ralphie.sh status --json 2>&1 )"
     case "$js" in *'"tokens":0'*) ok "status --json reports zero rather than omitting the field";; *) no "status --json reports zero" "$js";; esac
 fi
@@ -1129,17 +1997,22 @@ if want "backlog-context"; then
     p="$(cat "$TMPROOT/last-prompt.txt" 2>/dev/null)"
     check_contains "an explicit objective still leads" "do the specific thing" "$p"
     check_contains "the backlog is still shown as context" "wire up the exporter" "$p"
-    case "$p" in *"done already"*) no "completed backlog items are not shown" "showed a done item";; *) ok "completed backlog items are not shown";; esac
+    check_lacks "completed backlog items are not shown" "done already" "${p}"
 fi
 
 if want "documented-knobs"; then
     # Every environment variable that changes behaviour must be in --help.
+    # DERIVED from the source, not a hardcoded list. The list was 19 names
+    # written by hand, so a knob added afterwards was invisible to the test that
+    # exists to find exactly that -- and four had already slipped through.
     doc="$( "$RALPHIE" --help 2>/dev/null | sed -n '/^ENVIRONMENT/,/^FILES/p' )"
     missing=""
-    for k in ENGINE_TIMEOUT ENGINE_RETRIES ENGINE_BACKOFF ENGINE_IDLE_TIMEOUT ENGINE_MAX_TURNS \
-             GATE_TIMEOUT GATE_RETRIES GATE_TRIAL_TIMEOUT GATE_LOG_MAX NOCHANGE_LIMIT MEMORY_MAX \
-             RALPHIE_KEEP_CYCLES RALPHIE_KEEP_RUNS RALPHIE_LEDGER_MAX RALPHIE_LEDGER_GENERATIONS \
-             RALPHIE_MAX_COMMIT_BYTES RALPHIE_GIT_INIT RALPHIE_ENGINE_SESSION RALPHIE_PROJECT; do
+    # A KNOB is a variable Ralphie reads from the environment and never assigns
+    # itself. Anything it assigns is internal plumbing, whatever it is called --
+    # a rule that needs no maintenance, unlike a list of names.
+    for k in $(grep -oE '\$\{(RALPHIE|ENGINE|GATE|NOCHANGE|MEMORY|MIN|NO)_[A-Z_]+' "$RALPHIE" \
+               | sed 's/^\${//' | sort -u); do
+        grep -qE "(^|[;&|(]|[[:space:]])$k=" "$RALPHIE" && continue
         case "$doc" in *"$k"*) ;; *) missing="$missing $k";; esac
     done
     check "every tuning knob is documented" "" "$missing"
@@ -1195,7 +2068,7 @@ if want "hostile-tree"; then
           *) ok "no shell errors leak [$nm]";;
         esac
         gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
-        case "$gs" in *.env*|*passwd*) no "no secret is ever committed [$nm]" "[$gs]";; *) ok "no secret is ever committed [$nm]";; esac
+        check_lacks_any "no secret is ever committed [$nm]" "${gs}" .env passwd
     }
     run_hostile "deletes a tracked file"  'rm -f app.txt; printf "w\n" > ok.txt'
     run_hostile "secret in a subdirectory" 'mkdir -p cfg; printf "AWS_SECRET_ACCESS_KEY=AKIA_X\n" > cfg/.env; printf "w\n" > ok.txt'
@@ -1286,7 +2159,7 @@ if want "gate-eats-gate"; then
         ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eat" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) > "$d/r$i" 2>&1
     done
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "a gate that eats a gate never yields a commit" "it committed: $gl";; *) ok "a gate that eats a gate never yields a commit";; esac
+    check_lacks "a gate that eats a gate never yields a commit" ralphie "${gl}"
     grep -q 'a + b' "$d/.ralphie/gates" && ok "the eaten gate is restored and stays" || no "the eaten gate is restored and stays"
     # Assert on the ledger, not on console text: the event is the authoritative
     # record, it cannot be reordered across three separate runs, and a failure
@@ -1345,7 +2218,7 @@ fi
 if want "notify-delivered"; then
     d="$(new_project)"
     ( load_lib "$d"; ledger_init
-      RALPHIE_NOTIFY_CMD="sleep 1; printf '%s' \"\$RALPHIE_MESSAGE\" > $d/got.txt" notify "hello colony" )
+      RALPHIE_NOTIFY_CMD="sleep 1; printf '%s' \"\$RALPHIE_MESSAGE\" > $d/got.txt" notify "hello colony"; true )  || no "the gate-orphans group ran to completion" "it aborted part-way; every later assertion in it was lost"
     check "a slow notification hook still delivers" "hello colony" "$(cat "$d/got.txt" 2>/dev/null)"
 fi
 
@@ -1363,7 +2236,7 @@ if want "gate-orphans"; then
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     sleep 2
     check "a gate leaves no orphaned process" "0" "$(exact_count 'sleep 126')"
-    case "$out" in *setpgid*) no "no job-control noise reaches the operator" "setpgid message leaked";; *) ok "no job-control noise reaches the operator";; esac
+    check_lacks "no job-control noise reaches the operator" setpgid "${out}"
     pkill -x -f 'sleep 126' 2>/dev/null || true
 fi
 
@@ -1397,7 +2270,7 @@ if want "no-redetect-during-run"; then
     check_contains "redetect refuses while a loop is running" "loop is running here" "$out"
     wait "$rp" 2>/dev/null
     out="$( cd "$d" && ./ralphie.sh gates --redetect 2>&1 )"
-    case "$out" in *"loop is running"*) no "redetect works once the loop is done" "still refused";; *) ok "redetect works once the loop is done";; esac
+    check_lacks "redetect works once the loop is done" "loop is running" "${out}"
 fi
 
 if want "inflight-rename"; then
@@ -1412,7 +2285,7 @@ if want "inflight-rename"; then
     ( cd "$d" && env MOCK_TARGET="$d/calc.py" MOCK_LAST_PROMPT="$TMPROOT/last-prompt.txt" \
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
-    case "$gs" in *name.txt*) no "an in-flight rename is left entirely alone" "part of it was committed: [$gs]";; *) ok "an in-flight rename is left entirely alone";; esac
+    check_lacks "an in-flight rename is left entirely alone" name.txt "${gs}"
 fi
 
 if want "state-unusable"; then
@@ -1430,7 +2303,7 @@ if want "state-unusable"; then
     [ -f "$d/.ralphie/state" ] && ok "the state file is repaired to a real file" || no "the state file is repaired to a real file"
     check "the cycle number is recorded again" "1" "$(grep '^cycle=' "$d/.ralphie/state" | cut -d= -f2)"
     case "$out" in *"cycle 1 "*) ok "the cycle is numbered in the output";; *) no "the cycle is numbered in the output" "blank cycle number";; esac
-    case "$out" in *"reset --hard"*) ok "the recovery point still works";; *) no "the recovery point still works";; esac
+    case "$out" in *"reset --keep"*) ok "the recovery point still works";; *) no "the recovery point still works" "no undo line";; esac
 fi
 
 if want "empty-answer"; then
@@ -1457,9 +2330,9 @@ if want "report-injection"; then
     printf '#!/usr/bin/env bash\np="$(cat)"\nprintf "%%s\\n" "$p"\nprintf "I did nothing.\\n"\n' > "$d/echoer"
     chmod +x "$d/echoer"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/echoer" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"objective complete"*) no "an injected report block cannot declare done" "it declared done";; *) ok "an injected report block cannot declare done";; esac
+    check_lacks "an injected report block cannot declare done" "objective complete" "${out}"
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "an injected report block cannot cause a commit" "it committed";; *) ok "an injected report block cannot cause a commit";; esac
+    check_lacks "an injected report block cannot cause a commit" ralphie "${gl}"
     check "the project is still reported broken" "BROKEN" "$(cat "$d/app.txt")"
 fi
 
@@ -1646,7 +2519,7 @@ if want "gates-survive-runs"; then
     grep -qxF -- 'grep -q WORKING app.txt' "$d/.ralphie/gates" 2>/dev/null && ok "gates deleted between runs are restored" || no "gates deleted between runs are restored" "$(cat "$d/.ralphie/gates" 2>&1)"
     check_contains "the restoration is reported" "missing now" "$out"
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "a broken project is still never committed" "it committed";; *) ok "a broken project is still never committed";; esac
+    check_lacks "a broken project is still never committed" ralphie "${gl}"
 fi
 
 if want "self-modification"; then
@@ -1661,7 +2534,7 @@ if want "self-modification"; then
     check_contains "editing the running script is reported" "running script was modified" "$out"
     asks="$( cd "$d" && ./ralphie.sh ask 2>&1 )"
     check_contains "and escalated to a human" "own script was modified" "$asks"
-    case "$out" in *"objective complete"*) no "a self-modifying cycle cannot claim done" "claimed done";; *) ok "a self-modifying cycle cannot claim done";; esac
+    check_lacks "a self-modifying cycle cannot claim done" "objective complete" "${out}"
 fi
 
 if want "engine-question-attributed"; then
@@ -1717,7 +2590,7 @@ if want "json-always-valid"; then
     # `status --json` emitted "cycle":nine and exited 0. Invalid JSON that
     # claims success is worse than an error.
     d="$(new_project)"
-    ( load_lib "$d"; ledger_init ) >/dev/null 2>&1
+    ( load_lib "$d"; ledger_init; true ) >/dev/null 2>&1  || no "the state-rebuild group ran to completion" "it aborted part-way; every later assertion in it was lost"
     printf 'cycle=nine\npass_count=lots\nrun_cost=not-a-number\n' >> "$d/.ralphie/state"
     out="$( cd "$d" && ./ralphie.sh status --json 2>&1 )"
     if command -v python3 >/dev/null 2>&1; then
@@ -1759,7 +2632,7 @@ if want "owned-files-repair"; then
         out="$( cd "$d" && env MOCK_TARGET="$d/calc.py" MOCK_LAST_PROMPT="$TMPROOT/last-prompt.txt" \
             RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
         [ -f "$d/.ralphie/$f" ] && ok "a directory in place of .ralphie/$f is repaired" || no "a directory in place of .ralphie/$f is repaired"
-        case "$out" in *"Is a directory"*) no "no raw shell error leaks for $f" "leaked";; *) ok "no raw shell error leaks for $f";; esac
+        check_lacks "no raw shell error leaks for $f" "Is a directory" "${out}"
     done
 fi
 
@@ -1772,12 +2645,12 @@ if want "secret-redaction"; then
         check "an aws key is withheld"        "use <redacted-aws-key> now"      "$(redact_secrets 'use AKIAIOSFODNN7EXAMPLE now')"
         check "a github token is withheld"    "token <redacted-token>"          "$(redact_secrets 'token ghp_abcdefghijklmnopqrstuvwxyz012345')"
         check "an ordinary answer is untouched" "use postgres not sqlite"       "$(redact_secrets 'use postgres not sqlite')"
-    )
+    true )  || no "the update-url-safety group ran to completion" "it aborted part-way; every later assertion in it was lost"
     d="$(new_project)"
     ( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; ledger_init; ask_human "which database?"' ) >/dev/null 2>&1
     ( cd "$d" && ./ralphie.sh answer 1 "use postgres, the password is hunter2-CORRECT-HORSE" ) >/dev/null 2>&1
     mem="$(cat "$d/.ralphie/MEMORY.md" 2>/dev/null)"
-    case "$mem" in *hunter2*) no "a secret never reaches the durable memory" "it was stored";; *) ok "a secret never reaches the durable memory";; esac
+    check_lacks "a secret never reaches the durable memory" hunter2 "${mem}"
     case "$mem" in *postgres*) ok "the useful part of the answer is kept";; *) no "the useful part of the answer is kept" "$mem";; esac
 fi
 
@@ -1788,7 +2661,16 @@ if want "update-url-safety"; then
     for bad in "https://github.com/a/b/../../../../evil" "https://github.com/a/b/c/d" "https://github.com/a b/c"; do
         ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "$bad" ) >/dev/null 2>&1
         u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; PROJECT=$PWD; update_url 2>/dev/null' )"
-        case "$u" in *..*|*"github.com/a/b/c/d"*) no "an implausible origin is refused [$bad]" "derived: $u";; *) ok "an implausible origin is refused [$bad]";; esac
+        # Refusal means an EMPTY url, so emptiness is the pass here -- witnessed
+        # by the final assertion below, which proves update_url still derives a
+        # real url from a sane origin. Without that witness this loop would pass
+        # just as happily if update_url were deleted.
+        case "${u:-}" in
+            "")                            ok "an implausible origin is refused [$bad]";;
+            *..*)                          no "an implausible origin is refused [$bad]" "derived: $u";;
+            *"github.com/a/b/c/d"*)        no "an implausible origin is refused [$bad]" "derived: $u";;
+            *)                             ok "an implausible origin is refused [$bad]";;
+        esac
     done
     ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "https://github.com/sirouk/ralphie" ) >/dev/null 2>&1
     u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; PROJECT=$PWD; update_url 2>/dev/null' )"
@@ -1807,7 +2689,7 @@ if want "unwritable-home"; then
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     chmod 755 "$d/.ralphie" 2>/dev/null || true
     check_contains "an unwritable state directory is diagnosed honestly" "cannot write to" "$out"
-    case "$out" in *"stale lock"*) no "it is not blamed on a stale lock" "blamed a stale lock";; *) ok "it is not blamed on a stale lock";; esac
+    check_lacks "it is not blamed on a stale lock" "stale lock" "${out}"
 fi
 
 if want "trust-vs-measurement"; then
@@ -1825,8 +2707,8 @@ if want "trust-vs-measurement"; then
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eat" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 2 2>&1 )"
     # Whatever happens, a cycle must never be told the gates failed with no
     # failing gate to point at.
-    case "$out" in *"gates: red  ()"*) no "a phantom red with no evidence is impossible" "reported red with an empty gate name";; *) ok "a phantom red with no evidence is impossible";; esac
-    case "$out" in *"gates passed, but"*) no "no message claims the gates passed when they did not" "found the old wording";; *) ok "no message claims the gates passed when they did not";; esac
+    check_lacks "a phantom red with no evidence is impossible" "gates: red  ()" "${out}"
+    check_lacks "no message claims the gates passed when they did not" "gates passed, but" "${out}"
 fi
 
 if want "self-improvement-allowed"; then
@@ -1876,7 +2758,7 @@ if want "ledger-generations"; then
         RALPHIE_LEDGER_MAX=10 prune_artifacts
         [ -f "$EVENTS_FILE.2" ] && ok "a second rotation shifts, it does not overwrite" || no "a second rotation shifts, it does not overwrite"
         grep -q "first generation" "$EVENTS_FILE.2" && ok "the oldest generation survives" || no "the oldest generation survives" "$(cat "$EVENTS_FILE.2" 2>&1 | head -1)"
-    )
+    true )  || no "the borrowed-engine group ran to completion" "it aborted part-way; every later assertion in it was lost"
     # The full generation depth, driven the way the loop drives it: through
     # prune_artifacts, where rotate_ledger silently inherited the CALLER's
     # `keep` and destroyed two generations of an append-only file.
@@ -1895,8 +2777,12 @@ if want "ledger-generations"; then
         # And called on its own it must not depend on any caller's variables.
         printf '{"generation":99}\n' > "$EVENTS_FILE"
         err_out="$( RALPHIE_LEDGER_MAX=1 rotate_ledger 2>&1 >/dev/null )"
-        case "$err_out" in *"unbound variable"*) no "rotate_ledger stands alone" "$err_out";; *) ok "rotate_ledger stands alone";; esac
-    )
+        # Silence IS the result here, so a witness proves the call did something.
+        check "rotate_ledger stands alone" "" "$err_out"
+        grep -q '"generation":99' "$EVENTS_FILE.1" 2>/dev/null \
+            && ok "and it really rotated, so the silence means something" \
+            || no "and it really rotated, so the silence means something" "no rotation happened"
+    true )  || no "the borrowed-engine group ran to completion" "it aborted part-way; every later assertion in it was lost"
 fi
 
 if want "borrowed-engine"; then
@@ -1906,7 +2792,7 @@ if want "borrowed-engine"; then
         ENGINE=prime-agent
         CYCLE_ENGINE=""
         check "a fallback is recorded per cycle, not adopted" "" "$CYCLE_ENGINE"
-    )
+    true )  || no "the budget-starts-early group ran to completion" "it aborted part-way; every later assertion in it was lost"
     d="$(new_project)"
     mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
     ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
@@ -2023,7 +2909,7 @@ if want "owned-released"; then
     chmod +x "$d/w"
     ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/w" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
     # Ralphie committed shared.py, so it is no longer Ralphie's.
-    owned="$(tr '\0' '\n' < "$d/.ralphie/owned.nul" 2>/dev/null | grep -c 'shared.py' | tr -d ' \n')"; [ -n "$owned" ] || owned=0
+    owned="$(cat "$d/.ralphie/owned.nul" 2>/dev/null | tr '\0' '\n' | grep -c 'shared.py' | tr -d ' \n')"; [ -n "$owned" ] || owned=0
     check "a committed path is released" "0" "$owned"
     # Now the OPERATOR edits it and runs again with an engine that does nothing.
     printf 'MY OWN EDIT\n' >> "$d/shared.py"
@@ -2031,7 +2917,7 @@ if want "owned-released"; then
     chmod +x "$d/w2"
     ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/w2" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
-    case "$gs" in *shared.py*) no "the operator's later edit is never committed" "shared.py was committed: [$gs]";; *) ok "the operator's later edit is never committed";; esac
+    check_lacks "the operator's later edit is never committed" shared.py "${gs}"
 fi
 
 if want "no-fabricated-green"; then
@@ -2112,10 +2998,15 @@ if want "private-index"; then
     check "the working tree is untouched" "v3-WORKING" "$(cat "$d/doc.txt")"
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
     case "$gs" in *calc.py*) ok "the agent's work is still committed";; *) no "the agent's work is still committed" "[$gs]";; esac
-    case "$gs" in *doc.txt*) no "the operator's file is not committed" "doc.txt was committed";; *) ok "the operator's file is not committed";; esac
+    check_lacks "the operator's file is not committed" doc.txt "${gs}"
     # And the index is left consistent with the new HEAD for what Ralphie did.
     st="$( cd "$d" && git status --porcelain -- calc.py 2>/dev/null )"
-    case "$st" in *D*) no "no phantom staged deletion is left behind" "$st";; *) ok "no phantom staged deletion is left behind";; esac
+    # A clean path prints nothing, so emptiness is the pass -- witnessed by the
+    # file really being tracked, which is what makes the silence meaningful.
+    check "no phantom staged deletion is left behind" "" "$st"
+    ( cd "$d" && git ls-files --error-unmatch calc.py ) >/dev/null 2>&1 \
+        && ok "and calc.py really is tracked" \
+        || no "and calc.py really is tracked" "not tracked, so the check above proves nothing"
     n="$(ls "$d"/.ralphie/run/index.* 2>/dev/null | wc -l | tr -d ' ')"
     check "no private index file is left behind" "0" "$n"
 fi
@@ -2142,7 +3033,7 @@ if want "owned-claim-content"; then
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m2" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
     gs="$( cd "$d" && git show --name-only --format="" HEAD 2>/dev/null )"
     case "$gs" in *marker*) ok "the agent's new work is committed";; *) no "the agent's new work is committed" "[$gs]";; esac
-    case "$gs" in *shared.py*) no "a stale claim never commits the operator's later work" "shared.py was committed";; *) ok "a stale claim never commits the operator's later work";; esac
+    check_lacks "a stale claim never commits the operator's later work" shared.py "${gs}"
     grep -q 'MY OWN WORK IN PROGRESS' "$d/shared.py" && ok "the operator's text is intact on disk" || no "the operator's text is intact on disk"
     check_contains "the operator is warned about their own changes" "already modified" "$out"
 fi
@@ -2164,7 +3055,7 @@ if want "stale-verdict"; then
     case "$out" in *"still red"*|*"gates: red"*) ok "a deleted dependency invalidates the cached verdict";; *) no "a deleted dependency invalidates the cached verdict" "$out";; esac
     blank="$(grep -c '"kind":"gate","status":"pass","detail":""' "$d/.ralphie/events.jsonl" 2>/dev/null | tr -d ' \n')"; [ -n "$blank" ] || blank=0
     check "no fabricated gate event is written" "0" "$blank"
-    case "$out" in *"objective complete"*) no "a run cannot declare success without running a gate" "declared complete";; *) ok "a run cannot declare success without running a gate";; esac
+    check_lacks "a run cannot declare success without running a gate" "objective complete" "${out}"
 fi
 
 if want "own-repo-not-committed"; then
@@ -2307,7 +3198,7 @@ if want "ownership-edges"; then
         # Binary content must work exactly like text.
         : > "$OWNED_FILE"; head -c 2048 /dev/urandom > "$PROJECT/bin.dat"; claim bin.dat
         owned_has bin.dat && ok "a binary file is claimed correctly" || no "a binary file is claimed correctly"
-    )
+    true )  || no "the merge-in-progress group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
     # A file Ralphie DELETES must still have its deletion committed later.
     d="$(new_project)"
@@ -2355,7 +3246,7 @@ if want "root-commit-index"; then
     printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "w%%s\\n" "$$" > w.txt\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/mk"
     chmod +x "$d/mk"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/mk" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 2 2>&1 )"
-    case "$out" in *"unbound variable"*) no "a fresh repository does not hit an unbound variable" "$out";; *) ok "a fresh repository does not hit an unbound variable";; esac
+    check_lacks "a fresh repository does not hit an unbound variable" "unbound variable" "${out}"
     n="$( cd "$d" && git diff --cached --name-only --diff-filter=D 2>/dev/null | wc -l | tr -d ' ' )"
     check "the first commit leaves no phantom staged deletions" "0" "$n"
     check "green cycles match commits" "$( cd "$d" && git log --oneline | wc -l | tr -d ' ' )" "$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"
@@ -2377,22 +3268,21 @@ if want "pre-dirty-fails-closed"; then
 fi
 
 if want "mid-run-edit-not-reclaimed"; then
-    # Voiding a stale claim is not enough: record_owned_paths re-claimed the
-    # same path three lines later, and the operator's own bytes became
-    # Ralphie's. The path has to be handed back, not merely dropped.
+    # A real outside edit occurs BETWEEN invocations. Text written by the mock
+    # engine cannot prove operator authorship merely by saying OPERATOR WIP.
     d="$(new_project)"
     printf 'x = 0\n' > "$d/shared.py"
     mkdir -p "$d/.ralphie"; printf 'test -f marker\n' > "$d/.ralphie/gates"
     ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
-    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "ralphie line\\n" >> shared.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: p\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m1"
-    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "x = 0\\nOPERATOR WIP\\n" > shared.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: p\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m2"
-    printf '#!/usr/bin/env bash\ncat >/dev/null\n: > marker\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: m\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m3"
-    chmod +x "$d/m1" "$d/m2" "$d/m3"
-    for g in m1 m2 m3; do
-        ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/$g" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
-    done
-    n="$( cd "$d" && git log -p 2>/dev/null | grep -c 'OPERATOR WIP' | tr -d ' \n' )"; [ -n "$n" ] || n=0
-    check "a released claim is not immediately re-taken" "0" "$n"
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "ralphie line\\n" >> shared.py\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: repair\\nRALPHIE>>>\\n"\n' > "$d/m1"
+    printf '#!/usr/bin/env bash\ncat >/dev/null\n: > marker\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: verify\\nRALPHIE>>>\\n"\n' > "$d/m2"
+    chmod +x "$d/m1" "$d/m2"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m1" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    check_contains "the red cycle really left owned work" "ralphie line" "$(cat "$d/shared.py")"
+    printf 'OPERATOR WIP\n' >> "$d/shared.py"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m2" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    check "a released claim is not immediately re-taken" "x = 0" "$(cd "$d" && git show HEAD:shared.py)"
+    check_contains "the outside edit stays on disk" "OPERATOR WIP" "$(cat "$d/shared.py")"
 fi
 
 if want "gate-order-restored"; then
@@ -2455,7 +3345,7 @@ if want "duplicate-claim"; then
         printf 'stale-hash\tf.txt\0' > "$OWNED_FILE"
         printf '%s\t%s\0' "$(path_fingerprint f.txt)" "f.txt" >> "$OWNED_FILE"
         owned_has f.txt && ok "a duplicate record does not shadow the true claim" || no "a duplicate record does not shadow the true claim"
-    )
+    true )  || no "the blocked-not-green group ran to completion" "it aborted part-way; every later assertion in it was lost"
 fi
 
 if want "blocked-not-green"; then
@@ -2539,7 +3429,7 @@ if want "broken-memory-not-gates"; then
     printf '#!/usr/bin/env bash\ncat >/dev/null\n: > marker\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m"
     chmod +x "$d/m"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"gate file could not be read"*) no "a damaged memory file does not disable the gates" "$out";; *) ok "a damaged memory file does not disable the gates";; esac
+    check_lacks "a damaged memory file does not disable the gates" "gate file could not be read" "${out}"
     check_contains "and the real gate still runs" "gates: green" "$out"
     chmod 700 "$d/.ralphie/MEMORY.md" 2>/dev/null || true
 fi
@@ -2601,7 +3491,7 @@ if want "typo-is-not-an-objective"; then
     done
     # A genuine one-word objective must still work.
     out="$( cd "$d" && ./ralphie.sh --engine custom refactor 2>&1 )"
-    case "$out" in *"unknown command"*) no "a real one-word objective still works" "$out";; *) ok "a real one-word objective still works";; esac
+    check_lacks "a real one-word objective still works" "unknown command" "${out}"
 fi
 
 if want "accounting"; then
@@ -2697,24 +3587,20 @@ if want "survives-kills"; then
     [ -d "$d/.ralphie/lock" ] && no "the stale lock is released" "still held" || ok "the stale lock is released"
     # Every ledger line must still be valid JSON: a half-written record would
     # make the append-only evidence unparseable for ever.
-    bad="$(python3 - "$d/.ralphie/events.jsonl" <<'PY'
-import json, sys
-bad = 0
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        json.loads(line)
-    except Exception:
-        bad += 1
-print(bad)
-PY
-)"
+    bad="$(json_bad_lines "$d/.ralphie/events.jsonl")"
     check "the append-only ledger is still valid JSON throughout" "0" "$bad"
-    # Work a SIGKILL orphaned is the operator's until proven otherwise. It is
-    # never quietly committed, and the cycle is never called green.
-    check "orphaned work is not counted as a green cycle" "0" "$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"
+    # NO INVENTED GREENS. The old form asserted `pass_count = 0`, which depends
+    # entirely on WHERE the SIGKILL landed: the same code gives 0 or 1 from one
+    # run to the next, so it measured the timing of the kill, not Ralphie. The
+    # invariant that actually matters survives any timing -- a reported green
+    # must be backed by a commit that exists.
+    p="$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"; [ -n "$p" ] || p=0
+    g="$( cd "$d" && git log --oneline 2>/dev/null | grep -c ralphie || true )"; g="$(printf '%s' "${g:-0}" | tr -d ' \n')"
+    if [ "$p" -le "$g" ]; then ok "no green is reported that history cannot show ($p green, $g commits)"
+    else no "no green is reported that history cannot show" "state says $p green, git holds $g commits"; fi
+    # And whatever a kill orphaned is still on disk, never silently discarded.
+    [ -s "$d/app.py" ] && ok "work orphaned by a kill is still on disk" \
+                       || no "work orphaned by a kill is still on disk" "app.py is empty or gone"
 fi
 
 if want "pre-dirty-sealed"; then
@@ -2751,7 +3637,7 @@ if want "gates-broken-clears"; then
         GATES_FILE_BROKEN=1
         ensure_gates_file
         check "a healthy gate file clears the broken flag" "0" "$GATES_FILE_BROKEN"
-    )
+    true )  || no "the engine-opinion-not-an-outcome group ran to completion" "it aborted part-way; every later assertion in it was lost"
 fi
 
 if want "engine-opinion-not-an-outcome"; then
@@ -2785,13 +3671,13 @@ if want "typo-multiword"; then
     for o in "asks for input" "gate the pipeline" "logging is broken" "runs too slowly" "helper needs a test"; do
         # Deliberately unquoted: this is how an operator really types it.
         out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom $o 2>&1 )"
-        case "$out" in *"unknown command"*) no "an ordinary objective is not refused: $o" "$out";; *) ok "an ordinary objective is not refused: $o";; esac
+        check_lacks "an ordinary objective is not refused: $o" "unknown command" "${out}"
     done
     # ALWAYS --engine custom with a mock. Without it these two lines selected the
     # real installed engine and started an unbounded, BILLED run: `./ralphie.sh ""`
     # is not an error, it is an objective. The suite must never spend money.
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom "" 2>&1 )"
-    case "$out" in *"unknown command"*) no "an empty argument is not a typo" "$out";; *) ok "an empty argument is not a typo";; esac
+    check_lacks "an empty argument is not a typo" "unknown command" "${out}"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom statuss 2>&1 )"
     check_contains "a lone typo is still refused" "did you mean" "$out"
 fi
@@ -2877,7 +3763,7 @@ if want "complement"; then
       check "capability decides priority, not the engine's name" "8" "$(engine_score prime-agent)"
       s1="$(engine_score prime-agent)"; s2="$(engine_score claude)"
       [ "$s1" -gt "$s2" ] && ok "the most capable engine scores highest" || no "the most capable engine scores highest" "$s1 vs $s2"
-    )
+    true )  || no "the nogit-operator-files group ran to completion" "it aborted part-way; every later assertion in it was lost"
 fi
 
 if want "nogit-operator-files"; then
@@ -2915,6 +3801,69 @@ if want "ledger-without-timing"; then
         check "$c still works with no timing line in the ledger" "0" "$rc"
         [ -n "$out" ] && ok "$c still prints something" || no "$c still prints something" "empty"
     done
+fi
+
+
+if want "release-sigpipe"; then
+    # Replay AUDIT14 C4 on bash 3.2: a closed reader must not poison EXIT's
+    # command substitutions with buffered terminal output.
+    for cut in 1 3 6; do
+        d="$(new_project)"
+        mkdir -p "$d/.ralphie"
+        printf 'true\n' > "$d/.ralphie/gates"
+        printf 'seed\n' > "$d/seed.txt"
+        ( cd "$d" && git add -A && git commit -qm seed )
+        make_mock_engine "$d/mock" nothing
+        ( cd "$d" && env RALPHIE_PROJECT="$d" RALPHIE_NO_UPDATE=1 NO_COLOR=1 \
+            RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS="" MOCK_LAST_PROMPT="$d/prompt" \
+            /bin/bash ./ralphie.sh --once --engine custom 'add a line' 2>/dev/null ) |
+            head -n "$cut" >/dev/null
+        rc=${PIPESTATUS[0]}
+        check "closed stdout ($cut lines) exits 141" "141" "$rc"
+        check "closed stdout ($cut lines) preserves ledger JSON" "0" "$(json_bad_lines "$d/.ralphie/events.jsonl")"
+        check_contains "closed stdout ($cut lines) records actual exit reason" '"code":"141"' "$(cat "$d/.ralphie/events.jsonl")"
+    done
+fi
+
+if want "release-long-link"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+    outside="$TMPROOT/long-link-victim-$RANDOM"
+    printf 'printf attacked > "%s"\n' "$d/executed" > "$outside"
+    original="$(cat "$outside")"
+    ln -s hop1 "$GATES_FILE"
+    n=1
+    while [ "$n" -lt 16 ]; do
+        ln -s "hop$((n+1))" "$HOME_DIR/hop$n"
+        n=$((n+1))
+    done
+    ln -s "$outside" "$HOME_DIR/hop16"
+    GATES_SNAPSHOT='test -f original-check'
+    restore_gate_order >/dev/null 2>&1; rc=$?
+    check_fails "17-hop restore fails closed" "$rc"
+    check "17-hop restore never modifies external target" "$original" "$(cat "$outside")"
+    run_gates "$RUN_DIR/long-link" verify >/dev/null 2>&1; rc=$?
+    check_fails "17-hop gate cannot execute external contents" "$rc"
+    [ ! -e "$d/executed" ] && ok "external gate was not executed" || no "external gate was not executed"
+    resolve_link "$GATES_FILE" >/dev/null; rc=$?
+    check_fails "unresolved link limit is failure" "$rc"
+    # A cycle must also terminate without producing a usable target.
+    rm -f "$HOME_DIR/hop16"; ln -s hop1 "$HOME_DIR/hop16"
+    resolve_link "$GATES_FILE" >/dev/null; rc=$?
+    check_fails "cyclic link resolution is failure" "$rc"
+    # The limit is not an off-by-one rejection of a fully resolved chain.
+    rm -f "$HOME_DIR/hop16"; printf 'true\n' > "$HOME_DIR/hop16"
+    restore_gate_order >/dev/null 2>&1; rc=$?
+    check_ok "resolved 16-hop internal gate is restored" "$rc"
+    check_contains "internal target receives remembered gate" "$GATES_SNAPSHOT" "$(cat "$HOME_DIR/hop16")"
+    # A failed/empty resolution must never default to the project root.
+    resolve_link() { return 1; }
+    restore_gate_order >/dev/null 2>&1; rc=$?
+    check_fails "failed resolution is not treated as project root" "$rc"
+    resolve_link() { printf ''; }
+    restore_gate_order >/dev/null 2>&1; rc=$?
+    check_fails "empty resolution is not treated as project root" "$rc"
+    true ) || no "release-long-link group completed" "aborted"
 fi
 
 if want "symlink-chain"; then
@@ -2967,17 +3916,34 @@ if want "harness-honesty"; then
     # The harness must never report a green it cannot prove. Measured: the
     # tally files went missing part-way through a run and the summary printed
     # "PASS 0 passed" and exited 0, with FAIL lines visible above it.
-    probe="$TMPROOT/harness-probe.sh"
-    sed 's|^if want "budget-cycles"; then|rm -rf "$TALLY"\nif want "budget-cycles"; then|' "$HERE/test.sh" > "$probe"
+    # The probe must live beside test.sh, because $HERE is derived from its own
+    # path: run from /tmp it cannot find ralphie.sh and proves nothing.
+    probe="$HERE/.harness-probe.$$.sh"
+    # Two separate attacks. The first destroys the counters entirely.
+    sed 's|^    d="$(new_project)"  # budget-cycles anchor|rm -rf "$TALLY"\n&|' "$HERE/test.sh" > "$probe"
+    awk '/^if want "budget-cycles"; then$/ && !done { print; print "    rm -rf \"$TALLY\""; done=1; next } { print }' \
+        "$HERE/test.sh" > "$probe"
     chmod +x "$probe"
     ( cd "$HERE" && "$probe" budget-cycles ) >"$TMPROOT/harness.out" 2>&1
     rc=$?
     check "a harness that loses its counters exits non-zero" "1" "$rc"
     check_contains "and says so plainly" "BROKEN" "$(cat "$TMPROOT/harness.out")"
+    # The second SWALLOWS A FAILURE: the fail file becomes a directory, so the
+    # append fails silently while the FAIL line still prints. This is the attack
+    # that defeated the first version of these guards.
+    awk '/^if want "budget-cycles"; then$/ && !done { print; print "    rm -rf \"$TALLY/fail\"; mkdir -p \"$TALLY/fail\""; print "    no \"PLANTED FAILURE\" \"by the harness probe\""; done=1; next } { print }' \
+        "$HERE/test.sh" > "$probe"
+    chmod +x "$probe"
+    ( cd "$HERE" && "$probe" budget-cycles ) >"$TMPROOT/harness2.out" 2>&1
+    rc=$?
+    check "a swallowed failure is caught, not reported as green" "1" "$rc"
+    check_contains "and the loss is named" "could not be recorded" "$(cat "$TMPROOT/harness2.out")"
+    rm -f "$probe"
     # A filter that matches nothing is a different thing, and must also be loud.
-    ( cd "$HERE" && ./test.sh definitely-not-a-test-group ) >"$TMPROOT/harness2.out" 2>&1
-    check "an empty filter run exits non-zero" "1" "$?"
-    check_contains "and names the filter" "no test group matched" "$(cat "$TMPROOT/harness2.out")"
+    ( cd "$HERE" && ./test.sh definitely-not-a-test-group ) >"$TMPROOT/harness3.out" 2>&1
+    rc=$?
+    check "an empty filter run exits non-zero" "1" "$rc"
+    check_contains "and names the filter" "no test group matched" "$(cat "$TMPROOT/harness3.out")"
 fi
 
 if want "fuzz"; then
@@ -2997,6 +3963,14 @@ if want "fuzz"; then
         d="$(new_project)"
         printf 'x = 0\n'            > "$d/app.py"
         printf 'OPERATOR_SENTINEL\n' > "$d/precious.py"
+        # The gate starts SATISFIED. Starting it red meant a run only ever went
+        # green if the draw happened to pick the one act that creates the
+        # marker, and across three shipped seeds it never did: every seed
+        # finished with zero commits, so every invariant about what Ralphie
+        # commits was passing vacuously. A hostile engine can still break it
+        # (act 1) and repair it (act 0); now that is a real event, not the only
+        # route to the commit path being exercised at all.
+        : > "$d/marker"
         mkdir -p "$d/.ralphie"; printf 'test -f marker\n' > "$d/.ralphie/gates"
         ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
         # The operator's uncommitted work in progress, present before the run.
@@ -3008,12 +3982,17 @@ if want "fuzz"; then
 cat >/dev/null
 n=$(cat .fuzzn 2>/dev/null || echo 0); n=$((n+1)); echo $n > .fuzzn
 seed="${FUZZ_SEED:-1}"
-b=$(( (seed * 7919 + n * 104729) % 16 ))
+# An INDEPENDENT draw per cycle, not an arithmetic progression. The first
+# version used (seed*7919 + n*104729) % 16, which reduces to (-seed + 9n) mod 16:
+# consecutive acts always differed by exactly 9, no act ever repeated, only 16
+# of the 256 ordered pairs were reachable, and seeds congruent mod 16 produced
+# identical runs -- 24 seeds were really 10. A hash of the pair fixes all four.
+b=$(printf '%s-%s' "$seed" "$n" | cksum | awk '{print $1 % 36}')
 case $b in
   0)  : > marker ;;                                        # satisfy the gate
   1)  rm -f marker ;;                                      # break the gate
   2)  printf 'work %s\n' "$n" >> app.py ;;                 # ordinary work
-  3)  : ;;                                                 # do nothing
+  3)  : > marker ;;                                        # satisfy the gate again                                                 # do nothing
   4)  rm -f .ralphie/gates ;;                              # delete the gates
   5)  printf 'true\n' > .ralphie/gates ;;                  # weaken the gates
   6)  printf 'sneak %s\n' "$n" >> precious.py ;;           # touch the operator's file
@@ -3026,26 +4005,82 @@ case $b in
   13) : > marker; printf 'late %s\n' "$n" >> precious.py ;; # green AND touch theirs
   14) exit 9 ;;                                            # die without reporting
   15) printf 'no report block at all\n'; exit 0 ;;         # answer with nothing
+  16) printf 'AWS_SECRET_ACCESS_KEY=AKIAFAKEFAKEFAKE\n' > .env ;;   # drop a secret
+  17) mkdir -p .ssh && printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n' > .ssh/id_rsa ;;
+  18) mkdir -p __pycache__ && printf 'junk\n' > __pycache__/app.cpython-311.pyc ;;
+  19) head -c 200000 /dev/urandom > blob.bin ;;            # bulk
+  20) rm -rf .ralphie/state && mkdir -p .ralphie/state ;;  # state becomes a directory
+  21) chmod 444 .ralphie/gates 2>/dev/null ;;              # write-protect the gates
+  22) rm -f .ralphie/owned.nul ;;                          # forget what is ours
+  23) printf 'garbage not json\n' >> .ralphie/events.jsonl ;;  # corrupt the ledger tail
+  24) git rm -q --cached precious.py 2>/dev/null || true ;;     # untrack the operator's file
+  25) printf 'x\n' > "$(printf 'sp ace-%s.txt' "$n")" ;;        # a path with a space
+  26) mkdir -p .git/hooks && printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit ;;
+  27) : > .git/index.lock ;;                               # git cannot take the index
+  28) chmod 000 app.py 2>/dev/null ;;                      # unreadable source
+  29) git add -A precious.py 2>/dev/null || true ;;        # stage the operator's work FOR them
+  30) printf 'x\n' > "$(printf 'news\nline-%s.txt' "$n")" 2>/dev/null || true ;;
+  31) printf 'theirs %s\n' "$n" >> app.py; git commit -qam "operator commit $n" 2>/dev/null || true ;;
+  32) chmod 000 .ralphie/log 2>/dev/null ;;                # cannot write its own logs
+  33) git checkout -q --detach 2>/dev/null || true ;;      # detached HEAD
+  # REPAIRING acts. Without them the three irreversible attacks (a pre-commit
+  # hook, a stuck index.lock, state as a directory) monopolise a run: once drawn
+  # git can never commit again, so every later cycle is blocked and the
+  # invariants about commits pass VACUOUSLY. A real operator fixes these.
+  34) rm -f .git/index.lock .git/hooks/pre-commit 2>/dev/null || true ;;
+  35) chmod -R u+rwX .ralphie 2>/dev/null || true; git checkout -q master 2>/dev/null || true ;;
 esac
 printf 'did %s\n\n' "$b"
 printf '<<<RALPHIE\nstatus: progress\nsummary: fuzz %s act %s\nlesson: -\nask: -\nRALPHIE>>>\n' "$n" "$b"
 HOSTILE
         chmod +x "$d/hostile"
 
+        # TWO runs, not one: a defect that only appears when a second process
+        # picks up the state left by the first is invisible to a single run,
+        # and "every run is resumable" is one of the seven invariants.
+        half=$(( cycles / 2 )); [ "$half" -gt 0 ] || half=1
         ( cd "$d" && env FUZZ_SEED="$seed" RALPHIE_ENGINE_CMD="$d/hostile" RALPHIE_ENGINE_CAPS="" \
-            ./ralphie.sh --engine custom -n "$cycles" ) >"$TMPROOT/fuzz-$seed.out" 2>&1
+            ./ralphie.sh --engine custom -n "$half" ) >"$TMPROOT/fuzz-$seed.out" 2>&1
+        ( cd "$d" && env FUZZ_SEED="$seed" RALPHIE_ENGINE_CMD="$d/hostile" RALPHIE_ENGINE_CAPS="" \
+            ./ralphie.sh --engine custom -n "$half" ) >>"$TMPROOT/fuzz-$seed.out" 2>&1
         rc=$?
+        # The hostile engine can leave the WORKING COPY unreadable (chmod 000)
+        # or the index locked. That is a legitimate attack on Ralphie, but it
+        # must not stop the HARNESS from inspecting the wreckage afterwards.
+        chmod -R u+rwX "$d" 2>/dev/null || true
+        rm -f "$d/.git/hooks/pre-commit" "$d/.git/index.lock" 2>/dev/null || true
 
         # --- INVARIANT 1: the operator's work is never committed, whatever happened.
-        n="$( cd "$d" && git log -p 2>/dev/null | grep -c 'OPERATOR_WIP_DO_NOT_COMMIT' | tr -d ' \n' )"; [ -n "$n" ] || n=0
+        # RALPHIE's commits only, exactly as invariant 6 does. One of the acts
+        # is the engine running `git commit -am` itself: Ralphie cannot stop an
+        # engine from driving git directly, and counting that as a Ralphie
+        # commit measured the attack instead of the promise. What must hold is
+        # that no commit RALPHIE made contains the operator's work.
+        n="$( cd "$d" && git log --format='%H %s' 2>/dev/null | grep ' ralphie:' | cut -d' ' -f1 \
+              | while read -r sha; do git show "$sha" 2>/dev/null; done \
+              | grep -c 'OPERATOR_WIP_DO_NOT_COMMIT' || true )"
+        n="$(printf '%s' "${n:-0}" | tr -d ' \n')"; [ -n "$n" ] || n=0
         check "[seed $seed] the operator's work is never committed" "0" "$n"
         grep -q 'OPERATOR_WIP_DO_NOT_COMMIT' "$d/precious.py" \
             && ok "[seed $seed] and is still on disk" \
             || no "[seed $seed] and is still on disk" "gone"
 
         # --- INVARIANT 2: every cycle lands in exactly one bucket.
-        fcount() { grep -c "$1" "$d/.ralphie/events.jsonl" 2>/dev/null | tr -d ' \n' || printf 0; }
-        cy="$(grep '^cycle=' "$d/.ralphie/state" 2>/dev/null | cut -d= -f2)"; [ -n "$cy" ] || cy=0
+        # `grep -c` prints 0 AND exits 1 when nothing matches, so a trailing
+        # `|| printf 0` appends a SECOND zero and the comparison reads "0" vs
+        # "00". The count is taken first and defaulted after, never both.
+        fcount() {
+            local n=0
+            n="$(grep -c "$1" "$d/.ralphie/events.jsonl" 2>/dev/null || true)"
+            printf '%s' "$(printf '%s' "${n:-0}" | tr -d ' \n')"
+        }
+        # From the LEDGER, not from `state`. State is derived and explicitly
+        # destroyable -- several of the attacks destroy it -- so comparing
+        # against it measured the attack rather than the invariant. The
+        # append-only ledger is the source of truth by design.
+        cy="$(grep '"kind":"cycle"' "$d/.ralphie/events.jsonl" 2>/dev/null \
+              | grep -o '"cycle":[0-9]*' | sed 's/.*://' | sort -n | tail -1)"
+        [ -n "$cy" ] || cy=0
         tot=0
         for k in pass fail blocked untrusted unverified nochange; do
             v="$(fcount "\"kind\":\"cycle\",\"status\":\"$k\"")"; [ -n "$v" ] || v=0
@@ -3054,47 +4089,613 @@ HOSTILE
         check "[seed $seed] every cycle lands in exactly one bucket" "$cy" "$tot"
 
         # --- INVARIANT 3: a green cycle means a commit that really exists.
-        p="$(grep '^pass_count=' "$d/.ralphie/state" 2>/dev/null | cut -d= -f2)"; [ -n "$p" ] || p=0
+        # Counted from the LEDGER, for the same reason as invariant 2: several
+        # attacks destroy `state`, and reading the lost counter measured the
+        # attack instead of the invariant. Both directions are checked -- a
+        # green without a commit is a lie, and a commit without a green means
+        # the accounting lost work that really happened.
+        p="$(fcount '"kind":"cycle","status":"pass"')"; [ -n "$p" ] || p=0
         g="$( cd "$d" && git log --oneline 2>/dev/null | grep -c ralphie | tr -d ' \n' )"; [ -n "$g" ] || g=0
         check "[seed $seed] green cycles equal real commits" "$g" "$p"
+        # And the counter Ralphie REPORTS must never overstate the commits.
+        sp="$(grep '^pass_count=' "$d/.ralphie/state" 2>/dev/null | cut -d= -f2)"; [ -n "$sp" ] || sp=0
+        if [ "$sp" -le "$g" ]; then ok "[seed $seed] the reported green count never overstates history"
+        else no "[seed $seed] the reported green count never overstates history" "state says $sp, git holds $g"; fi
+
+        # --- INVARIANT 8: nothing raw ever reaches the operator.
+        # The whole transcript was captured and never examined, so any defect
+        # visible only in what Ralphie SAYS was structurally invisible. A line
+        # carrying bash's own "line NNN:" is an internal detail escaping from a
+        # program whose entire promise is that it explains itself.
+        raw_err="$(grep -c 'ralphie\.sh: line [0-9]*:' "$TMPROOT/fuzz-$seed.out" 2>/dev/null || true)"
+        check "[seed $seed] no raw shell error reaches the operator" "0" "$(printf '%s' "${raw_err:-0}" | tr -d ' \n')"
+
+        # --- INVARIANT 0: THE RUN ACTUALLY RAN, AND REALLY COMMITTED.
+        # Without this, three of the invariants above pass vacuously: a run that
+        # never commits satisfies "no operator work was committed" and "no
+        # secret was committed" trivially. Some seeds legitimately reach zero
+        # commits -- an act can wreck git irreversibly -- so this is asserted
+        # ACROSS the sweep rather than per seed, and the sweep as a whole must
+        # exercise the commit path or it is proving nothing.
+        if [ "$cy" -ge 2 ]; then ok "[seed $seed] the run really ran ($cy cycles)"
+        else no "[seed $seed] the run really ran" "only $cy cycles reached the ledger; every other invariant here is vacuous"; fi
+        FUZZ_TOTAL_COMMITS=$(( ${FUZZ_TOTAL_COMMITS:-0} + g ))
 
         # --- INVARIANT 4: the append-only ledger is always parseable.
-        bad="$(python3 - "$d/.ralphie/events.jsonl" <<'PY'
-import json, sys
-bad = 0
-try:
-    fh = open(sys.argv[1])
-except OSError:
-    print(0); raise SystemExit
-for line in fh:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        json.loads(line)
-    except Exception:
-        bad += 1
-print(bad)
-PY
-)"
+        # Lines the hostile engine injected itself are not Ralphie's doing; what
+        # must hold is that every line RALPHIE wrote is valid, and that an
+        # injected one never corrupts the lines around it.
+        bad="$(json_bad_lines "$d/.ralphie/events.jsonl" 'garbage not json')"
         check "[seed $seed] the ledger is valid JSON throughout" "0" "$bad"
 
         # --- INVARIANT 5: it exits for a reason it can name, and leaves no lock.
-        case "$rc" in 0|2|3|10|11) ok "[seed $seed] exits with a documented code ($rc)";;
-                      *) no "[seed $seed] exits with a documented code" "$rc";; esac
+        # 10 (done) and 11 (out of time) were accepted here but `loop()` never
+        # returns them under these conditions, so tolerating them meant tolerating
+        # a defect. 1 ("could not start") IS reachable -- an act detaches HEAD,
+        # and refusing to run there is correct, because a commit on a detached
+        # HEAD is unreachable after any checkout. So it is accepted only WITH
+        # the named reason the design promises for every abnormal exit.
+        case "$rc" in
+            0|2|3) ok "[seed $seed] exits with a documented code ($rc)";;
+            1) if grep -q '"kind":"exit"' "$d/.ralphie/events.jsonl" 2>/dev/null; then
+                   ok "[seed $seed] exits 1 having recorded why"
+               else no "[seed $seed] exits 1 having recorded why" "no exit event was written"; fi;;
+            *) no "[seed $seed] exits with a documented code" "$rc";;
+        esac
         [ -d "$d/.ralphie/lock" ] && no "[seed $seed] no lock is left behind" "still held" \
                                   || ok "[seed $seed] no lock is left behind"
 
         # --- INVARIANT 6: nothing RALPHIE committed is state, a secret or an
         # artefact. Only its own commits are examined: what the operator chose
         # to track before it started is the operator's business.
+        # --- INVARIANT 7: cycle numbers only ever go up. A reused number
+        # overwrites the previous cycle's log and its place in the ledger.
+        # Only the per-cycle outcome lines. Run-level events (start, exit,
+        # rotation) legitimately carry cycle 0, and counting those as "going
+        # backwards" measured the format rather than the invariant.
+        ord="$(grep '"kind":"cycle","status":"\(pass\|fail\|blocked\|untrusted\|unverified\|nochange\)"' \
+               "$d/.ralphie/events.jsonl" 2>/dev/null \
+               | grep -o '"cycle":[0-9]*' | sed 's/.*://' || true)"
+        outoforder="$(printf '%s\n' "$ord" | awk 'NF && NR>1 && $1 < prev { n++ } NF { prev = $1 } END { print n+0 }')"
+        check "[seed $seed] cycle numbers never go backwards" "0" "$outoforder"
+
         leak="$( cd "$d" && git log --format='%H %s' 2>/dev/null \
                  | grep '^[0-9a-f]* ralphie:' | cut -d' ' -f1 \
                  | while read -r sha; do git show --name-only --format='' "$sha" 2>/dev/null; done \
-                 | grep -cE '^\.ralphie/|\.env$|__pycache__|\.pyc$' | tr -d ' \n' )"
+                 | grep -cE '^\.ralphie/|(^|/)\.env$|__pycache__|\.pyc$|(^|/)\.ssh/|id_rsa$' | tr -d ' \n' )"
         [ -n "$leak" ] || leak=0
         check "[seed $seed] ralphie commits no state, secret or artefact" "0" "$leak"
     done
+    # The sweep as a whole must have exercised the commit path. Every invariant
+    # about what Ralphie commits is vacuous in a run where it never commits, and
+    # measured on the first version of this fuzzer, EVERY seed reached zero.
+    if [ "${FUZZ_TOTAL_COMMITS:-0}" -ge 1 ]; then
+        ok "the sweep really exercised the commit path ($FUZZ_TOTAL_COMMITS commits)"
+    else
+        no "the sweep really exercised the commit path" "zero commits across every seed: the commit invariants proved nothing"
+    fi
+
+fi
+
+if want "claim-needs-seal"; then
+    # A destroyed exclusion list does not only affect the commit. `pre_dirty_has`
+    # answers "no" for every path once the list is gone, so the cycle went on to
+    # claim the operator's files as RALPHIE'S OWN -- and the claim outlived the
+    # run. The next run saw a valid content-keyed claim, excluded the file from
+    # its fresh snapshot, and committed the operator's work with no warning.
+    d="$(new_project)"
+    printf 'OPERATOR_SENTINEL\n' > "$d/precious.py"
+    mkdir -p "$d/.ralphie"; printf 'test -f marker\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf 'OPERATOR_WIP_DO_NOT_COMMIT\n' >> "$d/precious.py"
+    # Run 1: destroy the exclusion list, then touch the operator's file.
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nrm -rf .ralphie/run\nprintf "ralphie was here\\n" >> precious.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/r1"
+    # Run 2: go green, so a commit really happens.
+    printf '#!/usr/bin/env bash\ncat >/dev/null\n: > marker\nprintf "more\\n" >> precious.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/r2"
+    chmod +x "$d/r1" "$d/r2"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/r1" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    # `< file` fails BEFORE `2>/dev/null` applies, so the missing-file case
+    # printed a shell error into the suite output. Read it through `cat`.
+    own="$(cat "$d/.ralphie/owned.nul" 2>/dev/null | tr '\0' '\n' | sed 's/.*\t//' | tr '\n' ' ')"
+    # Claiming NOTHING is the correct outcome, so the list is legitimately
+    # empty. The witness is that the cycle really ran.
+    case "$own" in *precious.py*) no "a damaged list claims nothing" "claimed: $own";;
+                   *) ok "a damaged list claims nothing";; esac
+    grep -q '"kind":"cycle"' "$d/.ralphie/events.jsonl" 2>/dev/null \
+        && ok "and the cycle really ran, so that means something" \
+        || no "and the cycle really ran, so that means something" "no cycle was recorded"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/r2" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    n="$( cd "$d" && git log -p 2>/dev/null | grep -c 'OPERATOR_WIP_DO_NOT_COMMIT' | tr -d ' \n' )"; [ -n "$n" ] || n=0
+    check "and the next run does not commit the operator's work" "0" "$n"
+fi
+
+if want "never-commits-own-state"; then
+    # `.ralphie/` is normally excluded, but git ignores an ignore rule for a
+    # path that is already TRACKED -- and a team that deliberately shares its
+    # gate file has exactly that. Ralphie committing its own state would write
+    # the ledger, the prompts and, worst of all, a WEAKENED gate file into the
+    # project's history as though it were work. Found by the fuzzer.
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie"; printf 'test -f marker\n' > "$d/.ralphie/gates"
+    : > "$d/marker"
+    ( cd "$d" && git add -A -f && git commit -qm init ) >/dev/null 2>&1
+    ( cd "$d" && git ls-files --error-unmatch .ralphie/gates ) >/dev/null 2>&1 \
+        && ok "the fixture really does track .ralphie/gates" \
+        || no "the fixture really does track .ralphie/gates" "not tracked"
+    # ADDING a gate is legitimate and is kept, so the tracked file really does
+    # change -- without the cycle being distrusted for tampering.
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "test -f marker\\ntrue\\n" > .ralphie/gates\nprintf "w%%s\\n" "$$" > w.txt\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m"
+    chmod +x "$d/m"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 2 ) >/dev/null 2>&1
+    ( cd "$d" && git status --porcelain .ralphie/gates ) | grep -q . \
+        && ok "the tracked gate file really did change" \
+        || no "the tracked gate file really did change" "unchanged, so this proves nothing"
+    n="$( cd "$d" && git log --format='%H %s' 2>/dev/null | grep ' ralphie:' | cut -d' ' -f1 \
+          | while read -r sha; do git show --name-only --format='' "$sha" 2>/dev/null; done \
+          | grep -c '^\.ralphie/' | tr -d ' \n' )"; [ -n "$n" ] || n=0
+    check "ralphie never commits its own state, even when tracked" "0" "$n"
+    gs="$( cd "$d" && git log --format='%H %s' | grep ' ralphie:' | head -1 | cut -d' ' -f1 )"
+    [ -n "$gs" ] && ok "but it still commits real work" || no "but it still commits real work" "no commit at all"
+fi
+
+if want "state-directory"; then
+    # An agent that replaced the state file with a DIRECTORY mid-run broke every
+    # write from then on: `mv` moved each temp INTO the directory (87 orphans
+    # accumulated), the cycle number vanished so the banner read "cycle  ",
+    # every cycle overwrote the same log, and `status` was blank afterwards --
+    # silently, because each individual write still "succeeded".
+    d="$(new_project)"
+    printf 'x\n' > "$d/a.txt"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nrm -rf .ralphie/state; mkdir -p .ralphie/state\nprintf "w%%s\\n" "$$" >> a.txt\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/sd"
+    chmod +x "$d/sd"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/sd" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 4 ) >/dev/null 2>&1
+    [ -f "$d/.ralphie/state" ] && ok "the state file is repaired to a file" || no "the state file is repaired to a file" "still a directory"
+    n="$(ls "$d/.ralphie"/state.tmp.* 2>/dev/null | wc -l | tr -d ' ')"
+    check "no orphaned temp files accumulate" "0" "${n:-0}"
+    # The append-only record must still name the cycle each event belongs to.
+    nums="$(grep '"kind":"cycle","status":"timing"' "$d/.ralphie/events.jsonl" 2>/dev/null | grep -o '"cycle":[0-9]*' | sed 's/.*://' | tr '\n' ' ')"
+    check "the ledger still names every cycle" "1 2 3 4 " "$nums"
+    z="$(grep -c '"cycle":0,"kind":"cycle"' "$d/.ralphie/events.jsonl" 2>/dev/null | tr -d ' \n' || true)"; [ -n "$z" ] || z=0
+    check "no cycle event is recorded as cycle 0" "0" "$z"
+fi
+
+if want "commit-cannot-stage"; then
+    # A git that cannot stage must never leave the cycle counted green. A
+    # required clean filter (git-lfs missing) makes `git add -A` exit 128, and
+    # the cycle landed in `pass`: "3 green" against a git log holding only init,
+    # with no commit event, no warning and no question.
+    d="$(new_project)"
+    printf 'x\n' > "$d/app.py"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '*.dat filter=missingfilter\n' > "$d/.gitattributes"
+    ( cd "$d" && git config filter.missingfilter.clean 'this-command-does-not-exist' \
+                && git config filter.missingfilter.required true ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "data%%s\\n" "$$" > payload.dat\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m"
+    chmod +x "$d/m"
+    out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 3 2>&1 )"
+    check "a git that cannot stage is never counted green" "0" "$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"
+    check_contains "and the operator is told why" "could not stage" "$out"
+fi
+
+if want "repo-destroyed-mid-run"; then
+    # Running without version control is a supported MODE, but only when it was
+    # the mode the run STARTED in. Deciding it from the filesystem meant an
+    # engine that ran `rm -rf .git` got green cycles, and `status` offered
+    # `git reset --hard <sha>` for a repository that no longer existed.
+    d="$(new_project)"
+    printf 'x\n' > "$d/app.py"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nrm -rf .git\nprintf "w%%s\\n" "$$" >> app.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/nuke"
+    chmod +x "$d/nuke"
+    out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/nuke" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 3 2>&1 )"
+    check "a destroyed repository is never counted green" "0" "$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"
+    check_contains "and it says the repository is gone" "repository is gone" "$out"
+fi
+
+if want "release-history-accounting"; then
+    # Full cycles: a clean tree after the engine is not evidence of no work.
+    for kind in safe protected stolen empty rewind secret transient branch red; do
+        d="$(new_project)"
+        printf 'base\n' > "$d/app.txt"
+        printf 'operator base\n' > "$d/operator.txt"
+        mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+        ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+        if [ "$kind" = protected ] || [ "$kind" = stolen ]; then printf 'private draft\n' >> "$d/operator.txt"; fi
+        if [ "$kind" = rewind ]; then
+            ( cd "$d" && printf 'later\n' >> app.txt && git add app.txt && git commit -qm later )
+        fi
+        cat > "$d/mock" <<'MOCK'
+#!/usr/bin/env bash
+cat >/dev/null
+case "$HISTORY_KIND" in
+    safe|protected|red) printf 'engine work\n' >> app.txt; git add app.txt; git commit -qm engine ;;
+    stolen) git add operator.txt; git commit -qm stolen ;;
+    empty) git commit --allow-empty -qm empty ;;
+    rewind) git reset --hard HEAD^ >/dev/null ;;
+    secret|transient)
+        printf 'fake credential\n' > .env
+        git add .env; git commit -qm secret
+        if [ "$HISTORY_KIND" = transient ]; then git rm -q .env; git commit -qm removed; fi ;;
+    branch) git checkout -qb other; printf 'work\n' >> app.txt; git add app.txt; git commit -qm switched ;;
+esac
+printf '<<<RALPHIE\nstatus: progress\nsummary: engine saved work\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+        chmod +x "$d/mock"
+        [ "$kind" != red ] || printf 'false\n' > "$d/.ralphie/gates"
+        cycles=1; [ "$kind" != safe ] || cycles=3
+        out="$(cd "$d" && env RALPHIE_PROJECT="$d" HISTORY_KIND="$kind" RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n "$cycles" 2>&1)"
+        run_rc=$?
+        check "$kind accounting run completes" 0 "$run_rc"
+        p="$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"; p="${p:-0}"
+        case "$kind" in
+            safe|protected)
+                check "$kind engine commit counts green" "$cycles" "$p"
+                check "$kind engine commit does not stall" 0 "$(grep '^nochange_streak=' "$d/.ralphie/state" | cut -d= -f2)"
+                check_contains "$kind engine history retained" engine "$(git -C "$d" log -1 --format=%s)" ;;
+            red)
+                check "$kind engine history never counts green" 0 "$p"
+                check "$kind gates count failure" 1 "$(grep '^fail_count=' "$d/.ralphie/state" | cut -d= -f2)" ;;
+            *)
+                check "$kind engine history never counts green" 0 "$p"
+                check "$kind engine history counts blocked" 1 "$(grep '^blocked_count=' "$d/.ralphie/state" | cut -d= -f2)" ;;
+        esac
+        ( load_lib "$d"
+          rebuild_state_from_ledger
+          check "$kind ledger rebuild agrees with green count" "$p" "$(state_get pass_count 0)"
+          true ) || no "$kind accounting assertions completed" "subshell aborted"
+    done
+    d="$TMPROOT/no-git-history"; mkdir -p "$d/.ralphie"
+    cp "$RALPHIE" "$d/ralphie.sh"; : > "$d/.ralphie/gates"
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "work\\n" >> app.txt\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: work\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/mock"
+    chmod +x "$d/mock"
+    out="$(cd "$d" && env RALPHIE_PROJECT="$d" RALPHIE_GIT_INIT=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 2 2>&1)"
+    ( load_lib "$d"
+      check "no git and no gates is never green" 0 "$(state_get pass_count 0)"
+      check "no git and no gates counts real work as unverified" 2 "$(state_get unverified_count 0)"
+      rebuild_state_from_ledger
+      check "unverified count survives ledger rebuild" 2 "$(state_get unverified_count 0)"
+      check "ledger rebuild never invents green cycles" 0 "$(state_get pass_count 0)"
+      true ) || no "no-git accounting assertions completed" "subshell aborted"
+fi
+
+if want "commit-postcondition"; then
+    # THE POSTCONDITION, tested as a postcondition: a NEW silent-failure site is
+    # injected into the commit path -- a step that returns without setting any
+    # flag, which is the exact shape of four defects found in four consecutive
+    # reviews. No guard in the file knows about this site. The cycle must still
+    # refuse to call itself green, because the claim "the work is saved" is
+    # checked against the repository, not against the steps' own reports.
+    d="$(new_project)"
+    sed 's|    git_identity|    git_identity\n    return 0   # INJECTED silent failure|' \
+        "$RALPHIE" > "$d/ralphie.sh"
+    chmod +x "$d/ralphie.sh"
+    printf 'x\n' > "$d/app.py"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "w%%s\\n" "$$" >> app.py\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/m"
+    chmod +x "$d/m"
+    out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 3 2>&1 )"
+    p="$(grep '^pass_count=' "$d/.ralphie/state" 2>/dev/null | cut -d= -f2)"; [ -n "$p" ] || p=0
+    check "an unknown silent failure is never counted green" "0" "$p"
+    check_contains "and it is reported, not hidden" "HEAD did not move" "$out"
+    g="$( cd "$d" && git log --oneline | grep -c ralphie || true )"
+    check "and no commit was invented" "0" "$(printf '%s' "$g" | tr -d ' \n')"
+    # The control: without the injection the very same project goes green, so
+    # this test cannot pass by making everything fail.
+    d2="$(new_project)"
+    printf 'x\n' > "$d2/app.py"
+    mkdir -p "$d2/.ralphie"; printf 'true\n' > "$d2/.ralphie/gates"
+    ( cd "$d2" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    cp "$d/m" "$d2/m"
+    ( cd "$d2" && env RALPHIE_ENGINE_CMD="$d2/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 2 ) >/dev/null 2>&1
+    p2="$(grep '^pass_count=' "$d2/.ralphie/state" 2>/dev/null | cut -d= -f2)"; [ -n "$p2" ] || p2=0
+    if [ "$p2" -ge 1 ]; then ok "the control run still goes green"
+    else no "the control run still goes green" "got $p2 green cycles, so the test above proves nothing"; fi
+fi
+
+if want "planted-in-a-subdirectory"; then
+    # Ralphie planted ONE LEVEL BELOW a git root -- a monorepo sub-project, a
+    # checkout inside a checkout, or any directory that merely sits inside a
+    # parent repository such as a dotfiles ~/.git.
+    #
+    # `git add -A` from a subdirectory stages the WHOLE repository, while every
+    # exclusion used a path git reports relative to the ROOT. From the
+    # subdirectory those paths matched nothing and exited 0, so the pre-dirty
+    # exclusion, the secret filter, the bulk filter and the .ralphie rule were
+    # ALL silent no-ops: Ralphie printed "held back 2 path(s)" and then
+    # committed a live AWS key, an ssh key and the operator's private draft.
+    d="$(new_project)"
+    mkdir -p "$d/svc"
+    printf 'v1\n' > "$d/svc/app.txt"; printf 'x\n' > "$d/keep.txt"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf 'AWS_SECRET_ACCESS_KEY=AKIAFAKEFAKEFAKE\n' > "$d/.env"
+    printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\n' > "$d/id_rsa"
+    printf 'PRIVATE DRAFT\n' >> "$d/keep.txt"
+    cp "$RALPHIE" "$d/svc/ralphie.sh"; chmod +x "$d/svc/ralphie.sh"
+    mkdir -p "$d/svc/.ralphie"; printf 'true\n' > "$d/svc/.ralphie/gates"
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "change\\n" >> app.txt\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/eng"
+    chmod +x "$d/eng"
+    ( cd "$d/svc" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    files="$( cd "$d" && git show --name-only --format='' HEAD 2>/dev/null | tr '\n' ' ' )"
+    check_contains "the sub-project's own work IS committed" "svc/app.txt" "$files"
+    check_lacks_any "and nothing outside the sub-project is" "$files" ".env" "id_rsa" "keep.txt"
+    ( cd "$d" && git show HEAD:.env ) >/dev/null 2>&1 \
+        && no "the secret never reaches history" "it is in HEAD" \
+        || ok "the secret never reaches history"
+    grep -q 'PRIVATE DRAFT' "$d/keep.txt" && ok "the operator's draft is still on disk" \
+                                          || no "the operator's draft is still on disk" "gone"
+    # And no phantom staged deletions are left in the operator's real index.
+    st="$( cd "$d" && git status --porcelain 2>/dev/null | grep -c '^D ' || true )"
+    check "the operator's index is left alone" "0" "$(printf '%s' "$st" | tr -d ' \n')"
+fi
+
+if want "flaky-gate-never-promotes"; then
+    # A gate that FAILS on the verify run and passes on its retry must not
+    # promote a broken project. Measured before the fix: the screen said
+    # "flaky gate ... not a real failure", then "gates: green", then
+    # "committed ... Verified by 1 gate(s)", then "objective complete", exit 0
+    # -- while the same gate run by hand immediately afterwards exited 1.
+    # No gate text was touched, so guard_gates could not see it.
+    d="$(new_project)"
+    printf 'OK\n' > "$d/value.txt"
+    printf '#!/usr/bin/env bash\nif [ -f .justfailed ]; then rm -f .justfailed; exit 0; fi\ngrep -qx OK value.txt && exit 0\ntouch .justfailed; exit 1\n' > "$d/check.sh"
+    chmod +x "$d/check.sh"
+    printf '.justfailed\n' > "$d/.gitignore"
+    mkdir -p "$d/.ralphie"; printf 'bash check.sh\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "WRONG\\n" > value.txt\nprintf "<<<RALPHIE\\nstatus: done\\nsummary: implemented it\\nRALPHIE>>>\\n"\n' > "$d/eng"
+    chmod +x "$d/eng"
+    out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
+    # The independent oracle: the project really is broken.
+    grep -qx OK "$d/value.txt" && no "the fixture really did break the project" "value.txt is still OK" \
+                               || ok "the fixture really did break the project"
+    n="$( cd "$d" && git log --oneline | grep -c ralphie || true )"
+    check "a flaky verify gate never promotes work" "0" "$(printf '%s' "$n" | tr -d ' \n')"
+    check "and the cycle is not counted green" "0" "$(grep '^pass_count=' "$d/.ralphie/state" | cut -d= -f2)"
+    check_contains "and the operator is told the gate cannot decide" "NOT treated as green" "$out"
+    # The control: an ordinary flake BEFORE the work is done is still tolerated,
+    # so this does not simply make every flake fatal.
+    d2="$(new_project)"
+    printf 'OK\n' > "$d2/value.txt"
+    cp "$d/check.sh" "$d2/check.sh"; printf '.justfailed\n' > "$d2/.gitignore"
+    mkdir -p "$d2/.ralphie"; printf 'bash check.sh\n' > "$d2/.ralphie/gates"
+    ( cd "$d2" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "note\\n" >> README.txt\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d2/eng"
+    chmod +x "$d2/eng"
+    ( cd "$d2" && env RALPHIE_ENGINE_CMD="$d2/eng" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    g2="$( cd "$d2" && git log --oneline | grep -c ralphie || true )"
+    if [ "$(printf '%s' "$g2" | tr -d ' ')" -ge 1 ]; then ok "a genuinely green project still commits"
+    else no "a genuinely green project still commits" "nothing was committed, so the test above proves nothing"; fi
+fi
+
+if want "ledger-directory"; then
+    # The append-only ledger is the evidence the whole program rests on. An
+    # agent that replaced it with a DIRECTORY got three commits, zero events and
+    # exit 0: no history, no reason code, and nothing in `status`.
+    d="$(new_project)"
+    printf 'v1\n' > "$d/app.txt"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "line %%s\\n" "$$" >> app.txt\nrm -rf .ralphie/events.jsonl && mkdir -p .ralphie/events.jsonl\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: worked\\nRALPHIE>>>\\n"\n' > "$d/eng"
+    chmod +x "$d/eng"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="" ./ralphie.sh -n 3 --engine custom ) >/dev/null 2>&1
+    [ -f "$d/.ralphie/events.jsonl" ] && ok "the ledger is repaired to a file" \
+                                      || no "the ledger is repaired to a file" "still a directory"
+    n="$(grep -c '"kind":' "$d/.ralphie/events.jsonl" 2>/dev/null || true)"
+    if [ "$(printf '%s' "${n:-0}" | tr -d ' \n')" -ge 1 ]; then ok "and it records again"
+    else no "and it records again" "no events at all"; fi
+fi
+
+if want "undo-never-destroys"; then
+    # The undo line is printed at the top of every run and in `status`, three
+    # lines from the promise that uncommitted work is never committed. With
+    # `--hard` it DESTROYED exactly that work: no commit, no stash, nothing in
+    # the reflog to recover it from. `--keep` undoes Ralphie's commits and
+    # refuses rather than discard an unsaved change.
+    d="$(new_project)"
+    printf 'v1\n' > "$d/app.py"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    sha="$( cd "$d" && git rev-parse HEAD )"   # the point before ralphie did anything
+    # A run must happen first: the undo line names the recovery point it records.
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "w\\n" >> app.py\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: x\\nRALPHIE>>>\\n"\n' > "$d/m"
+    chmod +x "$d/m"
+    run_out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
+    out="$( cd "$d" && ./ralphie.sh status 2>&1 )"
+    check_lacks "status never offers a destructive undo" "reset --hard" "$out"
+    check_lacks "and neither does the run banner" "reset --hard" "$run_out"
+    case "$out" in *"reset --keep"*) ok "it offers the non-destructive one";;
+                   *) no "it offers the non-destructive one" "no undo line at all";; esac
+    # And the command it prints really does preserve uncommitted work.
+    printf 'ralphie work\n' > "$d/feature.py"
+    ( cd "$d" && git add feature.py && git commit -qm "ralphie: work" ) >/dev/null 2>&1
+    printf 'PRECIOUS OPERATOR EDIT\n' >> "$d/app.py"
+    ( cd "$d" && git reset --keep "$sha" ) >/dev/null 2>&1; rc_keep=$?
+    grep -q 'PRECIOUS OPERATOR EDIT' "$d/app.py" \
+        && ok "the undo it recommends keeps the operator's edit" \
+        || no "the undo it recommends keeps the operator's edit" "it was destroyed"
+    # The contract is "never destroy", not "always succeed": where the two
+    # cannot both be honoured, `--keep` REFUSES and says so. Either outcome is
+    # correct; silently discarding the edit is the one that is not.
+    n="$( cd "$d" && git log --oneline | grep -c ralphie || true )"; n="$(printf '%s' "$n" | tr -d ' \n')"
+    if [ "$n" = "0" ] || [ "$rc_keep" != "0" ]; then
+        ok "it either undoes the commit or refuses, never both-and-lose"
+    else
+        no "it either undoes the commit or refuses, never both-and-lose" "succeeded but left $n commits"
+    fi
+fi
+
+if want "json-always-valid"; then
+    # README sells `status --json` as the interface for CI and monitoring, and
+    # `.ralphie/state` is plain text in a directory the supervised agent can
+    # write. Every numeric field must survive a poisoned counter: one field was
+    # printed raw, so a single non-numeric value emitted invalid JSON, exit 0.
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    for k in cycle pass_count fail_count learned_count blocked_count untrusted_count unverified_count; do
+        printf '%s=not-a-number\n' "$k" >> "$d/.ralphie/state"
+    done
+    j="$( cd "$d" && ./ralphie.sh status --json 2>/dev/null )"
+    if printf '%s' "$j" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null
+    then ok "status --json survives a poisoned state file"
+    else no "status --json survives a poisoned state file" "$(printf '%s' "$j" | head -c 200)"; fi
+    check_contains "and still reports the project" "\"project\"" "$j"
+fi
+
+if want "redetect-really-changes"; then
+    # `gates --redetect` is the command Ralphie itself recommends when the gates
+    # are wrong, so it has to be able to change them. It rewrote .ralphie/gates
+    # but never the baseline, and the next run restored everything from that
+    # baseline -- so a gate could never be removed, and Ralphie repeated the
+    # same advice for ever. A hand-edited gate file is also the operator's work,
+    # so it is copied aside rather than simply discarded.
+    d="$(new_project)"
+    printf 'x\n' > "$d/app.py"
+    mkdir -p "$d/.ralphie"
+    printf 'true\nexit 0  # a gate the operator no longer wants\n' > "$d/.ralphie/gates"
+    printf 'true\nexit 0  # a gate the operator no longer wants\n' > "$d/.ralphie/gates.baseline"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    out="$( cd "$d" && ./ralphie.sh gates --redetect 2>&1 )"
+    [ -f "$d/.ralphie/gates.previous" ] && ok "the previous gate file is kept" \
+                                        || no "the previous gate file is kept" "no copy was made"
+    check_contains "and the operator is told where" "gates.previous" "$out"
+    grep -q 'no longer wants' "$d/.ralphie/gates.baseline" 2>/dev/null \
+        && no "the baseline no longer pins the old gate" "it still does" \
+        || ok "the baseline no longer pins the old gate"
+    # And a run afterwards does not put it back.
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "w\\n" >> app.py\nprintf "<<<RALPHIE\\nstatus: progress\\nsummary: x\\nRALPHIE>>>\\n"\n' > "$d/m"
+    chmod +x "$d/m"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/m" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom ) >/dev/null 2>&1
+    grep -q 'no longer wants' "$d/.ralphie/gates" 2>/dev/null \
+        && no "and the next run does not restore it" "it came back" \
+        || ok "and the next run does not restore it"
+fi
+
+
+if want "prime-usage-attribution"; then
+  ( load_lib "$(new_project)"
+    if have python3; then
+        ENGINE=prime-agent
+        state_set run_id current
+        state_set tokens_spent 1000
+        state_set run_tokens 0
+        mkdir -p "$RUN_DIR/sessions/current" "$RUN_DIR/sessions/previous"
+        cat > "$RUN_DIR/sessions/current/root.jsonl" <<'JSONL'
+{"type":"message","id":"a","message":{"role":"assistant","usage":{"totalTokens":10,"cost":{"total":0.1}}}}
+{"type":"message","id":"empty","message":{"role":"assistant"}}
+{"type":"child_usage_attributed","targetId":"a","childUsage":{"totalTokens":20,"cost":{"total":0.2}},"aggregateUsage":{"totalTokens":30,"cost":{"total":0.3}}}
+{"type":"child_usage_attributed","targetId":"a","childUsage":{"totalTokens":5,"cost":{"total":0.05}},"aggregateUsage":{"totalTokens":35,"cost":{"total":0.35}}}
+{"type":"child_usage_attributed","targetId":"a","childUsage":{"totalTokens":5,"cost":{"total":0.05}},"aggregateUsage":{"totalTokens":35,"cost":{"total":0.35}}}
+{"type":"child_usage_attributed","targetId":"missing","aggregateUsage":{"totalTokens":9000,"cost":{"total":90}}}
+{"type":"message","id":"b","message":{"role":"assistant","usage":{"input":999,"output":999,"cost":{}}}}
+{"type":"message","id":"c","message":{"role":"assistant","usage":{"totalTokens":7}}}
+malformed
+JSONL
+        # The second child delta includes nested descendant usage. Only its
+        # final aggregate belongs in the parent total; never scan child files.
+        cp "$RUN_DIR/sessions/current/root.jsonl" "$RUN_DIR/sessions/previous/root.jsonl"
+        # Prime stores descendant transcripts in a sibling session-artifacts
+        # tree, not the parent's --session-dir. Their usage is already folded.
+        mkdir -p "$RUN_DIR/sessions/session-artifacts/root/child/grandchild"
+        printf '%s\n' '{"type":"message","id":"child","message":{"role":"assistant","usage":{"totalTokens":20,"cost":{"total":0.2}}}}' '{"type":"child_usage_attributed","targetId":"child","childUsage":{"totalTokens":5,"cost":{"total":0.05}},"aggregateUsage":{"totalTokens":25,"cost":{"total":0.25}}}' > "$RUN_DIR/sessions/session-artifacts/root/child/child.jsonl"
+        printf '%s\n' '{"type":"message","id":"grandchild","message":{"role":"assistant","usage":{"totalTokens":5,"cost":{"total":0.05}}}}' > "$RUN_DIR/sessions/session-artifacts/root/child/grandchild/g.jsonl"
+        # A separate parent session in this run can reuse entry IDs.
+        printf '%s\n' '{"type":"message","id":"a","message":{"role":"assistant","usage":{"totalTokens":3,"cost":{"total":0.03}}}}' > "$RUN_DIR/sessions/current/second.jsonl"
+        read_engine_usage >/dev/null
+        check "latest child aggregate replaces original usage" 45 "$(state_get run_tokens)"
+        check "real aggregate costs only" 0.380000 "$(state_get run_cost)"
+        check "retained runs do not inflate lifetime delta" 1045 "$(state_get tokens_spent)"
+        read_engine_usage >/dev/null
+        check "rereading aggregate does not double-charge" 1045 "$(state_get tokens_spent)"
+        printf '%s\n' '{"type":"child_usage_attributed","targetId":"empty","aggregateUsage":{"totalTokens":4,"cost":{"total":0.04}}}' >> "$RUN_DIR/sessions/current/root.jsonl"
+        read_engine_usage >/dev/null
+        check "attribution supplies initially missing usage" 49 "$(state_get run_tokens)"
+        check "late child delta is charged once" 1049 "$(state_get tokens_spent)"
+        check "late child cost is replayed" 0.420000 "$(state_get run_cost)"
+    else
+        skip "prime usage replay requires python3" "no parser installed"
+    fi
+    true ) || no "prime-usage-attribution group completed" "aborted"
+fi
+
+if want "prime-model-selector"; then
+  ( load_lib "$(new_project)"
+    mkdir -p "$PROJECT/bin"
+    cat > "$PROJECT/bin/prime-agent" <<'MOCK'
+#!/bin/sh
+if [ "$1" = model ]; then
+    printf 'provider       model\nopenai         gpt-5\n'
+else
+    printf '%s\n' "$@"
+fi
+MOCK
+    chmod +x "$PROJECT/bin/prime-agent"
+    PATH="$PROJECT/bin:$PATH"
+    ENGINE=prime-agent
+    for MODEL in openai/gpt-5 openai/gpt-5:high 'gpt-*' unknown-selector; do
+        out="$(engine_check_model prime-agent "$MODEL" 2>&1)"
+        check_ok "selector resolution is delegated: $MODEL" "$?"
+        check_lacks "no invented default fallback: $MODEL" 'default' "checked $out"
+        check_lacks "no false missing-model warning: $MODEL" 'not in' "checked $out"
+        THINKING="" engine_build prime-agent oneshot "$RUN_DIR/o"
+        out="$("${ENGINE_ARGV[@]+"${ENGINE_ARGV[@]}"}")"
+        selected="$(printf '%s\n' "$out" | sed -n '/^--model$/{n;p;}')"
+        check "mock receives exact explicit selector: $MODEL" "$MODEL" "$selected"
+    done
+    true ) || no "prime-model-selector group completed" "aborted"
+fi
+
+if want "usage-is-measured-not-inflated"; then
+    # Token and cost figures are only ever REPORTED, never estimated -- and a
+    # mis-MEASURED number breaks that promise just as badly as a guess.
+    # `$RUN_DIR/sessions` retains several previous runs, and summing all of it
+    # charged this run for work five runs old: 15 calls that really cost 1,500
+    # tokens and $0.03 were reported as 4,500 tokens and $0.15.
+    d="$(new_project)"
+    printf '#!/bin/sh\nexit 0\n' > "$d/check.sh"; chmod +x "$d/check.sh"
+    printf 'x\n' > "$d/work.txt"
+    mkdir -p "$d/.ralphie"; printf './check.sh\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf '#!/usr/bin/env bash\ncat >/dev/null\nrid=$(grep "^run_id=" .ralphie/state 2>/dev/null | cut -d= -f2)\nsd=".ralphie/run/sessions/${rid:-run}"\nmkdir -p "$sd"\nprintf %%s "{\\"message\\":{\\"usage\\":{\\"totalTokens\\":100,\\"cost\\":{\\"total\\":0.01}}}}" >> "$sd/s.jsonl"\nprintf "\\n" >> "$sd/s.jsonl"\nprintf "line\\n" >> work.txt\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: x\\nRALPHIE>>>\\n"\n' > "$d/eng"
+    chmod +x "$d/eng"
+    r=1
+    while [ "$r" -le 3 ]; do
+        ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="usage" ./ralphie.sh --engine custom -n 2 ) >/dev/null 2>&1
+        r=$((r+1))
+    done
+    # 3 runs x 2 cycles = 6 calls = 600 tokens total, 200 per run.
+    check "the lifetime token total is what was really spent" "600" "$(grep '^tokens_spent=' "$d/.ralphie/state" | cut -d= -f2)"
+    check "and THIS run is charged only for itself" "200" "$(grep '^run_tokens=' "$d/.ralphie/state" | cut -d= -f2)"
+    check "and so is the cost" "0.020000" "$(grep '^run_cost=' "$d/.ralphie/state" | cut -d= -f2)"
+fi
+
+if want "converging-repair"; then
+    # One command can expose fewer defects each cycle. It is not a stall merely
+    # because that command stays the same. Only explicit budgets bound this run.
+    d="$(new_project)"
+    printf '0\n' > "$d/work.txt"
+    printf 'original\n' > "$d/operator.txt"
+    mkdir -p "$d/.ralphie"
+    printf 'test "$(cat work.txt)" -ge 9\n' > "$d/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    printf 'operator edit\n' >> "$d/operator.txt"
+    cat > "$d/eng" <<'REPAIR_ENGINE'
+#!/usr/bin/env bash
+cat >/dev/null
+n=$(cat work.txt); printf '%s\n' "$((n+1))" > work.txt
+printf '<<<RALPHIE\nstatus: progress\nsummary: repair one defect\nRALPHIE>>>\n'
+REPAIR_ENGINE
+    chmod +x "$d/eng"
+    ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --engine custom -n 9 ) > "$d/run.out" 2>&1
+    check "a converging repair reaches its ninth cycle" "9" "$(cat "$d/work.txt")"
+    check "red-cycle work is saved when verification passes" "9" "$(cd "$d" && git show HEAD:work.txt)"
+    check "initial operator edits stay out of the commit" "original" "$(cd "$d" && git show HEAD:operator.txt)"
+    check_contains "initial operator edits remain on disk" "operator edit" "$(cat "$d/operator.txt")"
 fi
 
 if want "branch"; then
@@ -3122,14 +4723,14 @@ fi
 if want "empty-repo"; then
     # A repository with no commits: `rev-parse --abbrev-ref HEAD` prints the
     # literal "HEAD" and exits non-zero, which once produced the nonsense
-    # recovery command `git reset --hard HEAD`.
+    # recovery command `git reset --keep HEAD`.
     d="$TMPROOT/fresh$RANDOM"; mkdir -p "$d"
     cp "$RALPHIE" "$d/ralphie.sh"; chmod +x "$d/ralphie.sh"
     printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "ok\\n\\n<<<RALPHIE\\nstatus: progress\\nsummary: first\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/mock"
     chmod +x "$d/mock"
     out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom 2>&1 )"
-    case "$out" in *"reset --hard HEAD"*) no "no nonsense undo command on an empty repo" "offered: git reset --hard HEAD";; *) ok "no nonsense undo command on an empty repo";; esac
-    case "$out" in *detached*) no "no stray git output leaks" "'detached' leaked";; *) ok "no stray git output leaks";; esac
+    check_lacks "no nonsense undo command on an empty repo" "reset --keep HEAD" "${out}"
+    check_lacks "no stray git output leaks" detached "${out}"
     check_contains "an empty repo is described honestly" "no commits yet" "$out"
     check_contains "a repository is created for the operator" "initialised a git repository" "$out"
 fi
@@ -3145,9 +4746,9 @@ if want "recovery"; then
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" \
         ./ralphie.sh --once --engine custom 2>&1 )"
     check "the recovery point is the pre-run commit" "$base" "$(grep '^start_commit=' "$d/.ralphie/state" | cut -d= -f2)"
-    check_contains "the undo command is shown up front" "git reset --hard" "$out"
+    check_contains "the undo command is shown up front" "git reset --keep" "$out"
     st="$( cd "$d" && ./ralphie.sh status 2>&1 )"
-    check_contains "status repeats the undo command" "git reset --hard $base" "$st"
+    check_contains "status repeats the undo command" "git reset --keep $base" "$st"
     # And it must actually work.
     ( cd "$d" && git reset --hard "$base" ) >/dev/null 2>&1
     check "undo really restores the tree" "$base" "$( cd "$d" && git rev-parse HEAD )"
@@ -3162,7 +4763,7 @@ if want "loop-nocommit"; then
         RALPHIE_ENGINE_CMD="$d/mock-engine" RALPHIE_ENGINE_CAPS="" \
         ./ralphie.sh --once --engine custom --no-commit ) >/dev/null 2>&1
     gl="$( cd "$d" && git log --oneline 2>&1 )"
-    case "$gl" in *ralphie*) no "--no-commit is honoured" "committed anyway";; *) ok "--no-commit is honoured";; esac
+    check_lacks "--no-commit is honoured" ralphie "${gl}"
 fi
 
 if want "resume"; then
@@ -3226,6 +4827,70 @@ if want "no-engine"; then
     check_contains "a machine with no engine says so clearly" "no AI engine" "$out"
 fi
 
+
+# A naturally finite eight-second fixture also bounds these regression tests
+# when the watchdog is sabotaged. No timeout binary or provider is needed.
+if want "forced-termination"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+    timeout_cmd() { :; }
+    cat > "$d/deaf" <<'DEAF'
+#!/bin/bash
+trap '' TERM
+printf '%s\n' "$$" > "$RALPHIE_PROJECT/deaf.pid"
+sleep 8
+exit 9
+DEAF
+    chmod +x "$d/deaf"
+    t0="$(date +%s)"
+    gate_exec './deaf' "$RUN_DIR/gate.log" 1 >/dev/null 2>&1
+    check "a TERM-ignoring gate without timeout returns 124" 124 "$?"
+    took=$(( $(date +%s) - t0 ))
+    [ "$took" -lt 7 ] && ok "gate forced termination is bounded" || no "gate forced termination is bounded" "${took}s"
+    kill -0 "$(cat "$d/deaf.pid")" 2>/dev/null && no "gate process is gone" "still alive" || ok "gate process is gone"
+    gate_exec './deaf & wait' "$RUN_DIR/gate.log" 1 >/dev/null 2>&1
+    check "a gate with a cooperative parent still times out" 124 "$?"
+    kill -0 "$(cat "$d/deaf.pid")" 2>/dev/null && no "orphaned TERM-ignoring child is killed" "still alive" || ok "orphaned TERM-ignoring child is killed"
+    gate_exec 'exit 7' "$RUN_DIR/gate.log" 5 >/dev/null 2>&1
+    check "watchdog preserves an ordinary gate failure" 7 "$?"
+    gate_exec 'true' "$RUN_DIR/gate.log" 5 >/dev/null 2>&1
+    check "watchdog preserves an ordinary gate success" 0 "$?"
+
+    ENGINE=custom; ENGINE_EXPLICIT=1; ENGINE_ARGV=( "$d/deaf" ); ENGINE_ENV=()
+    ENGINE_TIMEOUT=1; RUN_DEADLINE=0
+    printf 'mock only\n' > "$RUN_DIR/prompt"
+    t0="$(date +%s)"
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/engine.log" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "engine timeout applies without a run budget or timeout binary" 124 "$?"
+    took=$(( $(date +%s) - t0 ))
+    [ "$took" -lt 7 ] && ok "engine forced termination is bounded" || no "engine forced termination is bounded" "${took}s"
+    kill -0 "$(cat "$d/deaf.pid")" 2>/dev/null && no "engine process is gone" "still alive" || ok "engine process is gone"
+    # Even an installed timeout command must not disable the built-in bound.
+    timeout_cmd() { printf '/usr/bin/false'; }
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/engine.log" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "engine bound does not depend on external timeout behavior" 124 "$?"
+
+    ( cd "$d" && git add ralphie.sh && git commit -qm init )
+    before="$(git -C "$d" rev-parse HEAD)"
+    printf 'new work\n' > "$d/work"
+    idx="$RUN_DIR/commit.index"
+    GIT_INDEX_FILE="$idx" git -C "$d" read-tree HEAD
+    GIT_INDEX_FILE="$idx" git -C "$d" add work
+    cp "$d/deaf" "$d/.git/hooks/pre-commit"
+    COMMIT_TIMEOUT=1; COMMIT_FAILED=0
+    t0="$(date +%s)"
+    write_commit "$idx" bounded >/dev/null 2>&1
+    check "a timed-out commit fails" 1 "$?"
+    check "a timed-out commit sets the failure flag" 1 "$COMMIT_FAILED"
+    took=$(( $(date +%s) - t0 ))
+    [ "$took" -lt 7 ] && ok "commit hook forced termination is bounded" || no "commit hook forced termination is bounded" "${took}s"
+    check "a killed pre-commit hook cannot create a commit" "$before" "$(git -C "$d" rev-parse HEAD)"
+    kill -0 "$(cat "$d/deaf.pid")" 2>/dev/null && no "hook process is gone" "still alive" || ok "hook process is gone"
+    check_contains "hook timeout leaves actionable evidence" "timed out" "$(cat "$ASK_FILE")"
+    [ -f "$d/work" ] && ok "unsaved work survives hook timeout" || no "unsaved work survives hook timeout" "missing"
+    true ) || no "the forced-termination group ran to completion" "it aborted part-way"
+fi
+
 # --------------------------------------------------------------- budget -----
 # A budget checked only between cycles is not a budget. One engine call may run
 # for ENGINE_TIMEOUT seconds, so `--minutes 1` used to return up to forty
@@ -3268,6 +4933,95 @@ if want "budget-argv"; then
     ms="$(printf '%s\n' "${ENGINE_ARGV[@]+"${ENGINE_ARGV[@]}"}" | awk '/^--autonomous-timeout-ms$/{getline; print; exit}')"
     check "an unlimited run still gets the full engine timeout" "2400000" "$ms"
 fi
+
+# Output capture is bounded independently of time budgets, using private mocks.
+if want "output-ceiling"; then
+    d="$(new_project)"
+    ( load_lib "$d"; ledger_init
+    ENGINE=custom; ENGINE_EXPLICIT=1; ENGINE_ENV=()
+    ENGINE_TIMEOUT=0; ENGINE_IDLE_TIMEOUT=0; RUN_DEADLINE=0
+    ENGINE_OUTPUT_MAX_BYTES=4096; ENGINE_RETRIES=3; ENGINE_BACKOFF=0
+    printf 'prompt must survive\n' > "$RUN_DIR/prompt"
+    mkdir -p "$RUN_DIR/sessions/live"
+    printf 'provider session must survive\n' > "$RUN_DIR/sessions/live/record"
+    cat > "$d/noisy" <<'NOISY'
+#!/bin/bash
+printf 'attempt\n' >> "$RALPHIE_PROJECT/attempts"
+dd if=/dev/zero bs=1024 count=8 2>/dev/null | tr '\000' x
+printf '\n<<<RALPHIE\nstatus: done\nsummary: must not be accepted\nRALPHIE>>>\n'
+NOISY
+    chmod +x "$d/noisy"
+    ENGINE_ARGV=( "$d/noisy" )
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "finite output over ceiling fails even if process already exited" 125 "$?"
+    check "resource limit class is independent of report text" resource-limit "$(classify_failure 125 "$RUN_DIR/capture")"
+    check "oversized answer cannot claim done" 0 "$(file_bytes "$RUN_DIR/answer")"
+    engine_answered custom autonomous 125 "$RUN_DIR/capture" "$RUN_DIR/answer" 0
+    check_fails "autonomous mode cannot forgive a resource-limit" "$?"
+    # Keep real retry/fallback policy, replace only provider discovery/build.
+    engine_present() { return 0; }
+    engine_build() { ENGINE_ARGV=( "$d/noisy" ); ENGINE_ENV=(); }
+    engine_fallbacks() { printf 'fallback\n' >> "$d/fallback-tried"; printf 'other\n'; }
+    : > "$d/attempts"
+    ENGINE_EXPLICIT=0
+    engine_run_with_fallback autonomous "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check_fails "oversized output blocks rather than completes" "$?"
+    check_contains "blocked reason names output resource-limit" 'output resource-limit' "$ENGINE_REASON"
+    check "output resource limit is not retried" 1 "$(wc -l < "$d/attempts" | tr -d ' ')"
+    [ ! -e "$d/fallback-tried" ] && ok "resource limit does not invoke provider fallback" || no "resource limit does not invoke provider fallback"
+    cat > "$d/continuous" <<'CONTINUOUS'
+#!/bin/bash
+printf '%s\n' "$$" > "$RALPHIE_PROJECT/producer.pid"
+# Naturally bounded as a safety net for watchdog mutation testing.
+end=$(( $(date +%s) + 5 ))
+while [ "$(date +%s)" -lt "$end" ]; do
+    dd if=/dev/zero bs=1024 count=8 2>/dev/null
+    sleep 0.05
+done
+CONTINUOUS
+    chmod +x "$d/continuous"
+    ENGINE_ARGV=( "$d/continuous" )
+    t0="$(date +%s)"
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "continuous output fails with all timeouts disabled" 125 "$?"
+    took=$(( $(date +%s) - t0 ))
+    [ "$took" -lt 5 ] && ok "continuous producer stopped before natural exit" || no "continuous producer stopped before natural exit" "$took seconds"
+    kill -0 "$(cat "$d/producer.pid")" 2>/dev/null && no "continuous producer is gone" || ok "continuous producer is gone"
+    # A burst larger than the retention bound must not be duplicated whole.
+    ENGINE_ARGV=( /bin/bash -c 'dd if=/dev/zero bs=1024 count=400 2>/dev/null' )
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "large finite burst fails" 125 "$?"
+    [ "$(file_bytes "$RUN_DIR/capture")" -le 262144 ] && ok "oversized failed capture is bounded before copying" || no "oversized failed capture is bounded before copying"
+    check_contains "failed capture has tail marker" 'retained tail follows' "$(head -1 "$RUN_DIR/capture")"
+    # File-answer engines must count their answer, not only stdout.
+    ENGINE_ARGV=( /bin/bash -c 'dd if=/dev/zero bs=1024 count=8 2>/dev/null > "$1"' mock "$RUN_DIR/answer" )
+    engine_answer() { printf file; }
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "file answers count toward ceiling" 125 "$?"
+    check "oversized file answer is cleared" 0 "$(file_bytes "$RUN_DIR/answer")"
+    engine_answer() { printf stdout; }
+    ENGINE_OUTPUT_MAX_BYTES=1048576
+    ENGINE_ARGV=( /bin/bash -c 'dd if=/dev/zero bs=1024 count=300 2>/dev/null; printf "\n<<<RALPHIE\nstatus: done\nsummary: normal final report\nRALPHIE>>>\n"' )
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "normal bounded output succeeds" 0 "$?"
+    CY_OUT="$RUN_DIR/answer"; CY_LOG="$RUN_DIR/capture"
+    parse_report "$CY_OUT"
+    check "full answer parsed before retention" 'normal final report' "$REPORT_SUMMARY"
+    retain_engine_output "$CY_LOG"; retain_engine_output "$CY_OUT"
+    for f in "$CY_LOG" "$CY_OUT"; do
+        [ "$(file_bytes "$f")" -le 262144 ] && ok "retained capture fits 256 KiB" || no "retained capture fits 256 KiB"
+        check_contains "truncated capture has explicit marker" 'retained tail follows' "$(head -1 "$f")"
+    done
+    parse_report "$CY_OUT"
+    check "final report remains in retained tail" 'normal final report' "$REPORT_SUMMARY"
+    check "prompt was not trimmed" 'prompt must survive' "$(cat "$RUN_DIR/prompt")"
+    check "provider session was not trimmed" 'provider session must survive' "$(cat "$RUN_DIR/sessions/live/record")"
+    ENGINE_ARGV=( /bin/bash -c 'printf ordinary; exit 7' )
+    engine_invoke custom "$RUN_DIR/prompt" "$RUN_DIR/capture" "$RUN_DIR/answer" >/dev/null 2>&1
+    check "ordinary nonzero exit preserved without timeouts" 7 "$?"
+    true ) || no "output-ceiling group completed" "aborted"
+fi
+
 if want "budget-watchdog"; then
     # `timeout` is missing on Termux and in minimal containers, so the watchdog
     # has to be able to keep the promise on its own.
@@ -3284,7 +5038,7 @@ if want "budget-watchdog"; then
     watchdog_wait "$wpid" /dev/null 0 0
     check "with no limit the engine's own exit code is returned" "7" "$?"
 fi
-)
+true )  || no "the budget-cap group ran to completion" "it aborted part-way; every later assertion in it was lost"
 
 if want "budget-minutes"; then
     # The whole point: this engine would run for ten minutes, and the operator
@@ -3347,6 +5101,77 @@ if want "budget-cycles"; then
     check_contains "the cycle limit is reported" "reached the cycle limit" "$out"
 fi
 
+# Strict orientation: snapshots include the entire tree, .git/index and ledger.
+# No load_lib here: its initializer itself creates .ralphie.
+if want "discover-readonly"; then
+    d="$TMPROOT/discover project"; tools="$TMPROOT/discover tools"
+    mkdir -p "$d" "$tools"
+    for tool in prime-agent claude codex node python3 npm uv curl wget; do
+        printf '#!/bin/sh\nprintf "called %%s\\n" "$0" >> "%s"\nexit 91\n' "$TMPROOT/discover-called" > "$tools/$tool"
+        chmod +x "$tools/$tool"
+    done
+    # A custom executable path with spaces must be checked, never executed.
+    cp "$tools/claude" "$tools/custom engine"
+    tar -cf "$TMPROOT/discover-before.tar" -C "$d" .
+    out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" RALPHIE_ENGINE_CMD="$tools/custom engine" "$RALPHIE" discover 2>&1)"; rc=$?
+    check_ok "discover blank succeeds" "$rc"
+    check_contains "discover canonical spaced path" "Project: $(cd "$d" && pwd -P)" "$out"
+    check_contains "discover no git" "Git: no work tree" "$out"
+    check_contains "discover spaced custom presence" "custom: present" "$out"
+    tar -cf "$TMPROOT/discover-after.tar" -C "$d" .
+    cmp -s "$TMPROOT/discover-before.tar" "$TMPROOT/discover-after.tar"
+    check_ok "discover blank tree exactly unchanged" "$?"
+    chmod a-w "$d"
+    out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" "$RALPHIE" discover 2>&1)"
+    check_ok "discover unwritable directory succeeds" "$?"
+    tar -cf "$TMPROOT/discover-after.tar" -C "$d" .
+    [ ! -e "$d/.ralphie" ]; check_ok "discover unwritable creates no ledger" "$?"
+    chmod u+w "$d"
+    git -C "$d" init -q
+    out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" "$RALPHIE" discover 2>&1)"
+    check_contains "discover unborn repository" "Unborn: yes" "$out"
+    mkdir -p "$d/.ralphie"
+    printf 'do not repair this state\n' > "$d/.ralphie/state"
+    printf 'evidence\n' > "$d/.ralphie/events.jsonl"
+    printf '%s\n' 'npm test' > "$d/.ralphie/gates"
+    printf '%s\n' '{"scripts":{"test":"npm trap"}}' > "$d/package.json"
+    printf '%s\n' '- [ ] pending' '- [x] finished' > "$d/PLAN.md"
+    printf '%s\n' '*.txt filter=trap' > "$d/.gitattributes"
+    printf 'baseline\n' > "$d/file.txt"
+    git -C "$d" add -A
+    git -C "$d" -c user.name=Test -c user.email=test@example.invalid commit -qm initial
+    out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" "$RALPHIE" discover 2>&1)"
+    check_contains "discover clean repository" "Dirty: no" "$out"
+    check_contains "discover branch" "Branch: $(git -C "$d" symbolic-ref --short HEAD)" "$out"
+    for hook in pre-commit post-index-change; do cp "$tools/claude" "$d/.git/hooks/$hook"; done
+    git -C "$d" config core.fsmonitor "$tools/claude"
+    git -C "$d" config filter.trap.clean "\"$tools/claude\""
+    git -C "$d" config filter.trap.process "\"$tools/claude\""
+    printf 'changed and longer\n' > "$d/file.txt"
+    tar -cf "$TMPROOT/discover-before.tar" -C "$d" .
+    out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" RALPHIE_ENGINE_CMD="$tools/custom engine" "$RALPHIE" discover 2>&1)"; rc=$?
+    check_ok "discover existing succeeds" "$rc"
+    check_contains "discover dirty" "Dirty: yes" "$out"
+    check_contains "discover born" "Unborn: no" "$out"
+    check_contains "discover stack" "Stack: node" "$out"
+    check_contains "discover known plan count" "PLAN.md: 1 pending" "$out"
+    check_contains "discover configured distinct" "Configured gates — NOT RUN:" "$out"
+    check_contains "discover candidates distinct" "Candidate checks — NOT RUN" "$out"
+    check_contains "discover candidate command" "npm run test" "$out"
+    tar -cf "$TMPROOT/discover-after.tar" -C "$d" .
+    cmp -s "$TMPROOT/discover-before.tar" "$TMPROOT/discover-after.tar"
+    check_ok "discover existing filesystem index ledger exactly unchanged" "$?"
+    for arg in unexpected --redetect --once; do
+        out="$(env PATH="$tools:$PATH" RALPHIE_PROJECT="$d" "$RALPHIE" discover "$arg" 2>&1)"; rc=$?
+        check_fails "discover rejects $arg" "$rc"
+        check_contains "discover invalid argument reason $arg" "discover takes no arguments" "$out"
+    done
+    tar -cf "$TMPROOT/discover-after.tar" -C "$d" .
+    cmp -s "$TMPROOT/discover-before.tar" "$TMPROOT/discover-after.tar"
+    check_ok "discover invalid arguments leave tree unchanged" "$?"
+    [ ! -e "$TMPROOT/discover-called" ]; check_ok "discover never calls provider parser gate hook filter or network" "$?"
+fi
+
 # --------------------------------------------------------------- report -----
 printf '\n'
 dim "=================="
@@ -3365,12 +5190,48 @@ if [ ! -d "$TALLY" ]; then
     red "BROKEN the tally directory vanished during the run - the result is unknown"
     printf '\n'; exit 1
 fi
+# A result that could not be counted at all.
+if [ -s "$LOST_FILE" ]; then
+    red "BROKEN $(wc -l < "$LOST_FILE" | tr -d ' ') result(s) were printed but could not be recorded"
+    sed 's/^/       /' "$LOST_FILE" | head -10
+    printf '\n'; exit 1
+fi
+# A CANARY, written now: the counters must still be writable at the end. A run
+# that made them unwritable part-way and restored them would otherwise agree
+# with itself about a number that had stopped moving.
+if ! { printf 'canary\n' >> "$TALLY/all" && printf 'canary\n' >> "$TALLY/pass"; } 2>/dev/null; then
+    red "BROKEN the counters are not writable at the end of the run - the result is unknown"
+    printf '\n'; exit 1
+fi
+# ... and removed again, so it cannot be mistaken for a result.
+for _f in all pass; do
+    sed '$d' "$TALLY/$_f" > "$TALLY/$_f.trim" 2>/dev/null && mv -f "$TALLY/$_f.trim" "$TALLY/$_f" 2>/dev/null || true
+done
+PASS="$(tally pass)"; FAIL="$(tally fail)"; SKIP="$(tally skip)"
+
+# The two independent counts must agree, bucket by bucket. If a result was
+# printed but could not be recorded, this is where it is caught.
+for _k in pass fail skip; do
+    _a="$(tally "$_k")"; _b="$(tally_kind "$_k")"
+    [ -n "$_a" ] || _a=0; [ -n "$_b" ] || _b=0
+    if [ "$_a" != "$_b" ]; then
+        red "BROKEN results were lost: $_k counted $_a one way and $_b the other"
+        printf '\n'; dim "the suite could not record what it printed; the result is unknown"
+        printf '\n'; exit 1
+    fi
+done
 if [ "$((PASS + FAIL + SKIP))" -eq 0 ]; then
     if [ -n "$FILTER" ]; then
         red "NONE   no test group matched '$FILTER'"
     else
         red "BROKEN no assertion was counted - the suite proved nothing"
     fi
+    printf '\n'; exit 1
+fi
+# `all` is the independent witness. Checked AFTER the "nothing ran" case, which
+# legitimately has no results to witness.
+if [ ! -s "$TALLY/all" ]; then
+    red "BROKEN the independent result log is missing - the result is unknown"
     printf '\n'; exit 1
 fi
 # The screen and the counters must agree. If a subshell printed a result that

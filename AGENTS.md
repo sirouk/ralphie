@@ -108,7 +108,7 @@ observe → act → verify → commit → learn cycle is proven without a single
 call. Add a test for every behaviour you change. A behaviour with no test is a
 behaviour that will regress.
 
-Three traps in the harness itself, each of which has already silently hidden
+Five traps in the harness itself, each of which has already silently hidden
 failures:
 
 - A test that calls a `ralphie.sh` function must be inside a `( load_lib ... )`
@@ -120,8 +120,27 @@ failures:
 - Counters live in files under `$TALLY`, not in variables, because a subshell
   cannot increment a parent variable. Counting in variables let a FAIL print and
   still report an all-green suite.
+- **Every result is counted twice**, once in its bucket and once in `$TALLY/all`,
+  and the two totals must agree. Guarding only "was anything counted at all"
+  protected the pass counter and left the fail counter unprotected: making
+  `$TALLY/fail` a directory silenced every failure, and the suite printed
+  `FAIL ...` on screen and then `PASS 642 passed`, exit 0.
+- **Every `( load_lib ... )` group ends in `true )` and its status is checked.**
+  `load_lib` clears `-e` but not `-u`, so one unbound variable aborted a group
+  and took the rest of its assertions with it -- 18 vanished, and the summary
+  said `PASS`.
 
 Sabotage a function and confirm the suite goes red before trusting a green run.
+The suite tests this about itself: `./test.sh harness-honesty` destroys the
+counters and swallows a failure on purpose, and requires `BROKEN` and exit 1.
+
+**Prefer one enforced postcondition to many guards.** Four defects in four
+consecutive reviews were the same missing answer at a different site: a commit
+step returned without setting a flag, and the cycle landed in `pass` with an
+empty git log. The fix was not a fifth guard but a single check in
+`record_outcome` -- a green cycle claims the work is saved, so HEAD must have
+moved. `./test.sh commit-postcondition` injects a brand-new silent-failure site
+that no guard knows about and proves it is still caught.
 
 If you touch engine invocation, also run one real cycle by hand:
 
