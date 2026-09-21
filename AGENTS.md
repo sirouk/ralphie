@@ -98,7 +98,7 @@ macOS still ships **bash 3.2**, and it is the version this is tested against.
 ## Testing
 
 ```bash
-./test.sh              # everything, about two minutes, no network, no tokens
+./test.sh              # full offline suite, no network, no tokens
 ./test.sh -v           # trace every command
 ./test.sh loop         # only tests whose name contains "loop"
 ```

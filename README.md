@@ -9,6 +9,19 @@ project, tell it what you want, and walk away.
 curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh | bash -s -- "make the tests pass"
 ```
 
+Or keep one installed copy and select an existing directory:
+
+```bash
+/path/to/ralphie.sh --project "/path/to/my project" discover
+/path/to/ralphie.sh --project "/path/to/my project" --once "make the tests pass"
+```
+
+`--project` overrides `RALPHIE_PROJECT`; otherwise the script's directory is
+the project. Relative project paths resolve from your invocation directory and
+are made absolute before any work. A missing directory is refused. An empty
+directory is a valid starting point. No other repository file is needed to run
+Ralphie; the engine and the project's own build/test tools must be installed.
+
 ---
 
 ## Start from a specification
@@ -38,7 +51,8 @@ than tab, CR and LF are refused. Plain-text Markdown and UTF-8 text are fine;
 PDF, word-processor documents and other binary formats are not supported.
 Use only one `--spec`, without `--objective` or positional objective text;
 put additional requirements in the document instead. Place options before
-positional text or a command, as with the other CLI options.
+positional text. Options may follow an explicit `run`; for other commands,
+place global options before the command.
 
 The content becomes `.ralphie/OBJECTIVE.md` through the normal objective
 machinery and survives a later run without `--spec`; the source is not reread
@@ -64,9 +78,9 @@ tool changes. Ralphie is built the other way around:
 > ralphie = required_autonomy − engine_native_capability
 > ```
 
-Every engine is described by one table row listing what it can actually do:
-`autonomy`, `gates`, `memory`, `subagents`, `resume`, `skills`, `json`.
-Ralphie measures that, then supplies only the missing parts.
+Every engine is described by one table row declaring its supported capabilities:
+`autonomy`, `gates`, `memory`, `subagents`, `resume`, `skills`, `json`, `stream`,
+and `usage`. Ralphie uses those declarations to supply the missing parts.
 
 - Against a **fully capable engine** (Prime Agent), Ralphie collapses into a thin
   durability shell: evidence, git, budget, memory, the human channel. The engine
@@ -76,9 +90,9 @@ Ralphie measures that, then supplies only the missing parts.
 - Against an **engine that does not exist yet**, Ralphie needs a new table row and an `engine_build` case branch.
 
 Selection uses declared, source-checked capabilities, not a live benchmark.
-Prime Agent currently has the highest capability score. Explicit engine choices
-always win. New engines can take the lead when their supported capabilities are
-added to the table.
+A responsive Prime Agent is the first default choice. Other installed engines
+are ranked by capability when Prime is unavailable. Explicit `--engine` and
+custom-command choices always win, including when that engine fails.
 
 ---
 
@@ -102,8 +116,8 @@ observe → decide → act → verify → record → learn     (repeat until don
 
 ```bash
 ./ralphie.sh discover
-# An installed copy defaults to its own directory, not the caller's cwd:
-RALPHIE_PROJECT="/path/to/my project" /path/to/ralphie.sh discover
+# An installed copy can target another project:
+/path/to/ralphie.sh --project "/path/to/my project" discover
 ```
 
 `discover` takes no arguments. It reads root manifests, known plan filenames,
@@ -147,8 +161,11 @@ Ralphie does not care what the command is, only whether it exits 0.
 changes nothing. Ralphie re-runs the gates after every cycle and believes only
 those.
 
-And it enforces that, rather than asking. A verification surface the agent can
-edit is not a verification surface.
+Ralphie protects the agreed command list and runs it independently. This detects
+command removal and weakening; it does not make the underlying test files
+immutable or sandbox an engine running as your OS user. The checks themselves
+must meaningfully test the required behavior. Use externally controlled checks
+and an isolated environment when the work requires that stronger boundary.
 
 The gate set is remembered **across runs**, not only within one. An engine that
 leaves a background process behind to delete the gates after the run ends gets
@@ -166,6 +183,8 @@ Deleting a line by hand does not revoke that baseline: Ralphie cannot tell an
 operator deletion from an engine deletion. To replace the agreed checks, stop
 the loop and run `./ralphie.sh gates --redetect`. This clears the old baseline,
 rediscovers checks, and saves the previous file as `.ralphie/gates.previous`.
+If that backup cannot be written and verified, redetection fails and leaves
+the current gates and baseline intact.
 Review the new file and add any custom commands before the next run.
 
 ---
@@ -191,6 +210,7 @@ An answer also becomes a durable lesson, so it is never asked twice.
 
 ```
 ./ralphie.sh "what you want done"   Run the loop
+./ralphie.sh run --once "..."      Explicit run; options precede objective text
 ./ralphie.sh status                 Cycles, gates, budget, open questions
 ./ralphie.sh doctor                 Engines, capabilities, gates, git
 ./ralphie.sh gates [--redetect]     The checks that define "working"
@@ -201,12 +221,19 @@ An answer also becomes a durable lesson, so it is never asked twice.
 ./ralphie.sh status --json          One line of JSON, for CI and monitoring
 ./ralphie.sh log [n]                Recent ledger events
 ./ralphie.sh stop                   Stop after the current cycle
-./ralphie.sh update                 Replace this script with the latest
+./ralphie.sh update                 Install from the configured trusted source
 ```
+
+After `run`, command-looking words such as `status` are objective text. Use
+`run -- "..."` when the objective starts with a dash.
+
+`status --json` normalizes leading zeroes and incomplete decimal notation
+without rounding large counters. Malformed numeric state is reported as zero.
 
 Useful options:
 
 ```
+    --project DIR       Work in this existing directory
 -o, --objective TEXT    What you want done
 -b, --branch NAME       Work on this branch, creating it if needed
     --engine NAME       Force an engine
@@ -259,9 +286,43 @@ RALPHIE_ENGINE_CAPS="resume json" \
 ./ralphie.sh "do the thing"
 ```
 
-Ralphie picks the most capable engine installed, and falls back down the list
-when one fails. A permanent failure (bad key, no quota, unknown model) is never
+For a wrapper that writes its answer to a file, set
+`RALPHIE_ENGINE_ANSWER=file`. Ralphie passes the current attempt's destination as
+`RALPHIE_OUTPUT` in the engine's environment. The wrapper reads the prompt on
+stdin and writes the final answer to that path; stdout and stderr remain logs.
+An inherited `RALPHIE_OUTPUT` cannot redirect the answer elsewhere.
+
+Ralphie prefers Prime Agent, then falls back through available engines when an
+automatically selected engine fails. An explicit selection never changes provider.
+A permanent failure (bad key, no quota, unknown model) is never
 retried; a transient one (rate limit, 503, reset connection) always is.
+
+Prime supplies its native tool loop, recursive subagents, skills, context
+compaction, and autonomous gate loop. Ralphie supplies the durable outer loop
+and independently verifies each result. Native gates receive Ralphie's gate
+timeout, capped by the remaining engine-call allowance. With no engine timeout
+or run deadline, Ralphie uses Prime's ordinary tool loop and supplies continuation
+itself: Prime's autonomous CLI requires a positive timeout. Only Prime's explicit
+gate/limit termination messages count as a completed attempt after a nonzero exit;
+configuration errors and unexplained crashes remain failures.
+
+The adapter was checked against Prime's 0.9.5 source at
+[`e311d64`](https://github.com/PrimeIntellect-ai/prime-agent/tree/e311d6495124cf0bdc629c813fc97a39a9a3054d):
+[CLI](https://github.com/PrimeIntellect-ai/prime-agent/blob/e311d6495124cf0bdc629c813fc97a39a9a3054d/packages/coding-agent/src/cli/args.ts),
+[autonomous controller](https://github.com/PrimeIntellect-ai/prime-agent/blob/e311d6495124cf0bdc629c813fc97a39a9a3054d/packages/coding-agent/src/core/autonomous.ts),
+[headless output](https://github.com/PrimeIntellect-ai/prime-agent/blob/e311d6495124cf0bdc629c813fc97a39a9a3054d/packages/coding-agent/src/modes/print-mode.ts),
+[REPL and subagents](https://github.com/PrimeIntellect-ai/prime-agent/blob/e311d6495124cf0bdc629c813fc97a39a9a3054d/packages/coding-agent/docs/rlm.md),
+and [usage accounting](https://github.com/PrimeIntellect-ai/prime-agent/blob/e311d6495124cf0bdc629c813fc97a39a9a3054d/packages/coding-agent/src/core/context-tree.ts).
+Usage includes message calls, compaction, branch summaries, and attributed child
+work, without adding child attribution twice. Python is optional and used only
+to parse these records; without it Ralphie omits usage totals.
+
+Codex's adapter follows its public
+[non-interactive contract](https://learn.chatgpt.com/docs/non-interactive-mode)
+and [exec source at `9fdff73`](https://github.com/openai/codex/tree/9fdff739ea0eca7881f180858dfd71b7bd1fa483/codex-rs/exec/src).
+Source review establishes integration contracts, not a benchmark ranking or a
+guarantee about future releases. Keep the adapter tests and a real bounded cycle
+in the upgrade process.
 
 ---
 
@@ -270,6 +331,40 @@ required. At a deadline, Ralphie sends TERM, allows two seconds for cleanup,
 then forces termination. Polling can add about one second. `COMMIT_TIMEOUT`
 bounds git commit, hooks, and signing (default 120 seconds). Explicit zero gate
 or engine limits disable those call limits.
+
+Engine version probes use the same watchdog with a fixed 15-second allowance
+and closed stdin. `discover` only checks command presence and never probes.
+
+## Updating an installed copy
+
+`update` uses `RALPHIE_UPDATE_URL` when set; otherwise it derives a GitHub raw
+URL from the selected project's origin, branch and script filename. For an
+installed copy serving unrelated projects, explicitly set the trusted source:
+
+```bash
+RALPHIE_UPDATE_URL=https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh \
+/path/to/ralphie.sh --project "/path/to/my project" update
+```
+
+Ralphie checks structure, Bash syntax and literal `VERSION="major.minor.patch"`
+metadata without executing the candidate. Older versions are refused;
+identical bytes are a no-op, and changed bytes at the same version are allowed.
+These checks do not authenticate the publisher. Downloads through curl or wget
+have a 60-second deadline plus watchdog cleanup grace.
+
+The replacement is staged beside the installed script, preserving its mode and
+entry-point symlinks. An exact previous copy is verified at the selected
+project's `.ralphie/ralphie.previous` before the installed target is replaced
+by rename. Both the installed target and its parent must be writable. Backup or
+publication failure leaves the installed script unchanged. An update from the
+previous copy itself is refused when it would overwrite that recovery path.
+New invocations use the replacement; `--update` does not reload the current
+process's already loaded version.
+
+Interrupted updates may leave private `.ralphie-update.*` or
+`.ralphie.previous.*` staging directories. Atomic replacement prevents partial
+executable bytes becoming visible; it does not guarantee persistence through
+power loss or coordinate simultaneous updates from different projects.
 
 ## Safety
 
@@ -316,6 +411,9 @@ Around it:
 - **If verified work cannot be committed, you are told.** When a green cycle
   touched files you had already modified, Ralphie refuses to take your changes
   with it, says so, and explains how to save the work.
+  Failed or refused saves cannot complete the objective. Ralphie's unsaved work
+  is retried on resume even when the engine makes no further edit. `--no-commit`
+  explicitly permits completion with verified work left on disk.
 - **Ralphie notices if its own script is edited.** Improving Ralphie with
   Ralphie is a supported use, so this is never blocked — but it is never silent
   either, because the *next* run executes the new copy.
@@ -362,7 +460,7 @@ So cron and CI can react without parsing text:
 | Code | Meaning |
 |---|---|
 | `0` | Ran to a clean stop: objective met, limit reached, or stopped on request |
-| `1` | Could not start: no engine, another loop is running, or a bad argument |
+| `1` | Could not start, or a command was refused or could not persist its result |
 | `2` | Blocked: no engine could complete a cycle |
 | `3` | Stalled: several cycles in a row changed nothing |
 | `10`, `11` | Never returned: "objective met" and "out of time" are clean stops, so they exit `0` |
@@ -375,11 +473,13 @@ So cron and CI can react without parsing text:
 
 1. **One file.** `bash` + coreutils + `git`. Nothing else.
 2. **Gates are truth.** Only a passing gate promotes work. Self-reports never do.
-3. **Every run is resumable.** Kill it anywhere; it continues correctly.
+3. **Interrupted runs can resume.** Preserve objective files and state; detected
+   acceptance damage is refused until explicitly repaired.
 4. **The ledger is append-only.** Counters can be rebuilt; acceptance identity must be retained. Evidence follows the documented ledger retention limits.
 5. **The human is never blocked.** Questions are files, not prompts.
 6. **Never waste a token** on something a shell command already knows.
-7. **Every abnormal exit records a reason code.**
+7. **Handled failures and signals record a reason.** An untrappable kill can
+   leave a stale lock; `status` detects the missing worker and reports interruption.
 
 Ralphie stops itself when it stops being useful: three cycles with no change to
 the tree ends the run and asks you a question, instead of spending the budget
@@ -412,7 +512,11 @@ never stops the loop: completion still needs the engine's `done` report or the
 operator's `--done-when-green` choice. Both routes require health gates, a current
 acceptance pass, and actual changed work on this objective and command binding.
 A no-change green baseline is not work. Without health gates, work is unverified,
-not complete. Acceptance runs once in each eligible health-green verification,
+not complete. In Git projects, protected pre-existing files, runtime state, and
+changes outside the selected project do not supply acceptance work evidence.
+Genuine work for the current binding survives a refused save, but must still be
+saved before completion unless `--no-commit` was selected. A new request clears
+that work identity. Acceptance runs once in each eligible health-green verification,
 even for engines with native gates. It uses the health watchdog (`GATE_TIMEOUT`)
 and writes `.ralphie/log/acceptance-N.log` plus ledger pass/fail evidence.
 
@@ -430,7 +534,11 @@ either the binding or configuration fails closed. This is not a security boundar
 against an actor that can rewrite or remove both state and configuration as the
 same OS user.
 Files invoked by the command are not frozen. Acceptance commands, like health
-gates, should be checks rather than project-mutating actions. No TODO semantics
+gates, should be checks rather than project-mutating actions. If acceptance
+changes the verified tree, Ralphie reruns health gates before saving, and checks
+gate/objective integrity again. If those health checks change the accepted tree,
+acceptance becomes stale and completion waits for a later cycle. Checks are not
+rerun indefinitely against each other's side effects. No TODO semantics
 are inferred to construct acceptance conditions.
 
 ### Engine output limits

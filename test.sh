@@ -26,12 +26,15 @@ FILTER="${1:-}"
 # stronger guards now sit in front of it: every result is counted twice through
 # independent paths and the totals must agree, and every `( load_lib ... )`
 # group must report that it reached its own end.
-MIN_EXPECTED_ASSERTIONS=655
+# The minimal-tool Linux run still executes at least 1351 assertions. Keep
+# this below that supported floor, not at the count from an obsolete suite.
+MIN_EXPECTED_ASSERTIONS=1350
 [ "$FILTER" = "-v" ] && { set -x; FILTER=""; }
 
 cleanup() { chmod -R u+w "$TMPROOT" 2>/dev/null; rm -rf "$TMPROOT" 2>/dev/null; }
 trap cleanup EXIT
 mkdir -p "$TMPROOT"
+TMPROOT="$(cd "$TMPROOT" && pwd -P)"
 
 red()  { printf '\033[1;31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[1;32m%s\033[0m\n' "$*"; }
@@ -184,11 +187,8 @@ load_lib() {
     # abort the whole test group at the first deliberately-failing assertion,
     # silently skipping every test after it.
     set +e
-    PROJECT="$d"; HOME_DIR="$d/.ralphie"; STATE_FILE="$HOME_DIR/state"
-    EVENTS_FILE="$HOME_DIR/events.jsonl"; GATES_FILE="$HOME_DIR/gates"
-    OBJECTIVE_FILE="$HOME_DIR/OBJECTIVE.md"; ASK_FILE="$HOME_DIR/ASK.md"
-    MEMORY_FILE="$HOME_DIR/MEMORY.md"; LOG_DIR="$HOME_DIR/log"; RUN_DIR="$HOME_DIR/run"
-    LOCK_FILE="$HOME_DIR/lock"; STOP_FILE="$HOME_DIR/stop"
+    # Sourcing binds all project paths once, exactly as a CLI run does. Do not
+    # reintroduce lexical aliases after that (macOS /var resolves to /private/var).
     mkdir -p "$HOME_DIR" "$LOG_DIR" "$RUN_DIR"
 }
 
@@ -1038,9 +1038,14 @@ if want "gate-trial"; then
     # The hard distinction: "the TOOL is missing" versus "the PROJECT is
     # broken". They look almost identical, and rejecting both left zero gates
     # on the single most common starting state -- a failing test to make pass.
-    ( gate_trial "python3 -m no_such_tool_xyz" ); check "a missing TOOL is rejected" "2" "$?"
-    gate_trial "python3 -c 'import nonexistent_project_module_xyz'"
-    check_ok "a broken PROJECT import is accepted as a real gate" $?
+    if command -v python3 >/dev/null 2>&1; then
+        ( gate_trial "python3 -m no_such_tool_xyz" ); check "a missing TOOL is rejected" "2" "$?"
+        gate_trial "python3 -c 'import nonexistent_project_module_xyz'"
+        check_ok "a broken PROJECT import is accepted as a real gate" $?
+    else
+        skip "missing Python module gate" "python3 not installed"
+        skip "broken Python project import gate" "python3 not installed"
+    fi
 fi
 if want "gates-empty"; then
     check "gates_count is a single 0 with no gates" "0" "$(gates_count)"
@@ -2386,8 +2391,235 @@ if want "self-update-safety"; then
     check_contains "a plaintext http source is refused" "insecure" "$out"
     # An identical source is a no-op, not a rewrite.
     d="$TMPROOT/su$RANDOM"; mkdir -p "$d"; cp "$RALPHIE" "$d/ralphie.sh"; chmod +x "$d/ralphie.sh"
-    out="$( cd "$d" && env RALPHIE_UPDATE_URL="file://$RALPHIE" ./ralphie.sh update 2>&1 )"
-    check_contains "an identical source reports already current" "already current" "$out"
+    out="$( cd "$d" && env RALPHIE_UPDATE_URL="file://$RALPHIE" ./ralphie.sh update 2>&1 )"; rc=$?
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        check_contains "an identical source reports already current" "already current" "$out"
+    else
+        check_fails "an update without a downloader is refused" "$rc"
+        check_contains "the missing downloader is explained" "neither curl nor wget is available" "$out"
+        skip "an identical source reports already current" "no curl or wget"
+    fi
+fi
+
+if want "self-update-transaction"; then
+    # Fault injection at publication boundaries: no network or real downloader
+    # is needed, and every destination belongs to a disposable project.
+    for update_fault in success partial-copy backup-copy backup-corrupt backup-directory publish source-changed; do
+        d="$(new_project)"
+        mkdir -p "$d/.ralphie"
+        update_source="$d/candidate.sh"
+        cp "$RALPHIE" "$update_source"
+        printf '\n# same-version update transaction fixture\n' >> "$update_source"
+        before="$(sha_sum_of "$d/ralphie.sh")"
+        cp "$d/ralphie.sh" "$d/operator-version"
+        printf '\n# concurrent operator edit\n' >> "$d/operator-version"
+        ( load_lib "$d"
+          UPDATE_TEST_SOURCE="$update_source"
+          export RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh
+          curl() {
+              local dest=""
+              while [ "$#" -gt 0 ]; do
+                  if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+              done
+              command cp "$UPDATE_TEST_SOURCE" "$dest" || return 1
+              if [ "$update_fault" = source-changed ]; then printf '\n# concurrent operator edit\n' >> "$SELF"; fi
+              return 0
+          }
+          case "$update_fault" in
+            partial-copy)
+              cat() { printf 'partial bytes\n'; return 1; }
+              mv() { return 1; };;
+            backup-copy)
+              cp() { case "$*" in *ralphie.previous*) return 1;; esac; command cp "$@"; };;
+            backup-corrupt)
+              cp() {
+                  case "$*" in *ralphie.previous*)
+                      local dest
+                      for dest in "$@"; do :; done
+                      printf 'incomplete backup\n' > "$dest"; return 0;;
+                  esac
+                  command cp "$@"
+              };;
+            backup-directory) mkdir "$HOME_DIR/ralphie.previous";;
+            publish)
+              mv() {
+                  case "$1" in -f) shift;; esac
+                  case "$1" in */new/*) return 1;; esac
+                  command mv "$@"
+              };;
+          esac
+          out="$(self_update 2>&1)"; rc=$?
+          unset -f cat cp mv 2>/dev/null || true
+          if [ "$update_fault" = success ]; then
+              check_ok "same-version changed bytes can update intentionally" "$rc"
+              check "update publishes the complete candidate" "$(sha_sum_of "$update_source")" "$(sha_sum_of "$SELF")"
+              check "successful update retains exact previous bytes" "$before" "$(sha_sum_of "$HOME_DIR/ralphie.previous")"
+          else
+              check_fails "update refuses $update_fault failure" "$rc"
+              if [ "$update_fault" = source-changed ]; then
+                  check "update preserves an edit made while downloading" "$(sha_sum_of "$d/operator-version")" "$(sha_sum_of "$SELF")"
+              else
+                  check "update failure preserves original bytes [$update_fault]" "$before" "$(sha_sum_of "$SELF")"
+              fi
+              case "$out" in *"updated. previous copy"*) no "failed update never claims publication [$update_fault]" "$out";; *) ok "failed update never claims publication [$update_fault]";; esac
+              if [ "$update_fault" = publish ]; then
+                  check "failed publication retains exact previous bytes" "$before" "$(sha_sum_of "$HOME_DIR/ralphie.previous")"
+              fi
+          fi
+          true ) || no "the self-update transaction fixture completed [$update_fault]" "fixture aborted"
+    done
+
+    for update_version in computed duplicate older; do
+        d="$(new_project)"
+        update_source="$d/candidate.sh"
+        case "$update_version" in
+          computed) sed 's/^VERSION=.*/VERSION="$(printf 3.1.0)"/' "$RALPHIE" > "$update_source";;
+          duplicate) cp "$RALPHIE" "$update_source"; printf '\nVERSION="3.1.0"\n' >> "$update_source";;
+          older) sed 's/^VERSION=.*/VERSION="0.0.0"/' "$RALPHIE" > "$update_source";;
+        esac
+        before="$(sha_sum_of "$d/ralphie.sh")"
+        ( load_lib "$d"
+          UPDATE_TEST_SOURCE="$update_source"
+          export RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh
+          curl() {
+              local dest=""
+              while [ "$#" -gt 0 ]; do
+                  if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+              done
+              command cp "$UPDATE_TEST_SOURCE" "$dest"
+          }
+          out="$(self_update 2>&1)"; rc=$?
+          check_fails "update rejects $update_version version metadata" "$rc"
+          check "version rejection preserves the original [$update_version]" "$before" "$(sha_sum_of "$SELF")"
+          if [ "$update_version" = older ]; then
+              check_contains "older version explains the refusal" "refusing to downgrade" "$out"
+          else
+              check_contains "nonliteral or ambiguous version explains the refusal [$update_version]" "one literal VERSION" "$out"
+          fi
+          true ) || no "the update version fixture completed [$update_version]" "fixture aborted"
+    done
+
+    d="$(new_project)"
+    update_source="$d/candidate.sh"
+    { head -1 "$RALPHIE"; printf 'printf executed > %q\n' "$d/candidate.executed"; tail -n +2 "$RALPHIE"; } > "$update_source"
+    before="$(sha_sum_of "$d/ralphie.sh")"
+    mv "$d/ralphie.sh" "$d/real kernel.sh"
+    chmod 750 "$d/real kernel.sh"
+    ln -s 'real kernel.sh' "$d/middle-link"
+    ln -s middle-link "$d/ralphie.sh"
+    ( load_lib "$d"
+      UPDATE_TEST_SOURCE="$update_source"
+      export RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh
+      curl() {
+          local dest=""
+          while [ "$#" -gt 0 ]; do
+              if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+          done
+          command cp "$UPDATE_TEST_SOURCE" "$dest"
+      }
+      out="$(self_update 2>&1)"; rc=$?
+      check_ok "an update through a symlink chain succeeds" "$rc"
+      [ ! -e "$d/candidate.executed" ] && ok "candidate validation executes no candidate code" || no "candidate validation executes no candidate code" "candidate ran"
+      check "update preserves the entry symlink" middle-link "$(readlink "$d/ralphie.sh")"
+      check "update preserves the intermediate symlink" 'real kernel.sh' "$(readlink "$d/middle-link")"
+      check "update preserves target permissions" rwxr-x--- "$(LC_ALL=C ls -ld "$d/real kernel.sh" | awk '{print substr($1,2,9)}')"
+      check "symlink update changes the intended target completely" "$(sha_sum_of "$update_source")" "$(sha_sum_of "$d/real kernel.sh")"
+      check "symlink update keeps the old target bytes as previous" "$before" "$(sha_sum_of "$HOME_DIR/ralphie.previous")"
+      true ) || no "the symlink update fixture completed" "fixture aborted"
+fi
+
+if want "self-update-download"; then
+    # Exercise wget's real watchdog with a shortened clock while proving the
+    # production call requests 60 seconds. The child must not inherit stdin.
+    d="$(new_project)"
+    before="$(sha_sum_of "$d/ralphie.sh")"
+    ( load_lib "$d"
+      export RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh
+      have() { [ "$1" != curl ] && command -v "$1" >/dev/null 2>&1; }
+      wget() {
+          if IFS= read -r ignored; then printf inherited > "$d/download-stdin";
+          else printf closed > "$d/download-stdin"; fi
+          sleep 30
+      }
+      eval "$(declare -f watchdog_wait | sed '1s/watchdog_wait/update_watchdog_real/')"
+      watchdog_wait() {
+          printf '%s\n' "$4" > "$d/download-limit"
+          printf '%s\n' "$1" > "$d/download-pid"
+          update_watchdog_real "$1" "$2" "$3" 1 "$5"
+      }
+      out="$(self_update 2>&1 <<<'operator input')"; rc=$?
+      check_fails "a stalled wget update is refused" "$rc"
+      check_contains "the update explains the downloader deadline" "download failed (exit 124)" "$out"
+      check "update requests a 60-second whole-download deadline" 60 "$(cat "$d/download-limit")"
+      check "the downloader receives no operator stdin" closed "$(cat "$d/download-stdin")"
+      check "download timeout preserves original bytes" "$before" "$(sha_sum_of "$SELF")"
+      if kill -0 "$(cat "$d/download-pid")" 2>/dev/null; then
+          no "the timed-out downloader is reaped" "child still alive"
+      else ok "the timed-out downloader is reaped"; fi
+      true ) || no "the bounded download fixture completed" "fixture aborted"
+fi
+
+if want "self-update-cli"; then
+    d="$(new_project)"
+    mkdir "$d/mock-bin" "$d/target project"
+    update_source="$d/candidate.sh"
+    cp "$RALPHIE" "$update_source"
+    printf '\n# installed CLI update fixture\n' >> "$update_source"
+    before="$(sha_sum_of "$d/ralphie.sh")"
+    old_version="$("$d/ralphie.sh" --version)"
+    cat > "$d/mock-bin/curl" <<'UPDATE_CURL'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+done
+cp "$UPDATE_TEST_SOURCE" "$dest"
+UPDATE_CURL
+    chmod +x "$d/mock-bin/curl"
+    out="$(env PATH="$d/mock-bin:$PATH" UPDATE_TEST_SOURCE="$update_source" \
+        RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh \
+        "$d/ralphie.sh" --project "$d/target project" update 2>&1)"; rc=$?
+    check_ok "an installed CLI updates with an independent selected project" "$rc"
+    check "the CLI publishes the complete installed candidate" "$(sha_sum_of "$update_source")" "$(sha_sum_of "$d/ralphie.sh")"
+    check "the selected project retains the previous installed script" "$before" "$(sha_sum_of "$d/target project/.ralphie/ralphie.previous")"
+    check "the replaced CLI still executes" "$old_version" "$("$d/ralphie.sh" --version)"
+fi
+
+if want "self-update-recovery-alias"; then
+    # Running the saved copy must not overwrite the only recovery copy and
+    # then claim the previous executable was retained.
+    for update_alias in direct parent-symlink case-alias; do
+        d="$(new_project)"
+        update_source="$d/candidate.sh"
+        cp "$RALPHIE" "$update_source"
+        printf '\n# recovery alias update fixture\n' >> "$update_source"
+        ( load_lib "$d"
+          cp "$SELF" "$HOME_DIR/ralphie.previous"
+          before="$(sha_sum_of "$HOME_DIR/ralphie.previous")"
+          if [ "$update_alias" = parent-symlink ]; then
+              ln -s "$HOME_DIR" "$d/runtime-alias"
+              SELF="$d/runtime-alias/ralphie.previous"
+          elif [ "$update_alias" = case-alias ]; then
+              SELF="$HOME_DIR/RALPHIE.PREVIOUS"
+              if [ ! "$SELF" -ef "$HOME_DIR/ralphie.previous" ]; then
+                  skip "case-insensitive recovery alias" "case-sensitive filesystem"
+                  exit 0
+              fi
+          else SELF="$HOME_DIR/ralphie.previous"; fi
+          UPDATE_TEST_SOURCE="$update_source"
+          export RALPHIE_UPDATE_URL=https://example.invalid/fixture.sh
+          curl() {
+              local dest=""
+              while [ "$#" -gt 0 ]; do
+                  if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+              done
+              command cp "$UPDATE_TEST_SOURCE" "$dest"
+          }
+          out="$(self_update 2>&1)"; rc=$?
+          check_fails "updating the recovery copy is refused [$update_alias]" "$rc"
+          check "recovery alias refusal preserves previous bytes [$update_alias]" "$before" "$(sha_sum_of "$HOME_DIR/ralphie.previous")"
+          check_contains "recovery alias refusal explains the conflict [$update_alias]" "is also the previous-copy path" "$out"
+          true ) || no "the recovery alias fixture completed [$update_alias]" "fixture aborted"
+    done
 fi
 
 if want "never-pushes"; then
@@ -4439,6 +4671,200 @@ if want "planted-in-a-subdirectory"; then
     check "the operator's index is left alone" "0" "$(printf '%s' "$st" | tr -d ' \n')"
 fi
 
+if want "git-custody-boundaries"; then
+    # Git paths are repository-relative even when Ralphie targets a subproject.
+    # Inspecting PROJECT/path duplicated the prefix, so ownership fingerprints
+    # became '-' and size, symlink and tracked runtime exclusions missed files.
+    d="$(new_project)"
+    sub="$d/service space"
+    mkdir -p "$sub/.ralphie"
+    cp "$RALPHIE" "$sub/ralphie.sh"
+    printf 'before\n' > "$sub/app.txt"
+    printf 'before\n' > "$d/sibling.txt"
+    printf 'true\n' > "$sub/.ralphie/gates"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    ( load_lib "$sub"
+      git_top >/dev/null; project_prefix >/dev/null
+      ensure_ignored
+      snapshot_pre_dirty
+      owned_path="service space/owned${RALPHIE_NL}file.txt"
+      printf 'engine\n' > "$d/$owned_path"
+      record_owned_paths
+      check "subproject fingerprints use repository paths" "$(sha_of < "$d/$owned_path")" "$(path_fingerprint "$owned_path")"
+      printf 'operator\n' > "$d/$owned_path"
+      release_owned_paths
+      owned_has "$owned_path"; check_fails "subproject ownership notices changed bytes" "$?"
+      pre_dirty_has "$owned_path"; check_ok "subproject changed ownership becomes protected" "$?"
+      printf 'after\n' > "$sub/app.txt"
+      printf 'operator sibling\n' > "$d/sibling.txt"
+      printf '# runtime addition\n' >> "$sub/.ralphie/gates"
+      dd if=/dev/zero of="$sub/large.bin" bs=1024 count=1025 >/dev/null 2>&1
+      ln -s /etc/hosts "$sub/outside-link"
+      git_commit_cycle 'custody test' >/dev/null 2>&1
+      check "subproject work is saved" after "$(git -C "$d" show 'HEAD:service space/app.txt' 2>/dev/null)"
+      check "subproject runtime stays out of the commit" true "$(git -C "$d" show 'HEAD:service space/.ralphie/gates' 2>/dev/null)"
+      check "subproject commit excludes sibling changes" before "$(git -C "$d" show HEAD:sibling.txt 2>/dev/null)"
+      for p in large.bin outside-link; do
+          git -C "$d" cat-file -e "HEAD:service space/$p" 2>/dev/null
+          check_fails "subproject commit excludes $p" "$?"
+          [ -e "$sub/$p" ]; check_ok "subproject $p remains on disk" "$?"
+      done
+      git -C "$d" cat-file -e "HEAD:$owned_path" 2>/dev/null
+      check_fails "subproject newline path remains protected" "$?"
+      check "subproject operator bytes remain intact" operator "$(cat "$d/$owned_path")"
+      record_owned_paths
+      owned_has sibling.txt; check_fails "subproject never claims sibling changes" "$?"
+      printf '%s\t%s\0' "$(path_fingerprint sibling.txt)" sibling.txt >> "$OWNED_FILE"
+      release_owned_paths
+      owned_has sibling.txt; check_fails "subproject retires legacy sibling ownership" "$?"
+      CY_HEAD="$(commit_head)"
+      CY_REF="$(git -C "$d" symbolic-ref HEAD)"
+      CY_OLD_COMMITS="$(git -C "$d" rev-list --all | tr '\n' ' ')"
+      CY_HISTORY_CAPTURED=1
+      printf 'engine commit\n' > "$sub/app.txt"
+      ( cd "$d" && git add -- 'service space/app.txt' && git commit -qm engine ) >/dev/null 2>&1
+      engine_history_is_safe "$(commit_head)"; check_ok "subproject accepts a valid engine commit" "$?"
+      CY_HEAD="$(commit_head)"
+      ( cd "$d" && git add -f -- 'service space/.ralphie/gates' && git commit -qm runtime ) >/dev/null 2>&1
+      engine_history_is_safe "$(commit_head)"; check_fails "subproject rejects engine commits of runtime state" "$?"
+      true ) || no "git-custody-boundaries: subproject completed" "subshell aborted"
+
+    # Before the first commit, diff HEAD is invalid. Already-staged files must
+    # still be protected, and the operator's unique staged bytes must survive.
+    d="$(new_project)"
+    staged_name='operator staged
+file.txt'
+    printf 'staged revision\n' > "$d/$staged_name"
+    git -C "$d" add -- "$staged_name"
+    printf 'working revision\n' > "$d/$staged_name"
+    ( load_lib "$d"
+      ensure_ignored
+      snapshot_pre_dirty
+      pre_dirty_has "$staged_name"; check_ok "unborn staged path is protected" "$?"
+      nul_list_has "$OPERATOR_STAGED" "$staged_name"; check_ok "unborn staged path is recorded exactly" "$?"
+      printf 'engine revision\n' > "$d/$staged_name"
+      printf 'new work\n' > "$d/new.txt"
+      git_commit_cycle 'first custody test' >/dev/null 2>&1
+      check "unborn new work is committed" 'new work' "$(git -C "$d" show HEAD:new.txt 2>/dev/null)"
+      git -C "$d" cat-file -e "HEAD:$staged_name" 2>/dev/null
+      check_fails "unborn protected path is not committed" "$?"
+      check "unborn exact staged revision survives" 'staged revision' "$(git -C "$d" show ":$staged_name" 2>/dev/null)"
+      check "unborn current working bytes remain on disk" 'engine revision' "$(cat "$d/$staged_name")"
+      true ) || no "git-custody-boundaries: unborn completed" "subshell aborted"
+fi
+
+if want "literal-pathspec"; then
+    # Filesystem paths are data, including Git's wildcard and magic syntax.
+    d="$(new_project)"
+    selected="$d/:(glob)**"
+    mkdir -p "$selected"
+    cp "$RALPHIE" "$selected/ralphie.sh"
+    printf 'before\n' > "$selected/app.txt"
+    printf 'before\n' > "$d/sibling.txt"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    ( load_lib "$selected"
+      ensure_ignored
+      snapshot_pre_dirty
+      printf 'after\n' > "$selected/app.txt"
+      printf 'outside change\n' > "$d/sibling.txt"
+      git_commit_cycle 'literal project' >/dev/null 2>&1
+      check "literal-pathspec magic project saves its own work" after "$(git -C "$d" show 'HEAD::(glob)**/app.txt' 2>/dev/null)"
+      check "literal-pathspec magic project excludes sibling work" before "$(git -C "$d" show HEAD:sibling.txt 2>/dev/null)"
+      check "literal-pathspec sibling work stays on disk" 'outside change' "$(cat "$d/sibling.txt")"
+      gate_exec 'git ls-files -- ":(glob)**/app.txt" | grep -F app.txt' "$RUN_DIR/literal-gate.log" 5
+      check_ok "literal-pathspec gate commands retain intentional Git expressions" "$?"
+      true ) || no "literal-pathspec subproject completed" "subshell aborted"
+    d="$(new_project)"
+    for p in 'operator*.txt' operator-other.txt new-other.txt; do printf 'before\n' > "$d/$p"; done
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    for p in 'operator*.txt' new-other.txt; do
+        printf 'staged revision\n' > "$d/$p"
+        git --literal-pathspecs -C "$d" add -- "$p"
+        printf 'working revision\n' > "$d/$p"
+    done
+    ( load_lib "$d"
+      ensure_ignored
+      snapshot_pre_dirty
+      printf 'engine revision\n' > "$d/operator-other.txt"
+      printf 'new engine work\n' > "$d/new*.txt"
+      git_commit_cycle 'literal filenames' >/dev/null 2>&1
+      check "literal-pathspec wildcard exclusion preserves other engine work" 'engine revision' "$(git -C "$d" show HEAD:operator-other.txt 2>/dev/null)"
+      check "literal-pathspec wildcard filename is saved" 'new engine work' "$(git -C "$d" show 'HEAD:new*.txt' 2>/dev/null)"
+      check "literal-pathspec protected wildcard file remains uncommitted" before "$(git -C "$d" show 'HEAD:operator*.txt' 2>/dev/null)"
+      for p in 'operator*.txt' new-other.txt; do
+          check "literal-pathspec exact staged bytes survive for $p" 'staged revision' "$(git -C "$d" show ":$p" 2>/dev/null)"
+          check "literal-pathspec working bytes survive for $p" 'working revision' "$(cat "$d/$p")"
+      done
+      true ) || no "literal-pathspec root completed" "subshell aborted"
+fi
+
+if want "sibling-ownership"; then
+    d="$(new_project)"
+    selected="$d/service space"
+    mkdir -p "$selected/.ralphie"
+    cp "$RALPHIE" "$selected/ralphie.sh"
+    printf 'true\n' > "$selected/.ralphie/gates"
+    printf 'before\n' > "$selected/app.txt"
+    printf 'before\n' > "$d/sibling.txt"
+    ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+    cat > "$TMPROOT/sibling-engine" <<'MOCK'
+#!/bin/bash
+cat >/dev/null
+printf 'after\n' > app.txt
+printf 'outside change\n' > ../sibling.txt
+printf '<<<RALPHIE\nstatus: done\nsummary: saved project work\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$TMPROOT/sibling-engine"
+    out="$(env RALPHIE_ENGINE_CMD="$TMPROOT/sibling-engine" "$selected/ralphie.sh" \
+        --once --no-update --engine custom --accept 'grep -qx after app.txt' 'finish the selected project' 2>&1)"
+    check_ok "sibling-ownership run succeeds" "$?"
+    check "sibling-ownership saved accepted project can complete" done "$(sed -n 's/^status=//p' "$selected/.ralphie/state")"
+    check "sibling-ownership project work saved" after "$(git -C "$d" show 'HEAD:service space/app.txt' 2>/dev/null)"
+    check "sibling-ownership external work stays uncommitted" before "$(git -C "$d" show HEAD:sibling.txt 2>/dev/null)"
+    check "sibling-ownership external bytes remain on disk" 'outside change' "$(cat "$d/sibling.txt")"
+    [ ! -s "$selected/.ralphie/owned.nul" ]; check_ok "sibling-ownership no false outstanding project work" "$?"
+fi
+
+if want "runtime-ownership"; then
+    for layout in root subproject; do
+        d="$(new_project)"
+        selected="$d"
+        if [ "$layout" = subproject ]; then
+            selected="$d/service space"
+            mkdir -p "$selected"
+            cp "$RALPHIE" "$selected/ralphie.sh"
+        fi
+        mkdir -p "$selected/.ralphie"
+        printf 'true\n' > "$selected/.ralphie/gates"
+        printf 'before\n' > "$selected/app.txt"
+        ( cd "$d" && git add -A && git commit -qm init ) >/dev/null 2>&1
+        printf '# operator gate note\n' >> "$selected/.ralphie/gates"
+        ( load_lib "$selected"
+          ensure_ignored
+          snapshot_pre_dirty
+          record_owned_paths
+          runtime_path="$(project_prefix)/.ralphie/gates"; runtime_path="${runtime_path#./}"
+          owned_has "$runtime_path"; check_fails "runtime-ownership $layout never claims tracked gates" "$?"
+          printf '%s\t%s\0' "$(path_fingerprint "$runtime_path")" "$runtime_path" > "$OWNED_FILE"
+          release_owned_paths
+          [ ! -s "$OWNED_FILE" ]; check_ok "runtime-ownership $layout retires legacy runtime claims" "$?"
+          true ) || no "runtime-ownership $layout custody checks completed" "subshell aborted"
+        cat > "$TMPROOT/runtime-engine" <<'MOCK'
+#!/bin/bash
+cat >/dev/null
+printf 'after\n' > app.txt
+printf '<<<RALPHIE\nstatus: done\nsummary: saved application work\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+        chmod +x "$TMPROOT/runtime-engine"
+        out="$(env RALPHIE_PROJECT="$selected" RALPHIE_ENGINE_CMD="$TMPROOT/runtime-engine" \
+            "$selected/ralphie.sh" --once --no-update --engine custom --accept 'grep -qx after app.txt' 'finish application' 2>&1)"
+        check_ok "runtime-ownership $layout run succeeds" "$?"
+        check "runtime-ownership $layout saved accepted work completes" done "$(sed -n 's/^status=//p' "$selected/.ralphie/state")"
+        check "runtime-ownership $layout keeps operator gate changes on disk" '# operator gate note' "$(tail -1 "$selected/.ralphie/gates")"
+        [ ! -s "$selected/.ralphie/owned.nul" ]; check_ok "runtime-ownership $layout leaves no false unsaved work" "$?"
+    done
+fi
+
 if want "flaky-gate-never-promotes"; then
     # A gate that FAILS on the verify run and passes on its retry must not
     # promote a broken project. Measured before the fix: the screen said
@@ -4547,9 +4973,14 @@ if want "json-always-valid"; then
         printf '%s=not-a-number\n' "$k" >> "$d/.ralphie/state"
     done
     j="$( cd "$d" && ./ralphie.sh status --json 2>/dev/null )"
-    if printf '%s' "$j" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null
-    then ok "status --json survives a poisoned state file"
-    else no "status --json survives a poisoned state file" "$(printf '%s' "$j" | head -c 200)"; fi
+    for k in cycle pass fail lessons blocked untrusted unverified; do
+        check_contains "status --json normalizes poisoned $k" "\"$k\":0," "$j"
+    done
+    if command -v python3 >/dev/null 2>&1; then
+        if printf '%s' "$j" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null
+        then ok "status --json survives a poisoned state file"
+        else no "status --json survives a poisoned state file" "$(printf '%s' "$j" | head -c 200)"; fi
+    else skip "status --json full parser validation" "no python3"; fi
     check_contains "and still reports the project" "\"project\"" "$j"
 fi
 
@@ -4582,6 +5013,216 @@ if want "redetect-really-changes"; then
         || ok "and the next run does not restore it"
 fi
 
+
+if want "engine-contract-file-answer"; then
+  ( load_lib "$(new_project)"
+    RALPHIE_ENGINE_CMD="$PROJECT/file engine"; RALPHIE_ENGINE_ANSWER=file
+    ENGINE=custom; ENGINE_EXPLICIT=1; ENGINE_RETRIES=1; ENGINE_TIMEOUT=3
+    export RALPHIE_OUTPUT="$RUN_DIR/operator destination"
+    printf 'operator content\n' > "$RALPHIE_OUTPUT"
+    printf 'prompt receipt\n' > "$RUN_DIR/prompt"
+    cat > "$RALPHIE_ENGINE_CMD" <<'MOCK'
+#!/bin/sh
+cat > prompt.received
+printf '%s\n' "$RALPHIE_OUTPUT" > output.received
+printf 'diagnostic only\n'
+printf '<<<RALPHIE\nstatus: progress\nsummary: file answer arrived\nRALPHIE>>>\n' > "$RALPHIE_OUTPUT"
+MOCK
+    chmod +x "$RALPHIE_ENGINE_CMD"
+    engine_fallbacks() { printf called > "$RUN_DIR/fallback-called"; }
+    answer="$RUN_DIR/answer with spaces"
+    engine_run_with_fallback oneshot "$RUN_DIR/prompt" "$RUN_DIR/file.log" "$answer" > "$RUN_DIR/terminal" 2>&1
+    check_ok "file-answer custom engine completes through its advertised destination" "$?"
+    check "file-answer destination is the current attempt path" "$answer" "$(cat "$PROJECT/output.received")"
+    check "file-answer prompt is delivered intact on stdin" 'prompt receipt' "$(cat "$PROJECT/prompt.received")"
+    parse_report "$answer"
+    check "file-answer report is parsed from the file" 'file answer arrived' "$REPORT_SUMMARY"
+    check "file-answer diagnostics stay in the log" 'diagnostic only' "$(cat "$RUN_DIR/file.log")"
+    check "file-answer does not overwrite an inherited destination" 'operator content' "$(cat "$RALPHIE_OUTPUT")"
+    check "file-answer destination stays local to the child environment" "$RUN_DIR/operator destination" "$RALPHIE_OUTPUT"
+    [ ! -e "$RUN_DIR/fallback-called" ]; check_ok "file-answer honors the explicit custom provider" "$?"
+    true ) || no "engine-contract-file-answer group completed" aborted
+fi
+
+if want "engine-contract-probe"; then
+  ( load_lib "$(new_project)"
+    # Exercise the real watchdog while shortening only this test's wall clock.
+    # The requested production deadline is separately checked below. The mock
+    # self-expires after eight seconds even if deadline enforcement regresses.
+    eval "$(declare -f watchdog_wait | sed '1s/watchdog_wait/probe_watchdog_wait/')"
+    watchdog_wait() {
+        printf '%s\n' "$4" > "$RUN_DIR/probe-deadline"
+        probe_watchdog_wait "$1" "$2" "$3" 1 "${5:-engine}"
+    }
+    timeout_cmd() { printf ''; }
+    RALPHIE_ENGINE_CMD="$PROJECT/version probe"
+    export PROBE_PID_FILE="$RUN_DIR/probe.pid" PROBE_BEHAVIOR=quick
+    cat > "$RALPHIE_ENGINE_CMD" <<'MOCK'
+#!/bin/sh
+[ "$1" = --version ] || exit 7
+printf '%s\n' "$$" > "$PROBE_PID_FILE"
+if [ "$PROBE_BEHAVIOR" = wait ]; then
+    trap '' TERM
+    exec sleep 8
+fi
+# Version checks must not consume or wait for operator stdin.
+if IFS= read -r line; then exit 9; fi
+exit 0
+MOCK
+    chmod +x "$RALPHIE_ENGINE_CMD"
+    printf 'not version input\n' > "$RUN_DIR/input"
+    engine_live_probe custom < "$RUN_DIR/input" > "$RUN_DIR/probe.log" 2>&1
+    check_ok "version probe does not inherit operator stdin" "$?"
+    probe_pid="$(cat "$PROBE_PID_FILE")"
+    ps -p "$probe_pid" >/dev/null 2>&1
+    check_fails "completed version probe is reaped" "$?"
+    check "completed version probe releases child tracking" '' "$(trim "$CHILD_PIDS")"
+    PROBE_BEHAVIOR=wait
+    started="$(now_epoch)"
+    engine_live_probe custom > "$RUN_DIR/probe.log" 2>&1
+    check "version probe is bounded without timeout or gtimeout" 124 "$?"
+    took="$(secs_since "$started")"
+    [ "$took" -lt 7 ]; check_ok "version probe returns before the mock's own expiry" "$?"
+    check "version probe requests the fixed fifteen second allowance" 15 "$(cat "$RUN_DIR/probe-deadline" 2>/dev/null)"
+    probe_pid="$(cat "$PROBE_PID_FILE")"
+    ps -p "$probe_pid" >/dev/null 2>&1
+    check_fails "terminated version probe leaves no live process or zombie" "$?"
+    check "terminated version probe releases child tracking" '' "$(trim "$CHILD_PIDS")"
+    true ) || no "engine-contract-probe group completed" aborted
+fi
+
+if want "prime-contract-selection"; then
+  ( load_lib "$(new_project)"
+    mkdir -p "$PROJECT/bin"
+    for n in prime-agent future explicit; do
+        printf '#!/bin/sh\nexit 0\n' > "$PROJECT/bin/$n"; chmod +x "$PROJECT/bin/$n"
+    done
+    PATH="$PROJECT/bin:/usr/bin:/bin"
+    ENGINE_TABLE="
+prime-agent | prime-agent | stdout | autonomy gates memory subagents resume skills json usage
+future | future | stdout | autonomy gates memory subagents resume skills json stream usage
+explicit | explicit | stdout | json
+"
+    unset RALPHIE_ENGINE_CMD
+    check "Prime is preferred even over a higher capability count" prime-agent "$(engine_pick)"
+    check "explicit engine outranks Prime preference" explicit "$(engine_pick explicit)"
+    RALPHIE_ENGINE_CMD="$PROJECT/bin/explicit"
+    check "custom command outranks Prime preference" custom "$(engine_pick)"
+    unset RALPHIE_ENGINE_CMD
+    printf '#!/bin/sh\nexit 1\n' > "$PROJECT/bin/prime-agent"
+    check "unresponsive Prime yields to a responsive engine" future "$(engine_pick)"
+    rm "$PROJECT/bin/prime-agent"
+    check "missing Prime yields to a responsive engine" future "$(engine_pick)"
+    true ) || no "prime-contract-selection group completed" aborted
+fi
+
+if want "prime-contract-budgets"; then
+  ( load_lib "$(new_project)"
+    flag_value() { printf '%s\n' "${ENGINE_ARGV[@]+"${ENGINE_ARGV[@]}"}" | awk -v flag="$1" '$0 == flag {getline; print; exit}'; }
+    printf 'test -f "path with spaces"\n' > "$GATES_FILE"
+    ENGINE=prime-agent; ENGINE_TIMEOUT=2400; GATE_TIMEOUT=900; RUN_DEADLINE=0
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "Prime receives the operator gate timeout" 900000 "$(flag_value --autonomous-gate-timeout-ms)"
+    check "Prime receives intact gate arguments" 'test -f "path with spaces"' "$(flag_value --autonomous-gate)"
+    ENGINE_TIMEOUT=120; GATE_TIMEOUT=900
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "Prime gate timeout cannot exceed its call" 120000 "$(flag_value --autonomous-gate-timeout-ms)"
+    GATE_TIMEOUT=0
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "zero gate timeout uses the finite call boundary" 120000 "$(flag_value --autonomous-gate-timeout-ms)"
+    ENGINE_TIMEOUT=0
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "unbounded calls delegate continuation to Ralphie" '' "$(flag_value --autonomous)"
+    check_lacks "unbounded Prime argv never sends invalid zero timeout" '--autonomous-timeout-ms' "${ENGINE_ARGV[*]}"
+    now_epoch() { printf 100; }; RUN_DEADLINE=107
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "run deadline bounds an otherwise unlimited call" 7000 "$(flag_value --autonomous-timeout-ms)"
+    check "run deadline also bounds native gates" 7000 "$(flag_value --autonomous-gate-timeout-ms)"
+    RUN_DEADLINE=100
+    engine_build prime-agent autonomous "$RUN_DIR/out"
+    check "elapsed budget never becomes an unlimited Prime timeout" 1000 "$(flag_value --autonomous-timeout-ms)"
+    true ) || no "prime-contract-budgets group completed" aborted
+fi
+
+if want "prime-contract-failures"; then
+  ( load_lib "$(new_project)"
+    log="$RUN_DIR/prime.log"; out="$RUN_DIR/prime.out"
+    printf 'Error: Invalid thinking level "invalid". Valid values: off, minimal, low, medium, high, xhigh, max\n' > "$log"
+    cp "$log" "$out"
+    engine_answered prime-agent autonomous 1 "$log" "$out" 0
+    check_fails "Prime CLI error is not an autonomous success" "$?"
+    printf 'Unexpected runtime crash\n' > "$log"; cp "$log" "$out"
+    engine_answered custom autonomous 1 "$log" "$out" 0
+    check_fails "custom autonomous crashes are not successful answers" "$?"
+    printf 'Autonomous quality gate still failing after attempt 3/3: timed out\n' > "$log"; cp "$log" "$out"
+    engine_answered prime-agent autonomous 1 "$log" "$out" 0
+    check_ok "known Prime gate boundary proceeds to independent verification" "$?"
+    engine_answered prime-agent autonomous 137 "$log" "$out" 0
+    check_fails "killed Prime never borrows a previous gate diagnostic" "$?"
+    printf 'Unexpected runtime crash\n' >> "$log"; cp "$log" "$out"
+    engine_answered prime-agent autonomous 1 "$log" "$out" 0
+    check_fails "a terminal crash overrides an earlier gate diagnostic" "$?"
+    printf 'Autonomous run stopped before terminal evidence; maxTurns reached (24/24)\n' > "$log"; cp "$log" "$out"
+    engine_answered prime-agent autonomous 1 "$log" "$out" 0
+    check_ok "known Prime work limit avoids repeating the paid attempt" "$?"
+    engine_answered prime-agent oneshot 1 "$log" "$out" 0
+    check_fails "oneshot failure cannot claim an autonomous boundary" "$?"
+    true ) || no "prime-contract-failures group completed" aborted
+fi
+
+if want "prime-contract-reason"; then
+  ( load_lib "$(new_project)"
+    RALPHIE_ENGINE_CMD="$PROJECT/failing-engine"; ENGINE=custom; ENGINE_EXPLICIT=1
+    ENGINE_RETRIES=1; ENGINE_TIMEOUT=2
+    printf 'work\n' > "$RUN_DIR/prompt"
+    engine_fallbacks() { printf called > "$RUN_DIR/fallback-called"; }
+    cat > "$RALPHIE_ENGINE_CMD" <<'MOCK'
+#!/bin/sh
+cat >/dev/null
+printf 'invalid configuration PRIVATE_DIAGNOSTIC\n'
+exit 7
+MOCK
+    chmod +x "$RALPHIE_ENGINE_CMD"
+    engine_run_with_fallback autonomous "$RUN_DIR/prompt" "$RUN_DIR/failure.log" "$RUN_DIR/answer" > "$RUN_DIR/terminal" 2>&1
+    check_fails "an unexplained mock failure is not promoted" "$?"
+    check_contains "failure reason retains exact final exit and class" 'custom exit 7 (unknown)' "$ENGINE_REASON"
+    check_contains "failure reason names retained log" "$RUN_DIR/failure.log" "$ENGINE_REASON"
+    check_contains "failure reason includes attempt count" 'attempts: 1' "$ENGINE_REASON"
+    check_contains "retained log contains the actual diagnostic" PRIVATE_DIAGNOSTIC "$(cat "$RUN_DIR/failure.log")"
+    check_lacks "failure reason does not relay sensitive log text" PRIVATE_DIAGNOSTIC "$ENGINE_REASON"
+    check_lacks "terminal does not relay sensitive log text" PRIVATE_DIAGNOSTIC "$(cat "$RUN_DIR/terminal")"
+    [ ! -e "$RUN_DIR/fallback-called" ]; check_ok "explicit failure never attempts another provider" "$?"
+    printf '#!/bin/sh\ncat >/dev/null\nprintf "authentication failed PRIVATE_DIAGNOSTIC\\n"\nexit 1\n' > "$RALPHIE_ENGINE_CMD"
+    engine_run_with_fallback autonomous "$RUN_DIR/prompt" "$RUN_DIR/permanent.log" "$RUN_DIR/answer" > "$RUN_DIR/terminal" 2>&1
+    check_fails "permanent mock failure remains a failure" "$?"
+    check_contains "permanent reason retains exact exit and class" 'custom exit 1 (permanent)' "$ENGINE_REASON"
+    check_contains "permanent reason names retained log" "$RUN_DIR/permanent.log" "$ENGINE_REASON"
+    check_lacks "permanent reason does not relay sensitive log text" PRIVATE_DIAGNOSTIC "$ENGINE_REASON"
+    true ) || no "prime-contract-reason group completed" aborted
+fi
+
+if want "prime-contract-usage"; then
+  ( load_lib "$(new_project)"
+    if have python3; then
+        ENGINE=prime-agent; state_set run_id current
+        mkdir -p "$RUN_DIR/sessions/current"
+        cat > "$RUN_DIR/sessions/current/root.jsonl" <<'JSONL'
+{"type":"message","id":"a","message":{"role":"assistant","usage":{"totalTokens":10,"cost":{"total":0.1}}}}
+{"type":"child_usage_attributed","targetId":"a","childUsage":{"totalTokens":20,"cost":{"total":0.2}},"aggregateUsage":{"totalTokens":30,"cost":{"total":0.3}}}
+{"type":"compaction","usage":{"totalTokens":7,"cost":{"total":0.07}}}
+{"type":"branch_summary","usage":{"totalTokens":3,"cost":{"total":0.03}}}
+{"type":"custom","usage":{"totalTokens":9000,"cost":{"total":90}}}
+JSONL
+        read_engine_usage >/dev/null
+        check "usage includes paid compaction and branch summaries" 40 "$(state_get run_tokens)"
+        check "cost includes real auxiliary model calls once" 0.400000 "$(state_get run_cost)"
+        read_engine_usage >/dev/null
+        check "auxiliary usage reread does not inflate lifetime totals" 40 "$(state_get tokens_spent)"
+    else
+        skip "prime contract usage requires python3" "no parser installed"
+    fi
+    true ) || no "prime-contract-usage group completed" aborted
+fi
 
 if want "prime-usage-attribution"; then
   ( load_lib "$(new_project)"
@@ -4674,10 +5315,19 @@ if want "usage-is-measured-not-inflated"; then
         ( cd "$d" && env RALPHIE_ENGINE_CMD="$d/eng" RALPHIE_ENGINE_CAPS="usage" ./ralphie.sh --engine custom -n 2 ) >/dev/null 2>&1
         r=$((r+1))
     done
-    # 3 runs x 2 cycles = 6 calls = 600 tokens total, 200 per run.
-    check "the lifetime token total is what was really spent" "600" "$(grep '^tokens_spent=' "$d/.ralphie/state" | cut -d= -f2)"
-    check "and THIS run is charged only for itself" "200" "$(grep '^run_tokens=' "$d/.ralphie/state" | cut -d= -f2)"
-    check "and so is the cost" "0.020000" "$(grep '^run_cost=' "$d/.ralphie/state" | cut -d= -f2)"
+    if command -v python3 >/dev/null 2>&1; then
+        # 3 runs x 2 cycles = 6 calls = 600 tokens total, 200 per run.
+        check "the lifetime token total is what was really spent" "600" "$(grep '^tokens_spent=' "$d/.ralphie/state" | cut -d= -f2)"
+        check "and THIS run is charged only for itself" "200" "$(grep '^run_tokens=' "$d/.ralphie/state" | cut -d= -f2)"
+        check "and so is the cost" "0.020000" "$(grep '^run_cost=' "$d/.ralphie/state" | cut -d= -f2)"
+    else
+        check "without a parser no lifetime usage is invented" '' "$(grep '^tokens_spent=' "$d/.ralphie/state" | cut -d= -f2)"
+        check "without a parser run tokens remain unmeasured" 0 "$(grep '^run_tokens=' "$d/.ralphie/state" | cut -d= -f2)"
+        check "without a parser run cost remains unmeasured" 0 "$(grep '^run_cost=' "$d/.ralphie/state" | cut -d= -f2)"
+        out="$( cd "$d" && ./ralphie.sh status 2>&1 )"
+        check_lacks "without a parser status makes no usage claim" 'reported by the engine' "$out"
+        skip "measured usage accounting" "no python3"
+    fi
 fi
 
 if want "converging-repair"; then
@@ -5107,6 +5757,66 @@ if want "budget-cycles"; then
     check_contains "the cycle limit is reported" "reached the cycle limit" "$out"
 fi
 
+if want "project-target-self"; then
+    d="$(new_project)"
+    git -C "$d" add ralphie.sh
+    git -C "$d" commit -qm baseline
+    alias_dir="$TMPROOT/project-target-alias"
+    ln -s "$d" "$alias_dir"
+  ( load_lib "$alias_dir"
+    check "project-target script and project share canonical directory" "$PROJECT/ralphie.sh" "$SELF"
+    printf '\n# unreviewed change\n' >> "$SELF"
+    self_is_reviewed >/dev/null 2>&1
+    check_fails "project-target alias cannot hide an unreviewed script" "$?"
+    true
+  )
+    check_ok "project-target-self group completed" "$?"
+fi
+
+if want "project-target"; then
+    pd="$TMPROOT/project-target"
+    mkdir -p "$pd/installed" "$pd/caller" "$pd/actual target" "$pd/wrong target"
+    cp "$RALPHIE" "$pd/installed/ralphie.sh"
+    chmod +x "$pd/installed/ralphie.sh"
+    target="$(cd "$pd/actual target" && pwd -P)"
+    # A standalone installed copy must resolve selection before creating state.
+    out="$(cd "$pd/caller" && RALPHIE_PROJECT=missing "$pd/installed/ralphie.sh" --project '../actual target' discover 2>&1)"; rc=$?
+    check_ok "project-target explicit directory overrides environment" "$rc"
+    check_contains "project-target canonical directory with spaces" "Project: $target" "$out"
+    [ ! -e "$target/.ralphie" ]; check_ok "project-target discovery stays read-only" "$?"
+    out="$(cd "$pd/caller" && "$pd/installed/ralphie.sh" --project missing status 2>&1)"; rc=$?
+    check_fails "project-target missing directory rejected" "$rc"
+    check_contains "project-target missing directory explained" "cannot access project directory" "$out"
+    [ ! -e "$pd/caller/missing" ]; check_ok "project-target does not create a mistyped directory" "$?"
+    out="$("$pd/installed/ralphie.sh" --project 2>&1)"; rc=$?
+    check_fails "project-target missing value rejected" "$rc"
+    cat > "$pd/mock" <<'MOCK'
+#!/bin/bash
+cat > "$MOCK_LAST_PROMPT"
+printf '%s\n' "$PWD" > engine-cwd.txt
+printf '%s\n' "$RALPHIE_PROJECT" > engine-project.txt
+printf 'complete\n' > outcome.txt
+printf '<<<RALPHIE\nstatus: done\nsummary: target reached\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$pd/mock"
+    out="$(cd "$pd/caller" && RALPHIE_PROJECT='../actual target' RALPHIE_ENGINE_CMD="$pd/mock" MOCK_LAST_PROMPT="$pd/prompt" "$pd/installed/ralphie.sh" --once --no-commit --no-update --gate 'test -f outcome.txt' 'reach the selected project' 2>&1)"; rc=$?
+    check_ok "project-target relative environment completes real loop" "$rc"
+    check "project-target engine cwd" "$target" "$(cat "$target/engine-cwd.txt" 2>/dev/null)"
+    check "project-target engine receives canonical environment" "$target" "$(cat "$target/engine-project.txt" 2>/dev/null)"
+    check_contains "project-target prompt uses canonical project" "path:  $target" "$(cat "$pd/prompt" 2>/dev/null)"
+    printf 'read the specification from the caller\n' > "$pd/caller/intent.md"
+    out="$(cd "$pd/caller" && RALPHIE_PROJECT='../wrong target' RALPHIE_ENGINE_CMD="$pd/mock" MOCK_LAST_PROMPT="$pd/prompt" "$pd/installed/ralphie.sh" --project '../actual target' --spec intent.md --once --no-commit --no-update 2>&1)"; rc=$?
+    check_ok "project-target explicit directory completes real loop" "$rc"
+    cmp -s "$pd/caller/intent.md" "$target/.ralphie/OBJECTIVE.md"
+    check_ok "project-target specification stays relative to invocation cwd" "$?"
+    out="$(cd "$pd/caller" && "$pd/installed/ralphie.sh" --project '../actual target' status --json 2>&1)"; rc=$?
+    check_ok "project-target status reads selected project" "$rc"
+    check_contains "project-target status reports selected project" "$target" "$out"
+    for untouched in "$pd/installed" "$pd/caller" "$pd/wrong target"; do
+        [ ! -e "$untouched/.ralphie" ]; check_ok "project-target no state outside target: ${untouched##*/}" "$?"
+    done
+fi
+
 # Strict orientation: snapshots include the entire tree, .git/index and ledger.
 # No load_lib here: its initializer itself creates .ralphie.
 if want "discover-readonly"; then
@@ -5176,6 +5886,373 @@ if want "discover-readonly"; then
     cmp -s "$TMPROOT/discover-before.tar" "$TMPROOT/discover-after.tar"
     check_ok "discover invalid arguments leave tree unchanged" "$?"
     [ ! -e "$TMPROOT/discover-called" ]; check_ok "discover never calls provider parser gate hook filter or network" "$?"
+fi
+
+if want "completion-proof"; then
+    # Completion is a postcondition of verification and saving, regardless of
+    # whether an objective-specific acceptance command was configured.
+    d="$(new_project)"
+    ( load_lib "$d"
+      ledger_init
+      GATES_GREEN=yes; GATES_NONE=0; CY_MAY_COMMIT=1; COMMIT_FAILED=0; CY_SELF_EDIT=0
+      REPORT_STATUS=done; REPORT_SUMMARY='already correct'; REPORT_LESSON=''; REPORT_ASK=''
+      NOCHANGE_STREAK=0
+      completion_ready; check_ok "completion-proof clean verified no-change can complete" $?
+      COMMIT_FAILED=1
+      cycle_learn; check "completion-proof refused save cannot accept done report" 0 $?
+      COMMIT_FAILED=0; CY_MAY_COMMIT=0
+      cycle_learn; check "completion-proof untrusted work cannot accept done report" 0 $?
+      CY_MAY_COMMIT=1; CY_SELF_EDIT=1
+      cycle_learn; check "completion-proof self edit still requires review" 0 $?
+      CY_SELF_EDIT=0; GATES_NONE=1
+      cycle_learn; check "completion-proof empty checks cannot accept done report" 0 $?
+      GATES_NONE=0; GATES_GREEN=no
+      cycle_learn; check "completion-proof red checks cannot accept done report" 0 $?
+      GATES_GREEN=yes
+      cycle_learn; check "completion-proof clean control completes" 10 $?
+      true ) || no "completion-proof predicates completed" aborted
+
+    d="$(new_project)"
+    ( load_lib "$d"
+      printf 'base\n' > "$d/product.txt"
+      (cd "$d" && git add product.txt ralphie.sh && git commit -qm baseline)
+      printf 'operator output\n' > "$d/output.log"
+      snapshot_pre_dirty
+      before="$(acceptance_work_fingerprint)"
+      printf 'more output\n' >> "$d/output.log"
+      check "completion-proof protected log is not actual work" "$before" "$(acceptance_work_fingerprint)"
+      printf 'changed\n' > "$d/product.txt"
+      [ "$before" != "$(acceptance_work_fingerprint)" ]; check_ok "completion-proof eligible changed bytes are actual work" $?
+      AUTO_COMMIT=0
+      before="$(acceptance_work_fingerprint)"
+      printf 'changed again\n' > "$d/product.txt"
+      [ "$before" != "$(acceptance_work_fingerprint)" ]; check_ok "completion-proof no-commit preserves actual-work proof" $?
+      true ) || no "completion-proof eligible fingerprint completed" aborted
+    d="$TMPROOT/acceptance-without-git"; mkdir -p "$d"; cp "$RALPHIE" "$d/ralphie.sh"
+    ( load_lib "$d"
+      printf 'base\n' > "$d/product.txt"
+      before="$(acceptance_work_fingerprint)"
+      printf 'changed\n' > "$d/product.txt"
+      [ "$before" != "$(acceptance_work_fingerprint)" ]; check_ok "completion-proof no-Git content changes are actual work" $?
+      before="$(acceptance_work_fingerprint)"
+      printf 'runtime only\n' > "$HOME_DIR/runtime"
+      check "completion-proof no-Git runtime is not actual work" "$before" "$(acceptance_work_fingerprint)"
+      true ) || no "completion-proof no-Git fingerprint completed" aborted
+
+    for fault in hook hook-accept hook-request source health objective gates control no-commit; do
+        d="$(new_project)"
+        printf 'before\n' > "$d/value.txt"
+        mkdir -p "$d/.ralphie"
+        printf 'grep -qx good value.txt\n' > "$d/.ralphie/gates"
+        cat > "$d/mock" <<'MOCK'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ "${MOCK_EDIT:-1}" = 1 ]; then printf 'good\n' > value.txt; fi
+printf '<<<RALPHIE\nstatus: done\nsummary: value finished\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+        chmod +x "$d/mock"
+        (cd "$d" && git add ralphie.sh value.txt mock && git commit -qm baseline)
+        set -- --once --engine custom --no-update
+        case "$fault" in
+            hook|hook-accept|hook-request)
+                printf '#!/bin/sh\nexit 1\n' > "$d/.git/hooks/pre-commit"
+                chmod +x "$d/.git/hooks/pre-commit"
+                [ "$fault" = hook ] || set -- "$@" --accept true ;;
+            source) set -- "$@" --accept 'printf "bad\n" > value.txt' ;;
+            health)
+                set -- "$@" --accept 'touch trigger.txt; grep -qx good value.txt'
+                printf 'if [ -f trigger.txt ]; then printf "bad\\n" > value.txt; fi; true\n' > "$d/.ralphie/gates" ;;
+            objective) set -- "$@" --accept 'printf "wrong objective\n" > .ralphie/OBJECTIVE.md' ;;
+            gates) set -- "$@" --accept 'printf "true\n" > .ralphie/gates' ;;
+            no-commit) set -- "$@" --no-commit --accept true ;;
+            control)
+                set -- "$@" --accept true
+                printf 'printf "checked\\n" >> .ralphie/health-runs; grep -qx good value.txt\n' > "$d/.ralphie/gates" ;;
+        esac
+        out="$(cd "$d" && env GATE_RETRIES=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh "$@" 'make value good' 2>&1)"
+        check_ok "completion-proof $fault reaches a bounded stop" $?
+        case "$fault" in
+            control|no-commit)
+                check "completion-proof $fault preserves valid completion" done "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+                expected=2; [ "$fault" != no-commit ] || expected=1
+                check "completion-proof $fault honors commit policy" "$expected" "$(git -C "$d" rev-list --count HEAD)" ;;
+            *)
+                check_lacks "completion-proof $fault never claims objective done" '"kind":"cycle","status":"done"' "$(cat "$d/.ralphie/events.jsonl")"
+                if [ "$fault" = health ]; then
+                    check "completion-proof health-green progress may still save" 2 "$(git -C "$d" rev-list --count HEAD)"
+                else
+                    check "completion-proof $fault cannot save rejected work" 1 "$(git -C "$d" rev-list --count HEAD)"
+                    check "completion-proof $fault cannot seed green shortcut" '' "$(sed -n 's/^objective_started=//p' "$d/.ralphie/state")"
+                fi ;;
+        esac
+        case "$fault" in
+            hook|hook-accept|hook-request)
+                if [ "$fault" = hook-request ]; then
+                    (cd "$d" && ./ralphie.sh request 'also add the second feature') >/dev/null
+                fi
+                out="$(cd "$d" && env MOCK_EDIT=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update --done-when-green 2>&1)"
+                check_lacks "completion-proof resumed unchanged owned work is not done" '"kind":"cycle","status":"done"' "$(cat "$d/.ralphie/events.jsonl")"
+                check "completion-proof resume retries refused save" 2 "$(sed -n 's/^blocked_count=//p' "$d/.ralphie/state")"
+                rm "$d/.git/hooks/pre-commit"
+                out="$(cd "$d" && env MOCK_EDIT=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update --done-when-green 2>&1)"
+                if [ "$fault" = hook-request ]; then
+                    check "completion-proof old unsaved work cannot complete new request" paused "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+                    check "completion-proof old work is not credited to new request" '' "$(sed -n 's/^acceptance_work=//p' "$d/.ralphie/state")"
+                else
+                    check "completion-proof recovered save completes without new edits" done "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+                fi
+                check "completion-proof recovered save makes real commit" 2 "$(git -C "$d" rev-list --count HEAD)"
+                check "completion-proof only successful save counts green" 1 "$(sed -n 's/^pass_count=//p' "$d/.ralphie/state")" ;;
+            control)
+                check "completion-proof read-only acceptance avoids duplicate health run" 2 "$(wc -l < "$d/.ralphie/health-runs" | tr -d ' ')" ;;
+            source)
+                check "completion-proof acceptance side effect is remeasured red" 1 "$(sed -n 's/^fail_count=//p' "$d/.ralphie/state")"
+                check "completion-proof broken acceptance result stays on disk" bad "$(cat "$d/value.txt")" ;;
+            health)
+                check_contains "completion-proof final health mutation invalidates acceptance" '"kind":"acceptance","status":"stale"' "$(cat "$d/.ralphie/events.jsonl")"
+                grep -qx good "$d/value.txt"; check_fails "completion-proof stale acceptance really fails on final tree" $? ;;
+            objective)
+                check "completion-proof acceptance cannot rewrite objective" 'make value good' "$(cat "$d/.ralphie/OBJECTIVE.md")" ;;
+            gates)
+                grep -qxF 'grep -qx good value.txt' "$d/.ralphie/gates"
+                check_ok "completion-proof acceptance cannot weaken health" $? ;;
+        esac
+    done
+
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie"; printf 'false\n' > "$d/.ralphie/gates"
+    printf 'before\n' > "$d/value.txt"
+    cat > "$d/mock" <<'MOCK'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ ! -e .ralphie/changed-once ]; then
+    printf 'still broken\n' > value.txt
+    : > .ralphie/changed-once
+fi
+printf '<<<RALPHIE\nstatus: progress\nsummary: unfinished\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$d/mock"
+    (cd "$d" && git add value.txt mock ralphie.sh && git commit -qm baseline)
+    out="$(cd "$d" && env GATE_RETRIES=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --cycles 5 --no-update 'fix value' 2>&1)"
+    check "completion-proof unchanged red owned work stalls" 3 $?
+    check "completion-proof unchanged red work keeps streak" 3 "$(sed -n 's/^nochange_streak=//p' "$d/.ralphie/state")"
+    check "completion-proof only changed red cycle counts progress" 1 "$(sed -n 's/^fail_count=//p' "$d/.ralphie/state")"
+
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie"
+    printf 'if [ -e attack ]; then rm -f .ralphie/gates; fi; true\n' > "$d/.ralphie/gates"
+    make_mock_engine "$d/mock" nothing
+    (cd "$d" && git add ralphie.sh mock && git commit -qm baseline)
+    out="$(cd "$d" && env MOCK_LAST_PROMPT="$d/.ralphie/mock-prompt" MOCK_STATUS=done RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update 'complete objective' 2>&1)"
+    check "completion-proof observe control first reaches done" done "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+    touch "$d/attack"
+    out="$(cd "$d" && env MOCK_LAST_PROMPT="$d/.ralphie/mock-prompt" MOCK_STATUS=done RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update --done-when-green 2>&1)"
+    check "completion-proof damaged observe cannot complete shortcut" paused "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+    check "completion-proof damaged observe adds no done event" 1 "$(grep -c '"kind":"cycle","status":"done"' "$d/.ralphie/events.jsonl")"
+fi
+
+if want "exit-descendants"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      cat > "$d/deaf-child" <<'CHILD'
+#!/bin/bash
+trap '' TERM
+printf '%s\n' "$$" > "$PIDFILE"
+while :; do sleep 60; done
+CHILD
+      chmod +x "$d/deaf-child"
+      sleep 60 & unrelated=$!
+      PIDFILE="$d/child.pid" /bin/bash -c '"$1" & wait' parent "$d/deaf-child" & parent=$!
+      i=0
+      while [ ! -s "$d/child.pid" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+      child="$(cat "$d/child.pid" 2>/dev/null)"
+      [ -n "$child" ]; check_ok "exit-descendants child started before cleanup" $?
+      track_pid "$parent"
+      started="$(now_epoch)"; reap_children
+      took="$(( $(now_epoch) - started ))"
+      [ "$took" -le 6 ]; check_ok "exit-descendants cleanup stays bounded" $?
+      if [ -n "$child" ]; then
+          kill -0 "$child" 2>/dev/null; check_fails "exit-descendants orphan cannot ignore final kill" $?
+          kill_tree "$child" KILL
+      fi
+      kill -0 "$unrelated" 2>/dev/null; check_ok "exit-descendants unrelated process remains alive" $?
+      kill "$unrelated" 2>/dev/null || true
+      wait "$parent" "$unrelated" 2>/dev/null || true
+      check "exit-descendants tracked list is cleared" '' "$CHILD_PIDS"
+      true ) || no "exit-descendants group completed" aborted
+fi
+
+# CLI intent, machine-readable numbers and command outcomes are public contracts.
+if want "cli-report"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      parse_args --no-update run --once 'build *  with  spaces'
+      check "cli-report explicit run selects run" run "$CMD"
+      check "cli-report explicit run parses --once" 1 "$MAX_CYCLES"
+      check "cli-report explicit run preserves objective bytes" 'build *  with  spaces' "$OBJECTIVE"
+      check "cli-report explicit run consumes arguments" 0 "${#REST[@]}"
+      check "cli-report options before run survive" 0 "$DO_UPDATE"
+      true ) || no "cli-report parsing group completed" aborted
+    ( load_lib "$d"
+      parse_args run status
+      check "cli-report command-looking objective stays objective" status "$OBJECTIVE"
+      check "cli-report objective does not redispatch" run "$CMD"
+      true ) || no "cli-report objective group completed" aborted
+    ( load_lib "$d"
+      parse_args run -- --once
+      check "cli-report separator preserves option-looking text" --once "$OBJECTIVE"
+      check "cli-report separator stops option parsing" 0 "$MAX_CYCLES"
+      true ) || no "cli-report separator group completed" aborted
+
+    # A second-call stop bounds this test even when --once is silently dropped.
+    mkdir -p "$d/.ralphie"; printf 'true\n' > "$d/.ralphie/gates"
+    cat > "$d/mock-run" <<'MOCK'
+#!/bin/bash
+cat > .ralphie/presented-prompt
+printf 'called\n' >> .ralphie/mock-calls
+n=$(wc -l < .ralphie/mock-calls)
+printf '%s\n' "$n" > progress.txt
+[ "$n" -lt 2 ] || touch .ralphie/stop
+printf '<<<RALPHIE\nstatus: progress\nsummary: mock wrote progress\nlesson: -\nask: -\nRALPHIE>>>\n'
+MOCK
+    chmod +x "$d/mock-run"
+    ( cd "$d" && git add ralphie.sh mock-run && git commit -qm init ) >/dev/null 2>&1
+    out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock-run" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --no-update --no-commit --engine custom run --once 'build the requested feature' 2>&1)"; rc=$?
+    check_ok "cli-report explicit run finishes" "$rc"
+    check "cli-report explicit run invokes engine once" 1 "$(wc -l < "$d/.ralphie/mock-calls" | tr -d ' ')"
+    check "cli-report explicit run persists objective" 'build the requested feature' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
+    check_contains "cli-report explicit run presents objective" 'build the requested feature' "$(cat "$d/.ralphie/presented-prompt")"
+    printf 'A complete specification.\n\n' > "$d/spec.md"
+    out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock-run" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --no-update --no-commit --engine custom run --once --spec spec.md 2>&1)"; rc=$?
+    check_ok "cli-report explicit run accepts --spec" "$rc"
+    cmp -s "$d/spec.md" "$d/.ralphie/OBJECTIVE.md"; check_ok "cli-report spec bytes remain exact" "$?"
+    out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock-run" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --no-update --once --engine custom run --not-an-option 2>&1)"; rc=$?
+    check_fails "cli-report invalid run option fails" "$rc"
+    check_contains "cli-report invalid run option explains why" 'unknown option: --not-an-option' "$out"
+
+    d="$(new_project)"
+    ( load_lib "$d"
+      while IFS='|' read -r value integer decimal; do
+          printf 'probe=%s\n' "$value" > "$STATE_FILE"
+          check "cli-report integer [$value]" "$integer" "$(json_num probe)"
+          check "cli-report decimal [$value]" "$decimal" "$(json_dec probe)"
+      done <<'NUMBERS'
+|0|0
+0|0|0
+000|0|0
+007|7|7
+08|8|8
+000184467440737095516161234567890|184467440737095516161234567890|184467440737095516161234567890
+.5|0|0.5
+1.|0|1
+0001.2300|0|1.2300
+.000|0|0.000
+000.001|0|0.001
+.|0|0
+1.2.3|0|0
+-1|0|0
++1|0|0
+1e3|0|0
+ 1|0|0
+1 |0|0
+NaN|0|0
+Infinity|0|0
+not-a-number|0|0
+NUMBERS
+      true ) || no "cli-report numeric group completed" aborted
+    printf 'cycle=007\npass_count=08\ntokens_spent=000184467440737095516161234567890\nrun_cost=.5\n' > "$d/.ralphie/state"
+    out="$(cd "$d" && ./ralphie.sh status --json 2>&1)"; rc=$?
+    check_ok "cli-report status succeeds" "$rc"
+    check_contains "cli-report canonical cycle" '"cycle":7,' "$out"
+    check_contains "cli-report canonical pass count" '"pass":8,' "$out"
+    check_contains "cli-report large count remains exact" '"tokens":184467440737095516161234567890,' "$out"
+    check_contains "cli-report canonical decimal cost" '"run_cost":0.5,' "$out"
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["cycle"] == 7 and d["pass"] == 8 and d["tokens"] == 184467440737095516161234567890 and d["run_cost"] == .5'
+        check_ok "cli-report typed valid JSON" "$?"
+    else skip "cli-report full JSON parser" "no python3; exact tokens checked above"; fi
+
+    d="$(new_project)"
+    mkdir -p "$d/.ralphie/lock"; printf '%s\n' "$$" > "$d/.ralphie/lock/pid"
+    printf 'true\n' > "$d/.ralphie/gates"
+    out="$(cd "$d" && ./ralphie.sh gates --redetect 2>&1)"; rc=$?
+    check "cli-report live-worker redetect exits 1" 1 "$rc"
+    check_contains "cli-report live-worker refusal explained" 'a ralphie loop is running' "$out"
+    check "cli-report live-worker gates preserved" true "$(cat "$d/.ralphie/gates")"
+    rm -rf "$d/.ralphie/lock"
+    ( load_lib "$d"
+      printf 'acceptance_binding=original\n' > "$STATE_FILE"
+      printf 'keep this objective\n' > "$OBJECTIVE_FILE"
+      state_set() { return 0; } # A failed write cannot persist the tombstone.
+      CMD=forget
+      out="$(run_simple_command 2>&1)"; rc=$?
+      check "cli-report forget propagates binding failure" 1 "$rc"
+      check "cli-report refused forget preserves objective" 'keep this objective' "$(cat "$OBJECTIVE_FILE")"
+      check_contains "cli-report refused forget explains why" 'acceptance configuration is missing or damaged' "$out"
+      true ) || no "cli-report forget group completed" aborted
+    ( load_lib "$d"
+      cmd_gates() { return 7; } # Future failures must keep their exact status.
+      out="$(main gates 2>&1)"; rc=$?
+      check "cli-report main preserves exact command status" 7 "$rc"
+      true ) || no "cli-report exact status group completed" aborted
+
+    mkdir "$d/.ralphie/stop"; printf 'keep\n' > "$d/.ralphie/stop/evidence"
+    out="$(cd "$d" && ./ralphie.sh stop 2>&1)"; rc=$?
+    check "cli-report stop rejects directory marker" 1 "$rc"
+    check_lacks "cli-report refused stop never claims success" 'stop requested -' "$out"
+    check "cli-report stop preserves directory contents" keep "$(cat "$d/.ralphie/stop/evidence")"
+    mv "$d/.ralphie/stop" "$d/.ralphie/stop-evidence"
+    ln -s "$d/.ralphie/stop-evidence/evidence" "$d/.ralphie/stop"
+    out="$(cd "$d" && ./ralphie.sh stop 2>&1)"; rc=$?
+    check "cli-report stop rejects symlink marker" 1 "$rc"
+    [ -L "$d/.ralphie/stop" ]; check_ok "cli-report symlink evidence preserved" "$?"
+    rm "$d/.ralphie/stop"
+    ( load_lib "$d"
+      CMD=stop
+      touch() { return 9; }
+      out="$(run_simple_command 2>&1)"; rc=$?
+      check "cli-report failed stop write fails" 1 "$rc"
+      check_lacks "cli-report failed stop write never claims success" 'stop requested -' "$out"
+      touch() { return 0; } # Success alone is not evidence of a persisted file.
+      out="$(run_simple_command 2>&1)"; rc=$?
+      check "cli-report stop checks persisted marker" 1 "$rc"
+      true ) || no "cli-report stop persistence group completed" aborted
+    out="$(cd "$d" && ./ralphie.sh stop 2>&1)"; rc=$?
+    check_ok "cli-report normal stop succeeds" "$rc"
+    [ -f "$d/.ralphie/stop" ]; check_ok "cli-report normal stop marker exists" "$?"
+    out="$(cd "$d" && ./ralphie.sh version 2>&1)"; rc=$?
+    check_ok "cli-report version succeeds" "$rc"
+    check_contains "cli-report version stays labelled" 'ralphie ' "$out"
+    out="$(cd "$d" && ./ralphie.sh help 2>&1)"; rc=$?
+    check_ok "cli-report help succeeds" "$rc"
+    check_contains "cli-report help documents explicit run" './ralphie.sh run [options]' "$out"
+    check_contains "cli-report help protects durable acceptance identity" 'Counters and objective/acceptance identity. Do not delete it.' "$out"
+
+    # A backup must exist and match before redetection removes either witness.
+    for fault in directory readonly copy-fails copy-lies copy-wrong; do
+        d="$(new_project)"
+        ( load_lib "$d"
+          printf 'test -f original-check\n' > "$GATES_FILE"
+          GATES_BASELINE_FILE="$HOME_DIR/gates.baseline"
+          cp "$GATES_FILE" "$GATES_BASELINE_FILE"
+          case "$fault" in
+              directory) mkdir "$HOME_DIR/gates.previous"; printf 'keep\n' > "$HOME_DIR/gates.previous/evidence";;
+              readonly) printf 'previous evidence\n' > "$HOME_DIR/gates.previous"; chmod 444 "$HOME_DIR/gates.previous"
+                        if [ -w "$HOME_DIR/gates.previous" ]; then skip "cli-report readonly backup" "privileged user can write"; exit 0; fi;;
+              copy-fails) cp() { return 1; };;
+              copy-lies) cp() { return 0; };;
+              copy-wrong) cp() { printf 'wrong backup\n' > "$HOME_DIR/gates.previous"; return 0; };;
+          esac
+          discover_gates() { printf 'replacement\n' > "$GATES_FILE"; }
+          CMD=gates; REST=( --redetect )
+          out="$(run_simple_command 2>&1)"; rc=$?
+          check "cli-report $fault backup refuses redetection" 1 "$rc"
+          check "cli-report $fault backup preserves gates" 'test -f original-check' "$(cat "$GATES_FILE")"
+          check "cli-report $fault backup preserves baseline" 'test -f original-check' "$(cat "$GATES_BASELINE_FILE" 2>/dev/null)"
+          check_lacks "cli-report $fault backup never claims preservation" 'your previous gates were saved' "$out"
+          if [ "$fault" = directory ]; then check "cli-report backup directory evidence preserved" keep "$(cat "$HOME_DIR/gates.previous/evidence")"; fi
+          true ) || no "cli-report $fault backup group completed" aborted
+    done
 fi
 
 # --------------------------------------------------------------- report -----
