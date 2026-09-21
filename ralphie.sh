@@ -2677,11 +2677,14 @@ engine_fallbacks() {
 # not a sandbox. Do not infer trust from RALPHIE_ENGINE_CMD or worker capabilities.
 # Prompt/answer paths must be absolute regular files under caller custody.
 # Receipt: HOME_DIR/chat/usage.json (one call, measured or explicitly unavailable).
-chat_infer() (
+chat_infer() ( chat_infer_main "$@"; )
+chat_infer_main() {
     trap - EXIT INT TERM HUP
     set +e
     umask 077
-    local prompt="$1" answer="$2" chat work="" pid="" rc=0 elapsed=0 n exe engine
+    local prompt="$1" answer="$2" chat rc=0 elapsed=0 n exe engine
+    # Cleanup runs at shell EXIT after function-local scope has unwound.
+    work=""; pid=""
     local limit="${RALPHIE_CHAT_TIMEOUT:-90}" argv=() version
     case "$limit" in ''|*[!0-9]*) return 2;; esac
     [ "$limit" -ge 1 ] && [ "$limit" -le 300 ] || return 2
@@ -2692,6 +2695,8 @@ chat_infer() (
     n="$(wc -c < "$prompt" | tr -d ' ')"
     [ "$n" -le 32768 ] || { printf 'chat: prompt exceeds 32768 bytes\n' >&2; return 2; }
     : > "$answer" || return 2
+    # Usage remains project-chat-wide; selecting history does not reset it.
+    # Prompt and answer arguments still belong to the selected conversation.
     chat="$HOME_DIR/chat"
     [ -d "$HOME_DIR" ] && [ ! -L "$HOME_DIR" ] || return 2
     [ ! -L "$chat" ] && { [ -d "$chat" ] || mkdir "$chat"; } || return 2
@@ -2722,7 +2727,18 @@ chat_infer() (
     case "$exe" in /*) ;; *) exe="$(pwd -P)/$exe";; esac
     # Never use project TMPDIR: cwd must not discover project instructions.
     work="$(mktemp -d /tmp/ralphie-chat-call.XXXXXX)" || return 2
+    chat_infer_progress_clear() {
+        [ "${CHAT_PROGRESS:-0}" != 1 ] || printf '\r\033[2K' >&2
+        return 0
+    }
+    chat_infer_progress() {
+        [ "${CHAT_PROGRESS:-0}" = 1 ] && [ -t 2 ] || return 0
+        local frames='|/-\' frame
+        frame="${frames:$((elapsed % 4)):1}"
+        printf '\r\033[2K%s Thinking... %ss (Ctrl-C closes chat)' "$frame" "$elapsed" >&2
+    }
     chat_infer_cleanup() {
+        chat_infer_progress_clear
         if [ -n "$pid" ]; then terminate_tree "$pid" >/dev/null 2>&1; wait "$pid" 2>/dev/null; fi
         [ -z "$work" ] || rm -rf -- "$work"
         return 0
@@ -2762,6 +2778,9 @@ chat_infer() (
         # as argv and the bounded supervisor envelope on stdin.
         argv=("$exe" --model "${MODEL:-}" --thinking "${THINKING:-}")
     fi
+    # Create monitored files before the child is scheduled. Its redirections
+    # run asynchronously; an early watchdog read must not see a missing file.
+    : > "$work/stdout" && : > "$work/stderr" || return 2
     set -m
     (
         cd "$work/cwd" || exit 2
@@ -2779,6 +2798,7 @@ chat_infer() (
     set +m
     elapsed=0
     while kill -0 "$pid" 2>/dev/null; do
+        chat_infer_progress
         n="$(wc -c < "$work/stdout" | tr -d ' ')"
         [ "$n" -le 8192 ] || { rc=125; break; }
         n="$(du -sk "$work" | awk '{print $1}')"
@@ -2793,6 +2813,7 @@ chat_infer() (
         wait "$pid"; rc=$?
     fi
     pid=""
+    chat_infer_progress_clear
     # Optional real JSON parser. Never estimate usage or update worker totals.
     if command -v python3 >/dev/null 2>&1; then
         python3 - "$work/sessions" "$chat/usage.json" <<'RALPHIE_CHAT_USAGE_PY'
@@ -2842,7 +2863,7 @@ RALPHIE_CHAT_USAGE_PY
     cat "$work/stdout" > "$answer" || return 2
     LC_ALL=C grep -q '[^[:space:]]' "$answer" || { : > "$answer"; return 1; }
     return 0
-)
+}
 
 # --- argv construction -------------------------------------------------------
 # ENGINE_ARGV is rebuilt for every call. Nothing is cached, because a colony
@@ -4517,14 +4538,104 @@ chat_safe_dir() {
     [ "$(cd "$1" && pwd -P)" = "$1" ]
 }
 
+# Conversations share one project and worker lock, not isolated workspaces.
+chat_session_name() {
+    local LC_ALL=C
+    case "$1" in ''|*[!a-zA-Z0-9_-]*|-*|_*) return 1;; esac
+    [ "${#1}" -le 32 ]
+}
+
+chat_session_path() {
+    chat_session_name "$1" || return 1
+    if [ "$1" = default ]; then printf '%s/chat\n' "$HOME_DIR"
+    else printf '%s/conversations/%s\n' "$HOME_DIR" "$1"; fi
+}
+
+chat_session_unlock() {
+    local path="$1" token="$2"
+    [ -n "$path" ] && [ -n "$token" ] || return 0
+    [ ! -L "$path" ] && [ -d "$path" ] && [ ! -L "$path/owner" ] &&
+        [ -f "$path/owner" ] && [ -r "$path/owner" ] &&
+        [ "$(file_bytes "$path/owner")" -le 128 ] &&
+        [ "$(cat "$path/owner")" = "$token" ] || return 1
+    rm -f "$path/owner" && rmdir "$path"
+}
+
+chat_sessions() {
+    local dir name count=1 mark
+    chat_say 'Conversations (shared project, not isolated workspaces):'
+    mark=' '; [ "${CHAT_SESSION_ID:-default}" != default ] || mark='*'
+    printf '%s default\n' "$mark"
+    [ ! -L "$HOME_DIR/conversations" ] || return 1
+    [ ! -e "$HOME_DIR/conversations" ] || [ -d "$HOME_DIR/conversations" ] || return 1
+    for dir in "$HOME_DIR/conversations/"* "$HOME_DIR/conversations/".[!.]* "$HOME_DIR/conversations/"..?*; do
+        [ -e "$dir" ] || [ -L "$dir" ] || continue
+        name="${dir##*/}"
+        count=$((count+1)); [ "$count" -le 32 ] || { chat_say 'Conversation capacity exceeded; inspect retained directories.'; return 1; }
+        chat_session_name "$name" || continue
+        [ ! -L "$dir" ] && [ -d "$dir" ] || continue
+        mark=' '; [ "${CHAT_SESSION_ID:-default}" != "$name" ] || mark='*'
+        printf '%s %s\n' "$mark" "$name"
+    done
+}
+
+chat_session_select() {
+    local id="$1" mode="${2:-existing}" target old dir count=1
+    chat_session_name "$id" || { chat_say 'Use 1-32 ASCII letters, digits, hyphens or underscores; begin with a letter or digit.'; return 1; }
+    target="$(chat_session_path "$id")" || return 1
+    old="${CHAT_DIR:-}"
+    if [ "$id" != default ]; then
+        [ ! -L "$HOME_DIR/conversations" ] && { [ ! -e "$HOME_DIR/conversations" ] || [ -d "$HOME_DIR/conversations" ]; } || return 1
+    fi
+    if [ "$mode" = create ]; then
+        [ "$id" != default ] && [ ! -e "$target" ] && [ ! -L "$target" ] || { chat_say 'Conversation already exists.'; return 1; }
+        chat_safe_dir "$HOME_DIR/conversations" || return 1
+        for dir in "$HOME_DIR/conversations/"* "$HOME_DIR/conversations/".[!.]* "$HOME_DIR/conversations/"..?*; do
+            [ -e "$dir" ] || [ -L "$dir" ] || continue
+            count=$((count+1)); [ "$count" -lt 32 ] || break
+        done
+        [ "$count" -lt 32 ] || { chat_say '32 conversations retained; no automatic deletion.'; return 1; }
+        ( umask 077; mkdir "$target" ) || return 1
+    elif [ "$mode" = initial ] && [ "$id" = default ]; then
+        chat_safe_dir "$target" || return 1
+    else
+        [ -d "$target" ] && [ ! -L "$target" ] || { chat_say 'No safe retained conversation with that name.'; return 1; }
+    fi
+    if [ "$id" != default ]; then
+        [ ! -L "$HOME_DIR/conversations" ] && [ -d "$HOME_DIR/conversations" ] || return 1
+    fi
+    chat_safe_dir "$target" || return 1
+    ( CHAT_DIR="$target"; chat_paths ) || { chat_say 'Unsafe conversation files; nothing selected.'; return 1; }
+    # Global supervisor custody is held throughout navigation. Validate first;
+    # neither a failed switch nor cleanup may change the acquired lock path.
+    if [ "$mode" != initial ] || [ "${CHAT_ONESHOT:-0}" = 0 ]; then
+        ( CHAT_DIR="$target"; chat_store proposal '' ) || return 1
+        if [ -n "$old" ] && [ "$old" != "$target" ]; then
+            chat_store proposal '' || return 1
+        fi
+    fi
+    CHAT_DIR="$target"; CHAT_SESSION_ID="$id"
+    if type chat_job_load >/dev/null 2>&1; then chat_job_load || true; fi
+    chat_say "Conversation $id selected. Shared project; no worker started or resumed."
+    chat_say "Usage: nine recent project-chat receipts shared across conversations; not lifetime totals."
+    chat_say "Current invocation settings: engine=${ENGINE:-default} model=${MODEL:-default} thinking=${THINKING:-default}. History does not restore settings."
+    return 0
+}
+
+chat_reconnect_hint() {
+    chat_say 'Reconnect conversation (current invocation settings; no worker resume):'
+    { printf '  '; printf '%q ' "$SELF" --project "$PROJECT" "${CHAT_LAUNCH_ARGS[@]+"${CHAT_LAUNCH_ARGS[@]}"}" chat --session "${CHAT_SESSION_ID:-default}"; printf '\n'; } | chat_text
+}
+
 chat_paths() {
     local f limit
     [ ! -L "$HOME_DIR" ] && [ -d "$HOME_DIR" ] || return 1
     [ ! -L "$CHAT_DIR" ] && [ -d "$CHAT_DIR" ] || return 1
-    for f in history proposal binding proposal-id receipt prompt answer scratch request-body; do
+    for f in history proposal binding proposal-id receipt prompt answer scratch request-body selected-job; do
         [ ! -L "$CHAT_DIR/$f" ] && { [ ! -e "$CHAT_DIR/$f" ] || [ -f "$CHAT_DIR/$f" ]; } || return 1
         if [ -f "$CHAT_DIR/$f" ]; then
-            case "$f" in history) limit=24577;; prompt|scratch) limit=32768;; answer) limit=8192;; request-body) limit=4096;; proposal) limit=4200;; *) limit=512;; esac
+            [ -r "$CHAT_DIR/$f" ] || return 1
+            case "$f" in selected-job) limit=101;; history) limit=24577;; prompt|scratch) limit=32768;; answer) limit=8192;; request-body) limit=4096;; proposal) limit=4200;; *) limit=512;; esac
             [ "$(file_bytes "$CHAT_DIR/$f")" -le "$limit" ] || return 1
         fi
     done
@@ -4569,12 +4680,12 @@ chat_action_valid() {
     case "$payload" in *"$RALPHIE_NL"*) return 1;; esac
     [ "$(printf '%s' "$payload" | chat_text)" = "$payload" ] || return 1
     case "$1" in
-        start|request|answer) ;; stop) case "$payload" in *[!a-zA-Z0-9._-]*) return 1;; esac;; *) return 1;; esac
+        start|request|answer) ;; stop|force) case "$payload" in *[!a-zA-Z0-9._-]*) return 1;; esac;; *) return 1;; esac
 }
 
 chat_store() {
     local name="$1" text="$2"
-    case "$name" in history|proposal|binding|proposal-id|receipt|prompt|answer) ;; *) return 1;; esac
+    case "$name" in history|proposal|binding|proposal-id|receipt|prompt|answer|selected-job) ;; *) return 1;; esac
     chat_paths || return 1
     # The lock serializes supervisors; exclusive staging rejects planted paths.
     [ ! -e "$CHAT_DIR/scratch" ] || return 1
@@ -4668,6 +4779,12 @@ chat_generation() {
     local f d
     [ ! -L "$HOME_DIR/lock" ] && [ ! -L "$HOME_DIR/workers" ] || return 1
     for f in launch token pid; do chat_fingerprint "$HOME_DIR/lock/$f" || return 1; done
+    local active
+    active="$(worker_metadata "$HOME_DIR/lock/launch" 101 2>/dev/null || true)"
+    if [ -n "$active" ]; then
+        worker_paths "$active" || return 1
+        chat_fingerprint "$WORKER_DIR/process" || return 1
+    fi
     # Lifetime launch directories are append-only generation witnesses. Their
     # full set catches even a completed, no-commit run. No newest-mtime guess.
     for d in "$HOME_DIR/workers/"*; do
@@ -4685,6 +4802,8 @@ chat_binding() {
     local generation f v
     generation="$(chat_generation | sha_of)" || return 1
     {
+        printf '%s\000' "${CHAT_SESSION_ID:-default}" "$CHAT_DIR"
+        chat_fingerprint "$CHAT_DIR/selected-job" || return 1
         printf '%s\000' "$generation" "$PROJECT" "$ENGINE" "$MODEL" "$THINKING" "$MAX_CYCLES" "$MAX_MINUTES" "$BRANCH" "$AUTO_COMMIT" "$YOLO" "$EXTRA_GATES" "$ACCEPT_ARG" "$OBJECTIVE" "$SPEC_FILE" "$DONE_WHEN_GREEN" "$DO_UPDATE" "$ENGINE_EXPLICIT" "$ACCEPT_EXPLICIT" "${CHAT_LAUNCH_ARGS[@]+"${CHAT_LAUNCH_ARGS[@]}"}"
         # Exported RALPHIE_* options are inherited by worker_start, including
         # custom command, retry, timeout, gate and completion controls.
@@ -4700,19 +4819,50 @@ chat_binding() {
     } | sha_of
 }
 
+chat_request_target() {
+    # A historical conversation preference must not steer a different run.
+    type chat_job_load >/dev/null 2>&1 || return 0
+    chat_job_load || return 1
+    [ -n "$CHAT_SELECTED_JOB" ] || return 0
+    worker_observe "$CHAT_SELECTED_JOB" || return 1
+    [ "$WORKER_OBS_CURRENT" = 1 ] && [ "$WORKER_OBS_CONTROL" = 1 ] || {
+        chat_say 'Request refused: selected job is not the verified current worker.'; return 1;
+    }
+    return 0
+}
+
 chat_propose() {
     local action="$1" payload="$2" id binding generation LC_ALL=C
     chat_action_valid "$action" "$payload" || return 1
+    case "$action" in request|answer) chat_request_target || return 1;; esac
     generation="$(chat_generation | sha_of)" || { chat_say 'Unsafe worker identity; proposal refused.'; return 1; }
     if [ "$action" = stop ]; then
         [ ! -L "$HOME_DIR/lock/launch" ] && [ -f "$HOME_DIR/lock/launch" ] && [ "$(head -c 200 "$HOME_DIR/lock/launch")" = "$payload" ] || { chat_say 'Stop requires the current background launch ID from /status.'; return 1; }
+    fi
+    if [ "$action" = force ]; then
+        worker_owned "$payload" || { chat_say 'Force requires a verified current launch. Use /jobs.'; return 1; }
+        chat_say 'Force termination: TERM, then KILL after 2 seconds for verified worker descendants. Work may be lost; remote billing may continue.'
     fi
     id="p-$(rand_token)"
     chat_store proposal-id "$id" || return 1
     chat_store proposal "$(printf '%s\n%s' "$action" "$payload")" || return 1
     binding="$(chat_binding)" || return 1
     chat_store binding "$binding" || return 1
+    # Full approval text must remain readable in ordinary terminal scrollback.
+    CHAT_VIEWPORT=0; chat_screen_end
+    chat_show_proposal "$id" "$action" "$payload"
+}
+
+chat_show_proposal() {
+    local id="$1" action="$2" payload="$3"
+    CHAT_VIEWPORT=0; chat_screen_end
+    chat_say "Conversation ${CHAT_SESSION_ID:-default} (shared project)"
     chat_say "Proposal $id: $action: $payload"
+    case "$action" in request|answer)
+        chat_say "Request target: ${CHAT_SELECTED_JOB:-project-wide next-cycle channel; no selected job}.";; esac
+    if [ "$action" = force ]; then
+        chat_say "Force-stop sends TERM, then KILL to verified remaining processes. Unfinished work may not be saved."
+    fi
     if [ "$action" = start ]; then
         if [ -n "$SPEC_FILE" ]; then
             chat_say "Execution objective is the selected spec, NOT the proposal title: $SPEC_FILE"
@@ -4724,6 +4874,18 @@ chat_propose() {
         printf '  %q\n' "${CHAT_LAUNCH_ARGS[@]+"${CHAT_LAUNCH_ARGS[@]}"}" | chat_text
     fi
     chat_say "Nothing enacted. Type /apply $id to approve; /cancel discards it."
+}
+chat_pending_proposal() {
+    local saved id action payload
+    chat_paths || return 1
+    [ -f "$CHAT_DIR/proposal" ] && [ -f "$CHAT_DIR/proposal-id" ] || { chat_say 'No pending proposal.'; return 1; }
+    [ "$(file_bytes "$CHAT_DIR/proposal")" -le 8192 ] && [ "$(file_bytes "$CHAT_DIR/proposal-id")" -le 200 ] || return 1
+    saved="$(cat "$CHAT_DIR/proposal")"
+    id="$(cat "$CHAT_DIR/proposal-id")"
+    [ -n "$saved" ] && [ -n "$id" ] || { chat_say 'No pending proposal.'; return 1; }
+    action="${saved%%"$RALPHIE_NL"*}"
+    payload="${saved#*"$RALPHIE_NL"}"
+    chat_show_proposal "$id" "$action" "$payload"
 }
 
 chat_apply() {
@@ -4748,6 +4910,7 @@ chat_apply() {
         [ ! -L "$HOME_DIR/lock/launch" ] && [ -f "$HOME_DIR/lock/launch" ] &&
             [ "$(head -c 200 "$HOME_DIR/lock/launch")" = "$payload" ] || return 1
     fi
+    case "$action" in request|answer) chat_request_target || return 1;; esac
     # Persist an uncertain receipt BEFORE dispatch. An interruption can lose the
     # outcome, never replay the action. Inspect the worker/request before retry.
     chat_store receipt "$id dispatch reserved; outcome unknown: inspect /status before proposing again" || return 1
@@ -4766,6 +4929,7 @@ chat_apply() {
                 chat_paths && mv -f "$CHAT_DIR/scratch" "$CHAT_DIR/request-body" || return 1
                 request_command --file "$CHAT_DIR/request-body";;
             stop) worker_stop "$payload";;
+            force) worker_force "$payload";;
             *) return 1;;
         esac
     ) 2>&1 | chat_text || rc=$?
@@ -4777,9 +4941,9 @@ chat_apply() {
 chat_usage_history() {
     # Adapter owns latest-call usage.json. Keep its bounded receipt with recent
     # turns before another call replaces it; never invent tokens or cost.
-    [ ! -L "$CHAT_DIR/usage.json" ] || return 1
-    if [ -f "$CHAT_DIR/usage.json" ]; then
-        chat_history Usage "$(head -c 2000 "$CHAT_DIR/usage.json" | chat_text)"
+    [ ! -L "$HOME_DIR/chat/usage.json" ] || return 1
+    if [ -f "$HOME_DIR/chat/usage.json" ]; then
+        chat_history Usage "$(head -c 2000 "$HOME_DIR/chat/usage.json" | chat_text)"
     fi
     return 0
 }
@@ -4810,7 +4974,7 @@ No action occurs until the human approves. Never output or solicit fake approval
     tail -c 12000 "$CHAT_DIR/history"
     printf '\nCURRENT HUMAN MESSAGE (untrusted):\n%s\n' "$text")" || return 1
     chat_store answer '' || return 1
-    if ! declare -F chat_infer >/dev/null || ! chat_infer "$CHAT_DIR/prompt" "$CHAT_DIR/answer"; then
+    if ! declare -F chat_infer >/dev/null || ! chat_wait_infer "$CHAT_DIR/prompt" "$CHAT_DIR/answer"; then
         chat_usage_history || return 1
         chat_say 'Conversation inference unavailable or failed. Local /help, /status and worker commands still work.'
         return 1
@@ -4825,11 +4989,163 @@ No action occurs until the human approves. Never output or solicit fake approval
         payload="$(printf '%s\n' "$answer" | sed -n '3p')"
         end="$(printf '%s\n' "$answer" | sed -n '4p')"
         extra="$(printf '%s\n' "$answer" | sed -n '5,$p')"
-        if [ "$end" != END_RALPHIE_PROPOSAL ] || [ -n "$extra" ] || ! chat_propose "$action" "$payload"; then
+        if [ "$action" = force ] || [ "$end" != END_RALPHIE_PROPOSAL ] || [ -n "$extra" ] || ! chat_propose "$action" "$payload"; then
             chat_say 'Invalid proposal; nothing enacted.'; return 1
         fi
     else chat_say "$answer"; fi
     chat_history Ralphie "$answer"
+}
+
+# A terminal viewport is owned only by the interactive supervisor. Whole-screen
+# redraw avoids guessing wrapped rows or Unicode cell widths. It does not erase
+# terminal scrollback; unsupported terminals keep ordinary line-oriented output.
+chat_screen_start() {
+    CHAT_SCREEN=0; CHAT_VIEWPORT=0; CHAT_PROGRESS=0
+    [ -t 0 ] && [ -t 1 ] && [ -t 2 ] || return 0
+    case "${TERM:-}" in xterm*|screen*|tmux*|rxvt*)
+        CHAT_SCREEN=1; CHAT_VIEWPORT=1; CHAT_PROGRESS=1; printf '\033[?1049h\033[H\033[2J';;
+    esac
+    return 0
+}
+chat_screen_end() {
+    [ "${CHAT_SCREEN:-0}" != 1 ] || printf '\033[?1049l'
+    CHAT_SCREEN=0
+    return 0
+}
+chat_preview() {
+    local preview
+    # Slice characters in the operator locale, then sanitize for display only.
+    # Never feed this shortened form to history, proposals or inference.
+    preview="${1:0:120}"
+    preview="${preview//$RALPHIE_NL/ }"
+    printf 'You: %s' "$preview" | chat_text
+    [ "${#1}" -le 120 ] || printf ' ... [full text retained]'
+    printf '\n\n'
+}
+chat_screen_submit() {
+    [ "${CHAT_VIEWPORT:-0}" = 1 ] || return 0
+    if [ "${CHAT_SCREEN:-0}" != 1 ]; then CHAT_SCREEN=1; printf '\033[?1049h'; fi
+    printf '\033[H\033[2J'
+    printf 'Ralphie chat  |  /help  /history  /jobs\n\n'
+    chat_preview "$1"
+}
+# Selection belongs to CHAT_DIR, not the project execution lock. Reload on
+# every use so changing conversations cannot retain another session's target.
+chat_job_load() {
+    CHAT_SELECTED_JOB=''
+    chat_paths || return 1
+    if [ -e "$CHAT_DIR/selected-job" ] || [ -L "$CHAT_DIR/selected-job" ]; then
+        CHAT_SELECTED_JOB="$(worker_metadata "$CHAT_DIR/selected-job" 101)" || return 1
+        [ -n "$CHAT_SELECTED_JOB" ] || return 0
+        worker_paths "$CHAT_SELECTED_JOB" || { chat_say 'Selected job unavailable; use /select ID. No current-worker fallback.'; return 1; }
+    fi
+    return 0
+}
+
+chat_job_resolve() {
+    local requested="${1:-}"
+    chat_job_load || return 1
+    worker_select "${requested:-$CHAT_SELECTED_JOB}"
+}
+
+chat_job_context() {
+    local current='unavailable'
+    chat_job_load || return 1
+    if [ ! -L "$LOCK_FILE" ] && [ -d "$LOCK_FILE" ]; then
+        current="$(worker_metadata "$LOCK_FILE/launch" 101)" || current=unavailable
+    fi
+    chat_say "Selected job: ${CHAT_SELECTED_JOB:-none (defaults to current)}; current project launch: $current"
+}
+
+chat_job_select() {
+    [ -n "${1:-}" ] || { chat_say 'Use /select ID. Selection does not launch or stop work.'; return 1; }
+    worker_select "$1" || return 1
+    chat_store selected-job "$WORKER_SELECTED" || return 1
+    chat_job_context
+}
+
+chat_job_watch() {
+    chat_job_resolve "${1:-}" || return 1
+    local id="$WORKER_SELECTED"
+    chat_job_context || return 1
+    worker_watch "$id"
+}
+
+chat_job_stop() {
+    chat_job_resolve "${1:-}" || return 1
+    local id="$WORKER_SELECTED"
+    worker_observe "$id" || return 1
+    [ "$WORKER_OBS_CONTROL" = 1 ] && [ "$WORKER_OBS_CURRENT" = 1 ] || {
+        chat_say "Stop refused for $id: no verified current active worker. No different launch was selected."; return 1;
+    }
+    chat_propose stop "$id"
+}
+
+chat_help() {
+    chat_screen_end
+    cat <<'RALPHIE_CHAT_HELP'
+Ralphie chat
+
+  Discuss       Type a goal or question. No action runs without approval.
+  /paste        Compose multiple lines; /send submits, /cancel discards.
+
+Conversations (not isolated workspaces)
+  /sessions     List retained conversations (/resume without a name also lists)
+  /new NAME     Create and select an empty conversation; no worker action
+  /resume NAME  Select retained conversation (/switch NAME is an alias)
+
+Observe
+  /status       Project facts and current worker
+  /jobs         Retained worker launches
+  /watch [ID]   One bounded worker snapshot
+  /select ID    Select a retained job; never starts or stops work
+  /follow [ID]  Follow selected job (else current); /attach is an alias
+                q/Esc/Ctrl-C back; x or /stop proposes stop; ? help
+  /history      Retained conversation (full submitted text)
+
+Propose an action
+  /start GOAL   Start work (/run GOAL is an alias)
+  /start        Use the spec selected before chat
+  /request TEXT  Steer the next cycle
+  /stop [ID]    Graceful stop
+  /kill ID      Force-stop proposal (/nuke ID is an alias)
+
+Approve or leave
+  /apply ID     Apply the displayed, still-current proposal
+  /proposal     Show the pending proposal again (does not renew approval)
+  /cancel       Clear a proposal
+  /quit         Leave chat only (/exit is an alias)
+
+Editing: native arrow keys and Unicode editing remain available.
+On Bash 3.2 use /jobs for the agents view; Left keeps normal editing.
+The viewport shows the latest turn until a proposal or /history is displayed.
+Then plain scrollback is kept for approval review; input no longer compacts.
+Closing chat does not stop a worker. Remote billing may outlive cancellation.
+RALPHIE_CHAT_HELP
+}
+
+# Readline remains the editor. Multiline mode is explicit because Bash 3.2
+# cannot reliably recognize bracketed paste without replacing that editor.
+chat_read_input() {
+    local line='' combined='' separator=''
+    text=''
+    IFS= read -e -r -n 4097 -p 'You: ' text || return 1
+    [ "$text" = /paste ] || return 0
+    printf 'Multiline input: /send submits; /cancel discards. Limit 4096 bytes.\n'
+    while :; do
+        line=''
+        IFS= read -e -r -n 4097 -p '... ' line || return 1
+        case "$line" in
+            /send) text="$combined"; return 0;;
+            /cancel) text=''; return 0;;
+        esac
+        combined="$combined$separator$line"
+        separator="$RALPHIE_NL"
+        if ! chat_input_fits "$combined"; then
+            chat_say 'Input exceeds 4096 bytes; closing chat without applying it.'
+            return 1
+        fi
+    done
 }
 
 chat_input_fits() {
@@ -4844,40 +5160,87 @@ chat_input() {
     [ -n "${text//[[:space:]]/}" ] || return 0
     case "$text" in
         /quit|/exit) return 10;;
-        /help) chat_say '/start GOAL (/run GOAL alias), /start with a selected spec, /request TEXT, /stop [LAUNCH-ID] propose actions. /apply ID confirms. /cancel clears the proposal. /status reads facts. /watch [LAUNCH-ID] shows a worker snapshot. /history shows retained turns. /exit (/quit alias) exits only chat.';;
-        /history) chat_paths && { [ ! -f "$CHAT_DIR/history" ] || tail -c 12000 "$CHAT_DIR/history" | chat_text; };;
+        /help) chat_help;;
+        /sessions|/resume) chat_sessions;;
+        '/new '*) chat_session_select "${text#'/new '}" create;;
+        '/resume '*) chat_session_select "${text#'/resume '}" existing;;
+        '/switch '*) chat_session_select "${text#'/switch '}" existing;;
+        /proposal) chat_pending_proposal;;
+        /history) CHAT_VIEWPORT=0; chat_screen_end; chat_paths && { [ ! -f "$CHAT_DIR/history" ] || tail -c 12000 "$CHAT_DIR/history" | chat_text; };;
         /status) chat_status;;
-        /watch) worker_watch 2>&1 | chat_text;;
-        '/watch '*) worker_watch "${text#'/watch '}" 2>&1 | chat_text;;
+        /jobs) chat_job_context && worker_jobs;;
+        /select) chat_job_select;;
+        '/select '*) chat_job_select "${text#'/select '}";;
+        /attach|/follow|'/watch --follow') chat_attach;;
+        '/follow '*) chat_attach "${text#'/follow '}";;
+        '/watch --follow '*) chat_attach "${text#'/watch --follow '}";;
+        '/attach '*) chat_attach "${text#'/attach '}";;
+        '/kill '*) chat_propose force "${text#'/kill '}";;
+        '/nuke '*) chat_propose force "${text#'/nuke '}";;
+        /watch) chat_job_watch;;
+        '/watch '*) chat_job_watch "${text#'/watch '}";;
         '/apply '*) chat_apply "${text#'/apply '}";;
         /cancel) chat_store proposal ''; chat_say 'Proposal cleared.';;
         /start)
             if [ -n "$SPEC_FILE" ]; then chat_propose start "Run selected spec: $SPEC_FILE"
             else chat_say 'State the goal with /start GOAL. Nothing enacted.'; fi;;
         '/start '*) chat_propose start "${text#'/start '}";;
-        /stop)
-            [ ! -L "$HOME_DIR/lock" ] && [ -d "$HOME_DIR/lock" ] &&
-                [ ! -L "$HOME_DIR/lock/launch" ] && [ -f "$HOME_DIR/lock/launch" ] && [ -r "$HOME_DIR/lock/launch" ] || {
-                chat_say 'No safe current launch identity. Use /status.'; return 1;
-            }
-            chat_propose stop "$(head -c 200 "$HOME_DIR/lock/launch")";;
+        /stop) chat_job_stop;;
         '/run '*) chat_propose start "${text#'/run '}";;
         '/request '*) chat_propose request "${text#'/request '}";;
-        '/stop '*) chat_propose stop "${text#'/stop '}";;
+        '/stop '*) chat_job_stop "${text#'/stop '}";;
         /*) chat_say 'Unknown or incomplete command. Use /help.'; return 1;;
         '') return 0;;
         *) chat_turn "$text";;
     esac
 }
 
-chat_command() (
-    local text="" rc=0 CHAT_DIR="$HOME_DIR/chat"
+chat_command() ( chat_command_main "$@" )
+
+chat_session_cleanup() {
+    trap '' INT TERM HUP
+    chat_screen_end
+    [ -z "${CHAT_TTY_STATE:-}" ] || stty "$CHAT_TTY_STATE" < /dev/tty 2>/dev/null || true
+    if [ -n "${CHAT_INFER_PID:-}" ]; then
+        # Only our inference shell, never the independent worker or its group.
+        # The inference EXIT trap owns its adapter tree and temporary directory.
+        kill -TERM "$CHAT_INFER_PID" 2>/dev/null || true
+        wait "$CHAT_INFER_PID" 2>/dev/null || true
+        CHAT_INFER_PID=""
+    fi
+    chat_session_unlock "${CHAT_LOCK_PATH:-}" "${CHAT_LOCK_TOKEN:-}" 2>/dev/null || true
+    [ "${CHAT_ONESHOT:-1}" != 0 ] || chat_reconnect_hint
+}
+chat_wait_infer() {
+    local rc=0
+    chat_infer_main "$@" </dev/null &
+    CHAT_INFER_PID=$!
+    # Builtin wait is interruptible; a synchronous subshell wait is not.
+    wait "$CHAT_INFER_PID" || rc=$?
+    CHAT_INFER_PID=""
+    return "$rc"
+}
+chat_command_main() {
+    local text="" rc=0 session=default
+    if [ "${1:-}" = --session ]; then
+        [ "$#" -ge 2 ] || { err 'chat --session needs a conversation name.'; return 2; }
+        session="$2"; shift 2
+    fi
+    [ "${1:-}" != -- ] || shift
+    CHAT_DIR=""; CHAT_SESSION_ID=""; CHAT_LOCK_PATH=""; CHAT_LOCK_TOKEN=""; CHAT_SCREEN=0; CHAT_VIEWPORT=0; CHAT_PROGRESS=0; CHAT_INFER_PID=""
+    CHAT_ONESHOT=0; [ "$#" -eq 0 ] || CHAT_ONESHOT=1
     [ "$#" -gt 0 ] || { [ -t 0 ] && [ -t 1 ]; } || { err 'ralphie: interactive chat needs a terminal; use chat "MESSAGE" or run "OBJECTIVE".'; return 2; }
-    chat_safe_dir "$HOME_DIR" && chat_safe_dir "$CHAT_DIR" && chat_paths || { err 'ralphie: unsafe chat path; no files repaired.'; return 1; }
-    # Never steal/reap another supervisor's lock. An interrupted lock can be
-    # removed by the operator after checking that no chat remains active.
-    ( umask 077; mkdir "$CHAT_DIR/lock" ) 2>/dev/null || { err 'ralphie: chat is locked; close the other chat (or inspect a stale chat/lock).'; return 1; }
-    trap 'rmdir "$CHAT_DIR/lock" 2>/dev/null || true' EXIT
+    chat_safe_dir "$HOME_DIR" || { err 'ralphie: unsafe chat path; no files repaired.'; return 1; }
+    chat_safe_dir "$HOME_DIR/chat" || return 1
+    # One project-wide supervisor lock, even when history is named.
+    ( umask 077; mkdir "$HOME_DIR/chat/lock" ) 2>/dev/null || { err 'ralphie: chat is locked; inspect stale locks manually.'; return 1; }
+    CHAT_LOCK_PATH="$HOME_DIR/chat/lock"; CHAT_LOCK_TOKEN="$(rand_token)"
+    ( set -C; umask 077; printf '%s\n' "$CHAT_LOCK_TOKEN" > "$CHAT_LOCK_PATH/owner" ) || return 1
+    trap chat_session_cleanup EXIT
+    chat_session_select "$session" initial || return 1
+    CHAT_TTY_STATE=""
+    if [ -t 0 ] && [ -t 1 ]; then CHAT_TTY_STATE="$(stty -g < /dev/tty 2>/dev/null)" || CHAT_TTY_STATE=""; fi
+    trap chat_session_cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
@@ -4885,22 +5248,23 @@ chat_command() (
         [ -n "${*//[[:space:]]/}" ] || { err 'ralphie: chat MESSAGE must not be empty.'; return 2; }
         rc=0; chat_input "$*" || rc=$?; [ "$rc" -ne 10 ] || rc=0; return "$rc"
     fi
+    chat_screen_start
     chat_say 'What should this project achieve? /help lists local commands. Closing chat leaves the worker running.'
     if [ -s "$CHAT_DIR/history" ]; then
         chat_say 'Resumed retained conversation. /status shows local facts; /history shows retained turns.'
     fi
-    if [ -s "$CHAT_DIR/proposal" ]; then chat_store proposal '' || return 1; chat_say 'Previous proposal invalidated on reconnect. Discuss or propose it again.'; fi
     while :; do
         text=''
         # Bound characters while editing, then enforce bytes before dispatch.
         # A failed read (including partial EOF) must never submit a turn.
-        IFS= read -e -r -n 4097 -p 'You: ' text || break
+        chat_read_input || break
         if ! chat_input_fits "$text"; then chat_say 'Input exceeds 4096 bytes; closing chat without applying it.'; break; fi
+        chat_screen_submit "$text"
         rc=0; chat_input "$text" || rc=$?
         [ "$rc" -ne 10 ] || break
     done
     return 0
-)
+}
 
 # --- durable unsolicited requests ------------------------------------------
 # Fixed exclusive slots bound the active batch. Never prune evidence.
@@ -5847,38 +6211,227 @@ worker_watch() (
     worker_watch_snapshot "$@" 2>&1 | chat_text
 )
 
-worker_watch_snapshot() (
-    [ "$#" -le 1 ] || { err "watch accepts one launch id"; exit 1; }
-    worker_select "${1:-}" || exit 1
-    local phase=starting observed=starting pid token receipt owner_pid owner_token
+# One structured observation feeds jobs, watch and follow. Never parse rendered
+# text to decide lifecycle or control. Unsafe metadata is unknown, not live.
+worker_observe() {
+    local phase receipt='' data='' pid ready_run state_snapshot
+    worker_select "${1:-}" || return 1
+    WORKER_OBS_ID="$WORKER_SELECTED"; WORKER_OBS_STATE=starting/pending
+    WORKER_OBS_CURRENT=0; WORKER_OBS_CONTROL=0
+    WORKER_OBS_STATUS=''; WORKER_OBS_EXIT=''; WORKER_OBS_RUN=''; WORKER_OBS_CYCLE=''
     for phase in final ready claimed; do
-        if worker_regular "$WORKER_DIR/$phase"; then observed="$phase"; break; fi
-    done
-    receipt="$WORKER_DIR/$observed"
-    if [ "$observed" != final ]; then
-        if ! pid="$(worker_metadata "$WORKER_DIR/pid" 30)" ||
-           ! is_int "$pid" || [ "$pid" = 0 ] ||
-           ! { kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1; }; then
-            observed=interrupted
-        elif [ "$observed" != starting ]; then
-            if [ -L "$LOCK_FILE" ] || [ ! -d "$LOCK_FILE" ] ||
-               ! token="$(worker_metadata "$WORKER_DIR/token" 200)" || [ -z "$token" ] ||
-               ! owner_pid="$(worker_metadata "$LOCK_FILE/pid" 30)" ||
-               ! owner_token="$(worker_metadata "$LOCK_FILE/token" 200)" ||
-               [ "$owner_pid" != "$pid" ] || [ "$owner_token" != "$token" ]; then
-                observed=interrupted
-            fi
+        if [ -e "$WORKER_DIR/$phase" ] || [ -L "$WORKER_DIR/$phase" ]; then
+            data="$(worker_metadata "$WORKER_DIR/$phase" 4096)" || { WORKER_OBS_STATE=unknown; return 0; }
+            receipt="$phase"; break
         fi
-        if [ "$observed" != interrupted ] && [ -e "$WORKER_DIR/stop" ]; then observed=stopping-requested; fi
+    done
+    if [ ! -L "$LOCK_FILE" ] && [ -d "$LOCK_FILE" ] &&
+       [ "$(worker_metadata "$LOCK_FILE/launch" 101)" = "$WORKER_OBS_ID" ]; then WORKER_OBS_CURRENT=1; fi
+    if [ "$receipt" = final ]; then
+        WORKER_OBS_STATE=final
+        WORKER_OBS_STATUS="$(printf '%s' "$data" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+        WORKER_OBS_EXIT="$(printf '%s' "$data" | sed -n 's/.*"exit_code":"\([^"]*\)".*/\1/p')"
+        return 0
     fi
-    if worker_regular "$WORKER_DIR/final"; then observed=final; receipt="$WORKER_DIR/final"; fi
-    case "$observed" in starting|claimed) observed=starting/pending;; esac
-    printf 'launch %s: %s\n' "$WORKER_SELECTED" "$observed"
-    worker_regular "$receipt" && head -c 4096 "$receipt"
-    printf 'log: %s/output.log (first 1 MiB retained; excess console output discarded)\n' "$WORKER_DIR"
-    # Bounded snapshot, never a terminal read loop or an open-ended tail.
-    if worker_regular "$WORKER_DIR/output.log"; then tail -c 4000 "$WORKER_DIR/output.log"; fi
+    if ! pid="$(worker_metadata "$WORKER_DIR/pid" 30)" || ! is_int "$pid" || [ "$pid" -le 1 ] ||
+       ! { kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1; }; then
+        WORKER_OBS_STATE=interrupted; return 0
+    fi
+    if [ -n "$receipt" ]; then
+        if ! worker_owned "$WORKER_OBS_ID"; then WORKER_OBS_STATE=interrupted; return 0; fi
+        WORKER_OBS_CONTROL=1
+        [ "$receipt" != ready ] || WORKER_OBS_STATE=ready
+    fi
+    if [ -e "$WORKER_DIR/stop" ] || [ -L "$WORKER_DIR/stop" ]; then
+        if ! worker_metadata "$WORKER_DIR/stop" 101 >/dev/null; then WORKER_OBS_STATE=unknown; WORKER_OBS_CONTROL=0; return 0; fi
+        WORKER_OBS_STATE='stopping-requested'
+    fi
+    if [ "$receipt" = ready ]; then
+        ready_run="$(printf '%s' "$data" | sed -n 's/.*"run_id":"\([^"]*\)".*/\1/p')"
+        state_snapshot="$(worker_metadata "$STATE_FILE" 65536)" || state_snapshot=''
+        if [ -n "$ready_run" ] && [ "$(printf '%s\n' "$state_snapshot" | sed -n 's/^run_id=//p')" = "$ready_run" ] && worker_owned "$WORKER_OBS_ID"; then
+            WORKER_OBS_RUN="$ready_run"
+            WORKER_OBS_STATUS="$(printf '%s\n' "$state_snapshot" | sed -n 's/^status=//p')"
+            WORKER_OBS_CYCLE="$(printf '%s\n' "$state_snapshot" | sed -n 's/^cycle=//p')"
+        fi
+    fi
     return 0
+}
+
+worker_render() {
+    printf 'launch %s: %s\n' "$WORKER_OBS_ID" "$WORKER_OBS_STATE"
+    if [ "$WORKER_OBS_STATE" = final ]; then
+        printf '  final status=%s; exit=%s\n' "$WORKER_OBS_STATUS" "$WORKER_OBS_EXIT"
+    elif [ -n "$WORKER_OBS_RUN" ]; then
+        printf 'Current run: %s; status=%s; cycle=%s (live snapshot)\n' "$WORKER_OBS_RUN" "$WORKER_OBS_STATUS" "$WORKER_OBS_CYCLE"
+    else
+        printf 'Preparation receipts are historical, not current status.\n'
+    fi
+    [ "${1:-}" != summary ] || return 0
+    printf 'log: %s/output.log (first 1 MiB retained; excess console output discarded)\n' "$WORKER_DIR"
+    # Read at most the retained cap, even if an external writer enlarged the log.
+    if worker_regular "$WORKER_DIR/output.log"; then head -c 1048576 "$WORKER_DIR/output.log" | tail -c 4000; fi
+    return 0
+}
+
+worker_watch_snapshot() (
+    [ "$#" -le 2 ] || { err "watch accepts one launch id"; exit 1; }
+    worker_observe "${1:-}" || exit 1
+    worker_render "${2:-}"
+)
+
+# ps is a best-effort identity witness, not a kernel pid handle. Match UID,
+# start time and full command, plus the live launch/token lock before control.
+# Same-UID metadata tampering and the final check-to-signal race are not isolated.
+worker_process_identity() {
+    local pid="$1" info
+    is_int "$pid" && [ "$pid" -gt 1 ] || return 1
+    info="$(LC_ALL=C ps -ww -p "$pid" -o uid= -o lstart= -o args= 2>/dev/null)" || return 1
+    [ -n "$info" ] || return 1
+    printf '%s' "$info" | sha_of
+}
+
+worker_owned() {
+    local pid token launch owner saved actual
+    worker_select "$1" || return 1
+    [ ! -L "$LOCK_FILE" ] && [ -d "$LOCK_FILE" ] || return 1
+    pid="$(worker_metadata "$WORKER_DIR/pid" 30)" && is_int "$pid" && [ "$pid" -gt 1 ] || return 1
+    token="$(worker_metadata "$WORKER_DIR/token" 200)" && [ -n "$token" ] || return 1
+    owner="$(worker_metadata "$LOCK_FILE/pid" 30)" && [ "$owner" = "$pid" ] || return 1
+    owner="$(worker_metadata "$LOCK_FILE/token" 200)" && [ "$owner" = "$token" ] || return 1
+    launch="$(worker_metadata "$LOCK_FILE/launch" 101)" && [ "$launch" = "$1" ] || return 1
+    saved="$(worker_metadata "$WORKER_DIR/process" 200)" && [ -n "$saved" ] || return 1
+    actual="$(worker_process_identity "$pid")" && [ "$actual" = "$saved" ] || return 1
+    # A recorded arbitrary PID is never enough, even if other metadata matches.
+    actual="$(LC_ALL=C ps -ww -p "$pid" -o args= 2>/dev/null)" || return 1
+    case "$actual" in *"$SELF _worker $1"|*"$SELF _worker $1 "*) ;; *) return 1;; esac
+    WORKER_PID="$pid"; WORKER_TOKEN="$token"
+}
+
+worker_jobs() (
+    local entry id count=0 found=0
+    [ ! -L "$HOME_DIR" ] && [ -d "$HOME_DIR" ] && [ ! -L "$HOME_DIR/workers" ] || return 1
+    printf 'Jobs (retained launches; not all are running):\n'
+    for entry in "$HOME_DIR/workers/"*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        count=$((count+1)); [ "$count" -le 32 ] || { printf 'List truncated at 32 entries.\n'; break; }
+        id="${entry##*/}"; found=1
+        worker_watch_snapshot "$id" summary 2>&1 | chat_text
+    done
+    [ "$found" = 1 ] || printf 'No retained jobs. Use /start GOAL to propose one.\n'
+    printf '/select ID selects; /follow ID (/attach ID) follows bounded snapshots; /stop ID proposes a boundary stop; /kill ID proposes force termination.\n'
+)
+
+chat_attach() {
+    local id key='' previous='' snapshot='' detached=0 old_int read_rc command='' stopping=0 esc n esc_deadline
+    # A MESSAGE invocation must never read terminal input, even on a TTY.
+    [ "${CHAT_ONESHOT:-0}" = 0 ] || { chat_say '/attach is interactive-only; use /watch ID for one snapshot.'; return 1; }
+    [ -t 0 ] && [ -t 1 ] || { chat_say '/attach needs an interactive terminal; use /watch ID for one snapshot.'; return 1; }
+    chat_job_resolve "${1:-}" || return 1
+    id="$WORKER_SELECTED"
+    # Explicit follow also selects this immutable ID for later /watch and /stop.
+    chat_job_select "$id" || return 1
+    old_int="$(trap -p INT)"
+    trap 'detached=1' INT
+    chat_say "Attached to $id (read-only snapshots). q/Esc/Ctrl-C back; x or /stop proposes stop; ? help."
+    while [ "$detached" = 0 ]; do
+        worker_observe "$id" || break
+        snapshot="$(worker_render | chat_text)" || break
+        if [ "$snapshot" != "$previous" ]; then printf '%s\n' "$snapshot"; previous="$snapshot"; fi
+        case "$WORKER_OBS_STATE" in final|interrupted|unknown) break;; esac
+        key=''
+        read_rc=0; IFS= read -r -s -n 1 -t 1 key || read_rc=$?
+        # Bash returns >128 for timeout/signal, 1 for EOF. Do not spin on EOF.
+        if [ "$read_rc" -gt 0 ] && [ "$read_rc" -le 128 ]; then detached=1; continue; fi
+        [ "$detached" = 0 ] || continue
+        if [ "$key" = $'\033' ]; then
+            # Consume CSI/SS3 arrows as a unit. Never detach leaving [D for
+            # Readline. Bash 3.2 has integer timeouts, so bare Esc takes <=1s.
+            esc_deadline=$((SECONDS+2))
+            esc=''; IFS= read -r -s -n 1 -t 1 esc || true
+            case "$esc" in
+                '['|'O')
+                    n=0
+                    # Keep follow active after cutoff; never hand a suffix to
+                    # the composer. Bound a slow sequence as well as its bytes.
+                    while [ "$n" -lt 32 ] && [ "$SECONDS" -lt "$esc_deadline" ]; do
+                        esc=''; IFS= read -r -s -n 1 -t 1 esc || break
+                        n=$((n+1))
+                        case "$esc" in [a-zA-Z~]) break;; esac
+                    done;;
+                *) detached=1;;
+            esac
+            continue
+        fi
+        if [ -n "$command" ]; then
+            case "$key" in
+                '')
+                    [ "$read_rc" = 0 ] || continue
+                    case "$command" in /stop) stopping=1; detached=1;; /quit) detached=1;; *) chat_say 'Follow commands: /stop proposes stop; /quit returns.';; esac
+                    command='';;
+                $'\177'|$'\010') command="${command%?}";;
+                *) command="$command$key"
+                    if ! chat_input_fits "$command"; then chat_say 'Follow input exceeds 4096 bytes; discarded.'; command=''; detached=1; fi;;
+            esac
+            continue
+        fi
+        case "$key" in
+            q|Q) detached=1;;
+            x) stopping=1; detached=1;;
+            /) command=/;;
+            '?') chat_say 'Follow: q/Esc/Ctrl-C back; x or typed /stop then Enter proposes a graceful stop. /apply ID is required in chat. Output is the retained first 1 MiB, not a rolling tail.';;
+        esac
+    done
+    if [ -n "$old_int" ]; then eval "$old_int"; else trap - INT; fi
+    chat_say 'Detached. Worker was not stopped.'
+    [ "$stopping" = 0 ] || chat_job_stop "$id"
+    return 0
+}
+
+worker_force() (
+    local id="$1" pid token p child fingerprint i count=0 pending all='' line saved remaining=0
+    worker_owned "$id" || { err 'Force refused: no verified current worker identity.'; exit 1; }
+    pid="$WORKER_PID"; token="$WORKER_TOKEN"; pending="$pid"
+    # Snapshot a finite tree before TERM. Never signal a process group. Capture
+    # each descendant identity while its ancestry still leads to the owned root.
+    while [ -n "$pending" ]; do
+        p="${pending%% *}"; if [ "$pending" = "$p" ]; then pending=''; else pending="${pending#* }"; fi
+        count=$((count+1)); [ "$count" -le 256 ] || { err 'Force refused: process tree exceeds 256 entries.'; exit 1; }
+        fingerprint="$(worker_process_identity "$p")" || continue
+        all="$p $fingerprint$RALPHIE_NL$all"
+        for child in $(child_pids_of "$p"); do pending="${pending:+$pending }$child"; done
+    done
+    worker_owned "$id" && [ "$WORKER_PID" = "$pid" ] && [ "$WORKER_TOKEN" = "$token" ] || exit 1
+    # After TERM the root can exit and remove its lock. A replacement lock or
+    # changed retained token revokes the remaining signals. Orphans retain their
+    # pre-TERM identity witness. This is best effort, not remote cancellation.
+    for i in TERM KILL; do
+        while IFS=' ' read -r p saved; do
+            [ -n "$p" ] || continue
+            [ "$(worker_metadata "$WORKER_DIR/token" 200)" = "$token" ] || exit 1
+            if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+                [ ! -L "$LOCK_FILE" ] && [ -d "$LOCK_FILE" ] &&
+                    [ "$(worker_metadata "$LOCK_FILE/token" 200)" = "$token" ] &&
+                    [ "$(worker_metadata "$LOCK_FILE/pid" 30)" = "$pid" ] &&
+                    [ "$(worker_metadata "$LOCK_FILE/launch" 101)" = "$id" ] || exit 1
+            fi
+            fingerprint="$(worker_process_identity "$p")" || continue
+            [ "$fingerprint" = "$saved" ] || continue
+            kill "-$i" "$p" 2>/dev/null || true
+        done <<EOF_WORKER_FORCE
+$all
+EOF_WORKER_FORCE
+        [ "$i" != TERM ] || sleep 2
+    done
+    while IFS=' ' read -r p saved; do
+        [ -n "$p" ] || continue
+        fingerprint="$(worker_process_identity "$p")" || continue
+        [ "$fingerprint" != "$saved" ] || remaining=$((remaining+1))
+    done <<EOF_WORKER_OBSERVE
+$all
+EOF_WORKER_OBSERVE
+    printf 'launch %s: force signals sent; %s recorded processes still observable. Inspect /jobs. Remote calls/billing may continue.\n' "$id" "$remaining"
+    [ "$remaining" = 0 ]
 )
 
 worker_stop() (
@@ -5909,7 +6462,9 @@ worker_start() (
 # The reader lives in the detached launch group, ignores HUP, and exits at EOF.
 worker_capture() {
     worker_regular "$1/output.log" || return 1
-    head -c 1048576 > "$1/output.log" || return 1
+    # Byte-sized dd writes promptly even for a short partial line. The extra
+    # syscalls are bounded to 1 MiB; after that cat drains at native throughput.
+    dd bs=1 count=1048576 2>/dev/null > "$1/output.log" || return 1
     cat > /dev/null
 }
 
@@ -6439,7 +6994,7 @@ main() {
         version|help) run_simple_command; exit $?;;
     esac
     project_bind "$PROJECT"
-    if [ "$CMD" = chat ]; then chat_command "${REST[@]+"${REST[@]}"}"; exit $?; fi
+    if [ "$CMD" = chat ]; then chat_command_main "${REST[@]+"${REST[@]}"}"; exit $?; fi
     if [ "$CMD" = discover ]; then cmd_discover; exit $?; fi
     if [ "$CMD" = watch ]; then worker_watch "${REST[@]+"${REST[@]}"}"; exit $?; fi
     if [ "$CMD" = stop ] && { [ "${#REST[@]}" -gt 0 ] || worker_regular "$LOCK_FILE/launch"; }; then
@@ -6457,6 +7012,7 @@ main() {
         if [ -n "$WORKER_ID" ]; then
             ( set -C; printf '%s\n' "$WORKER_ID" > "$LOCK_FILE/launch" ) || exit 1
             ( set -C; printf '%s\n' "$LOCK_TOKEN" > "$WORKER_DIR/token" ) || exit 1
+            ( set -C; worker_process_identity "$$" > "$WORKER_DIR/process" ) || exit 1
         fi
         # Only a stop that predates ownership is stale. Startup stops survive.
         if [ -f "$STOP_FILE" ] && [ ! -L "$STOP_FILE" ]; then

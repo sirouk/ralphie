@@ -165,6 +165,47 @@ evaluate model output or rewrite live objectives, gates or state. Requests belon
 to the next-cycle channel; presented is not completed. Start and stop receipts
 must reflect observed worker identity and actual lifecycle state.
 
+The compact terminal viewport is a preview, never an authorization surface.
+Leave it before full authoritative proposal output and keep subsequent output in
+normal scrollback. `/proposal` redisplays the same pending proposal without
+renewing its ID, settings or generation. Keep grouped help, waiting indication,
+multiline input and native Unicode editing independent of worker execution.
+Bash 3.2 lacks the readline state needed for safe empty-left navigation; preserve
+native editing and document `/jobs` as the fallback, not an implemented shortcut.
+No mandatory terminal UI dependency is allowed.
+
+Named conversations restore bounded discussion and advisory job selection, never
+engine execution, a workspace or historical configuration. Preserve default
+history at `.ralphie/chat`; named data lives at `.ralphie/conversations/NAME`.
+Keep one project-wide chat lock and one independent worker lock. Refuse unsafe
+names/paths and capacity beyond 32 conversations including default; never prune
+history automatically. `/new NAME` creates/selects; `/resume NAME` and
+`/switch NAME` select existing conversations. `chat --session NAME [MESSAGE]`
+reconnects explicitly; `chat -- "--session"` sends literal option-looking prose.
+Selection is cross-conversation navigation, not job ownership. New starts use
+current invocation settings.
+Switching/reconnecting invalidates pending authority; bind proposals to the
+conversation and selected target as well as existing settings/generation inputs.
+Keep next-cycle requests project-wide and refuse conflicting historical targets.
+
+`/jobs` lists retained launches, not just live processes. `/select ID` stores an
+advisory target. `/follow`, `/attach` and `/watch --follow` share a fixed-target
+bounded snapshot loop; explicit IDs also select the job. Missing saved selections
+never fall back to the current worker. With no selection, observation and `/stop`
+may use the current worker, but the stop proposal displays the exact target.
+q, Esc and Ctrl-C detach without stopping work; final/interrupted/unknown jobs
+show a snapshot and return. x or typed `/stop` plus Enter leaves follow and shows
+a full safe-stop proposal for its fixed ID, never a signal or stop marker;
+`/apply ID` remains necessary. Ordinary composer x stays text. Preserve terminal
+cleanup and consume escape sequences without leaking suffixes into chat.
+`/watch` without `--follow` remains one-shot. A safe `/stop` remains
+a boundary request. `/kill ID` and `/nuke ID` are explicit local force proposals
+requiring `/apply ID`; never infer force authorization from model output. Bind
+force to the current token/lock and recorded process identity, refuse missing or
+changed witnesses, and signal only the finite verified process snapshot. Never
+promise force saves work, stops remote billing, or eliminates same-user tampering
+and check-to-signal PID races. Retain interruption evidence for recovery.
+
 Preserve original launch options and all gate/acceptance/ownership checks.
 `--spec FILE chat` keeps the full exact spec authoritative, not the proposal title.
 Keep worker console retention honest: first 1 MiB, then drain excess; watch is a
@@ -177,7 +218,9 @@ owned-worker frontend, not a generic no-tools sandbox claim. Unsupported
 providers fail without fallback. Selected custom inference requires the explicit
 trusted `RALPHIE_CHAT_ADAPTER` executable, not merely a custom worker command.
 Keep chat accounting and cleanup separate from worker totals and children. Usage
-retains nine recent receipts, not a lifetime total. Enforce 4096-byte human input,
+retains nine recent project-chat receipts shared across conversations, not
+per-conversation or lifetime totals. Prompt, answer, history and inference scratch
+follow the selected conversation. Enforce 4096-byte human input,
 32 KiB inference input, 8 KiB answers and a 90-second default (maximum 300-second)
 inference allowance. Local cancellation cannot guarantee remote cancellation or
 stop billing. No tmux dependency, OS-service, controlling-terminal or host logout

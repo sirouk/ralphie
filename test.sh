@@ -13,6 +13,19 @@
 
 set -uo pipefail
 
+# Tests own their configuration. A gate inherits RALPHIE_PROJECT from its
+# supervisor; leaking it into fixture CLIs redirects even `stop` to the live
+# worker. Clear runtime knobs before any fixture runs, not in the product
+# (where explicit operator settings must still be honoured). Keep the two
+# documented test-only fuzz controls.
+for _ralphie_env in ${!RALPHIE_@}; do
+    case "$_ralphie_env" in
+        RALPHIE_FUZZ_SEEDS|RALPHIE_FUZZ_CYCLES) ;;
+        *) unset "$_ralphie_env" ;;
+    esac
+done
+unset _ralphie_env
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RALPHIE="$HERE/ralphie.sh"
 TMPROOT="${TMPDIR:-/tmp}/ralphie-tests.$$"
@@ -256,6 +269,154 @@ printf '\n'
 
 
 
+
+
+if want "chat-selected-authority"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      CHAT_DIR="$HOME_DIR/chat"; CHAT_SESSION_ID=default; CHAT_LAUNCH_ARGS=()
+      mkdir -p "$CHAT_DIR" "$HOME_DIR/workers/old" "$HOME_DIR/workers/current" "$LOCK_FILE"
+      printf 'current\n' > "$LOCK_FILE/launch"
+      request_command() { printf 'dispatched\n' >> "$HOME_DIR/dispatches"; }
+      # Mock identity only; real selection storage, binding, propose/apply run.
+      worker_observe() { worker_select "$1" || return 1; WORKER_OBS_CURRENT="$verified"; WORKER_OBS_CONTROL="$verified"; }
+      verified=1
+      chat_job_select current >/dev/null
+      chat_propose request first >/dev/null; check_ok 'selected current proposes request' "$?"
+      id="$(cat "$CHAT_DIR/proposal-id")"; before="$(chat_binding)"
+      chat_job_select old >/dev/null
+      after="$(chat_binding)"; [ "$before" != "$after" ]; check_ok 'selected job changes proposal binding' "$?"
+      chat_apply "$id" >/dev/null; check_fails 'selection switch rejects old approval' "$?"
+      verified=0
+      chat_propose request historical >/dev/null; check_fails 'historical selection refuses propose' "$?"
+      verified=1; chat_job_select current >/dev/null
+      chat_propose answer reply >/dev/null; check_ok 'selected current proposes answer' "$?"
+      id="$(cat "$CHAT_DIR/proposal-id")"
+      verified=0
+      chat_apply "$id" >/dev/null; check_fails 'apply rechecks current target ownership' "$?"
+      [ ! -e "$HOME_DIR/dispatches" ]; check_ok 'refused targets never dispatch' "$?"
+      verified=1
+      chat_apply "$id" >/dev/null; check_ok 'verified selected answer applies' "$?"
+      check 'selected answer dispatch once' 1 "$(wc -l < "$HOME_DIR/dispatches" | tr -d ' ')"
+      chat_propose request malformed >/dev/null; id="$(cat "$CHAT_DIR/proposal-id")"
+      printf '../bad\n' > "$CHAT_DIR/selected-job"
+      chat_propose request malformed >/dev/null; check_fails 'malformed selection refuses propose' "$?"
+      # Match binding deliberately to isolate apply guard from binding guard.
+      chat_store binding "$(chat_binding)"
+      chat_apply "$id" >/dev/null; check_fails 'malformed selection refuses apply' "$?"
+      rm "$CHAT_DIR/selected-job"
+      chat_propose request compatible >/dev/null; check_ok 'absent selection preserves request proposal' "$?"
+      id="$(cat "$CHAT_DIR/proposal-id")"; chat_apply "$id" >/dev/null
+      check_ok 'absent selection preserves request apply' "$?"
+      check 'only approved requests dispatch' 2 "$(wc -l < "$HOME_DIR/dispatches" | tr -d ' ')"
+      true ) || no 'selected authority group completed'
+fi
+
+if want "chat-job-selection"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      CHAT_DIR="$HOME_DIR/chat"; mkdir -p "$CHAT_DIR" "$HOME_DIR/workers/old" "$HOME_DIR/workers/new" "$LOCK_FILE"
+      printf 'new\n' > "$LOCK_FILE/launch"
+      printf '{"status":"stopped","exit_code":"0"}\n' > "$HOME_DIR/workers/old/final"
+      chat_job_select old >/dev/null; check_ok "selection succeeds" $?
+      check "selection saved per conversation" old "$(cat "$CHAT_DIR/selected-job")"
+      chat_job_resolve; check "saved selection beats current" old "$WORKER_SELECTED"
+      out="$(chat_job_watch)"; check_contains "watch selected final" 'launch old: final' "$out"
+      check_contains "watch labels current separately" 'current project launch: new' "$out"
+      chat_job_stop >/dev/null 2>&1; check_fails "historical selection cannot stop current" $?
+      [ ! -e "$HOME_DIR/workers/new/stop" ]; check_ok "selection and refusal do not stop" $?
+      worker_observe old; check "structured final status" stopped "$WORKER_OBS_STATUS"
+      check "structured lifecycle final" final "$WORKER_OBS_STATE"
+      printf '../escape\n' > "$CHAT_DIR/selected-job"
+      chat_job_resolve >/dev/null 2>&1; check_fails "invalid persisted selection refuses" $?
+      printf 'missing\n' > "$CHAT_DIR/selected-job"
+      chat_job_resolve >/dev/null 2>&1; check_fails "missing selected never defaults" $?
+      rm "$CHAT_DIR/selected-job"; mkfifo "$CHAT_DIR/selected-job"
+      chat_job_resolve >/dev/null 2>&1; check_fails "FIFO selection refuses without read" $?
+      rm "$CHAT_DIR/selected-job"; printf 'old\n' > "$CHAT_DIR/selected-job"
+      rm "$HOME_DIR/workers/old/final"; mkfifo "$HOME_DIR/workers/old/final"
+      worker_observe old; check "FIFO receipt is unknown" unknown "$WORKER_OBS_STATE"
+      CHAT_ONESHOT=1
+      chat_attach old >/dev/null 2>&1; check_fails "one-shot follow cannot read" $?
+      mkdir "$HOME_DIR/other-chat"; CHAT_DIR="$HOME_DIR/other-chat"
+      chat_job_resolve; check "new conversation does not inherit selection" new "$WORKER_SELECTED"
+      true ) || no "chat-job-selection group completed"
+fi
+
+if want "chat-signal-ownership"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      CHAT_DIR="$HOME_DIR/chat"
+      mkdir -p "$CHAT_DIR"
+      chat_infer_main() { printf '%s' "$1" > "$2"; return 7; }
+      rc=0; chat_wait_infer 'exact input' "$CHAT_DIR/answer" || rc=$?
+      check "async inference preserves exit status" 7 "$rc"
+      check "async inference preserves exact arguments" 'exact input' "$(cat "$CHAT_DIR/answer")"
+      check "completed inference clears owned PID" '' "$CHAT_INFER_PID"
+      chat_infer_main() { printf '%s' 'success' > "$2"; return 0; }
+      rc=0; chat_wait_infer request "$CHAT_DIR/answer" || rc=$?
+      check "async inference preserves success" 0 "$rc"
+      chat_command_main() { CHAT_SCREEN=1; return 7; }
+      CHAT_SCREEN=0
+      rc=0; chat_command test || rc=$?
+      check "library chat wrapper preserves status" 7 "$rc"
+      check "library chat wrapper isolates terminal state" 0 "$CHAT_SCREEN"
+      true ) || no "chat-signal-ownership group completed"
+fi
+
+if want "chat-terminal-ux"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      help="$(chat_help)"
+      check_contains "help groups observation" 'Observe' "$help"
+      check_contains "help explains approval" '/apply ID' "$help"
+      check_contains "help documents multiline" '/paste' "$help"
+      check_contains "help documents Bash3.2 fallback" 'On Bash 3.2 use /jobs' "$help"
+      longest="$(printf '%s\n' "$help" | awk 'length>n {n=length} END {print n}')"
+      [ "$longest" -le 90 ]; check_ok "help avoids giant lines" $?
+      text=''
+      chat_read_input <<'CHAT_INPUT_EOF'
+/paste
+
+first
+
+last
+
+/send
+CHAT_INPUT_EOF
+      expected="${RALPHIE_NL}first${RALPHIE_NL}${RALPHIE_NL}last${RALPHIE_NL}"
+      check "multiline retains leading interior trailing blank lines" "$expected" "$text"
+      chat_read_input <<'CHAT_CANCEL_EOF'
+/paste
+not sent
+/cancel
+CHAT_CANCEL_EOF
+      check "multiline cancel submits nothing" '' "$text"
+      chat_read_input <<'CHAT_PARTIAL_EOF'
+/paste
+not sent
+CHAT_PARTIAL_EOF
+      check_fails "multiline EOF does not submit" $?
+      raw="$(printf '%0140d' 0)"
+      preview="$(chat_preview "$raw")"
+      check_contains "long input marked compact" '[full text retained]' "$preview"
+      check "preview does not mutate input" 140 "${#raw}"
+      preview="$(chat_preview "$(printf 'hi\033[31m')")"
+      check_contains "preview escapes terminal controls" '<U+001B>' "$preview"
+      chat_safe_dir "$HOME_DIR"
+      CHAT_DIR="$HOME_DIR/chat"; chat_safe_dir "$CHAT_DIR"
+      CHAT_LAUNCH_ARGS=()
+      chat_propose request 'exact request'; check_ok "request proposed for redisplay" $?
+      before_id="$(cat "$CHAT_DIR/proposal-id")"; before_binding="$(cat "$CHAT_DIR/binding")"
+      shown="$(chat_pending_proposal)"
+      check_contains "pending proposal preserves payload" 'request: exact request' "$shown"
+      check "redisplay retains ID" "$before_id" "$(cat "$CHAT_DIR/proposal-id")"
+      check "redisplay retains binding" "$before_binding" "$(cat "$CHAT_DIR/binding")"
+      CHAT_SCREEN=0
+      check "plain output gets no screen controls" '' "$(chat_screen_submit hello)"
+      true
+    ) || no "chat-terminal-ux group completed"
+fi
 
 if want "acceptance-durability"; then
     d="$(new_project)"
@@ -4294,6 +4455,26 @@ if want "dangling-gate-link"; then
                      || ok "a broken gate symlink is not written through"
 fi
 
+if want "harness-environment"; then
+    # Run real CLI assertions with a foreign supervisor's exported settings.
+    # The foreign ledger must remain byte-for-byte intact, with no stop marker
+    # or other new paths. This also catches a regression before a live gate can
+    # redirect its fixture commands into the repository running the suite.
+    foreign="$TMPROOT/foreign-supervisor"
+    mkdir -p "$foreign/.ralphie"
+    printf 'operator objective\n' > "$foreign/.ralphie/OBJECTIVE.md"
+    printf 'status=running\ncycle=99\n' > "$foreign/.ralphie/state"
+    cp -R "$foreign" "$TMPROOT/foreign-before"
+    env RALPHIE_PROJECT="$foreign" RALPHIE_LIB=1 RALPHIE_QUIET=1 \
+        RALPHIE_ENGINE_CMD="$foreign/must-not-run" RALPHIE_ENGINE_TIMEOUT=1 \
+        "$HERE/test.sh" cli-report > "$TMPROOT/environment.out" 2>&1
+    rc=$?
+    check_ok "inherited supervisor settings do not alter CLI tests" "$rc"
+    check_contains "isolated nested suite proves its assertions" "PASS   " "$(cat "$TMPROOT/environment.out")"
+    diff -r "$TMPROOT/foreign-before" "$foreign" > "$TMPROOT/environment.diff" 2>&1
+    check_ok "fixture commands leave foreign supervisor untouched" "$?"
+fi
+
 if want "harness-honesty"; then
     # The harness must never report a green it cannot prove. Measured: the
     # tally files went missing part-way through a run and the summary printed
@@ -6547,6 +6728,133 @@ if want "worker-admission-metadata"; then
     done
 fi
 
+if want "chat-attach-contract"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      # Only the terminal predicate is stubbed here. PTY receipts separately
+      # prove actual terminal input remains unread in one-turn invocations.
+      [() { if builtin [ "$#" -eq 3 ] && builtin [ "$1" = -t ]; then return 0; fi; builtin [ "$@"; }
+      chat_say() { printf '%s\n' "$*"; }
+      CHAT_DIR="$HOME_DIR/chat"; mkdir -p "$CHAT_DIR"
+      CHAT_ONESHOT=1
+      out="$(chat_attach 2>&1)"; rc=$?
+      check_fails "one-turn bare attach refuses before positional argument read" "$rc"
+      check_contains "one-turn attach recommends snapshot" '/watch ID' "$out"
+      check_lacks "one-turn bare attach has no nounset abort" 'unbound variable' "$out"
+      CHAT_ONESHOT=0
+      out="$(chat_attach 2>&1)"; rc=$?
+      check_fails "bare attach with no current worker fails honestly" "$rc"
+      check_contains "no current attach names missing metadata" 'metadata unavailable' "$out"
+      mkdir -p "$HOME_DIR/workers/job" "$HOME_DIR/workers/newer" "$LOCK_FILE"
+      printf job > "$LOCK_FILE/launch"
+      worker_observe() { worker_select "$1" || return 1; WORKER_OBS_ID="$1"; WORKER_OBS_STATE=ready; }
+      worker_render() { printf 'snapshot %s\n' "$WORKER_OBS_ID"; }
+      # Deterministic EOF regression: do not let a broken loop hang the suite.
+      read() { key=''; reads=$((reads+1)); if builtin [ "$reads" -gt 1 ]; then key=q; fi; return 1; }
+      reads=0
+      chat_attach > "$d/attach-output" 2>&1; rc=$?
+      check "default attach returns safely" 0 "$rc"
+      check "EOF detaches after one read" 1 "$reads"
+      out="$(cat "$d/attach-output")"
+      check_contains "default attach binds lock launch not newest" 'Attached to job' "$out"
+      check_contains "default watch uses resolved launch" 'snapshot job' "$out"
+      check_contains "EOF tells operator worker was not stopped" 'Worker was not stopped' "$out"
+      out="$(chat_attach unknown 2>&1)"; rc=$?
+      check_fails "unknown attach refuses" "$rc"
+      check_contains "unknown attach reports missing launch" 'invalid or missing worker launch' "$out"
+      # A timeout must refresh again; only a following EOF detaches.
+      read() { key=''; reads=$((reads+1)); if builtin [ "$reads" -eq 1 ]; then return 142; fi; if builtin [ "$reads" -gt 2 ]; then key=q; fi; return 1; }
+      reads=0; chat_attach job >/dev/null 2>&1
+      check "timeout is not mistaken for EOF" 2 "$reads"
+      # Slow CSI parameters cannot monopolize input for 32 per-byte waits.
+      read() {
+          reads=$((reads+1))
+          case "$reads" in
+              1) key=$'\033';;
+              2) esc='[';;
+              3) esc='1'; SECONDS=$((SECONDS+3));;
+              *) key=q; esc=q;;
+          esac
+          return 0
+      }
+      reads=0; chat_attach job >/dev/null 2>&1
+      check "slow CSI total deadline returns to follow controls" 4 "$reads"
+      out="$(chat_help)"
+      check_contains "help advertises optional attach ID" '/attach is an alias' "$out"
+      check_contains "help names current-worker default" 'else current' "$out"
+      true ) || no "attach input contract group completed" aborted
+    d="$(new_project)"
+    ( load_lib "$d"
+      # Session context, not inherited environment, decides one-turn authority.
+      chat_input() { printf 'oneshot=%s\n' "$CHAT_ONESHOT"; }
+      CHAT_ONESHOT=0
+      out="$(chat_command_main '/attach job')"; rc=$?
+      check "one-turn context setup succeeds" 0 "$rc"
+      check_contains "one-turn context overrides inherited interactive flag" 'oneshot=1' "$out"
+      true ) || no "attach session context group completed" aborted
+fi
+
+# ----------------------------------------------- worker visibility/control --
+if want "worker-control"; then
+    d="$(new_project)"
+    ( load_lib "$d"
+      mkdir -p "$HOME_DIR/workers/job" "$LOCK_FILE"
+      # Docker can exec this test shell as PID 1. Production rightly refuses
+      # PID 1; use a real child for the live-display fixture on every platform.
+      sleep 60 & fixture_pid=$!
+      trap 'kill "$fixture_pid" 2>/dev/null; wait "$fixture_pid" 2>/dev/null' EXIT
+      check "live display fixture is not PID 1" 0 "$([ "$fixture_pid" -gt 1 ]; echo $?)"
+      printf '%s\n' "$fixture_pid" > "$HOME_DIR/workers/job/pid"
+      printf token > "$HOME_DIR/workers/job/token"
+      printf fake > "$HOME_DIR/workers/job/process"
+      printf '%s\n' "$fixture_pid" > "$LOCK_FILE/pid"
+      printf token > "$LOCK_FILE/token"
+      printf job > "$LOCK_FILE/launch"
+      printf '{"run_id":"new","status":"error"}\n' > "$HOME_DIR/workers/job/ready"
+      printf 'run_id=new\nstatus=acting\ncycle=2\n' > "$STATE_FILE"
+      : > "$HOME_DIR/workers/job/output.log"
+      worker_owned job >/dev/null 2>&1
+      check_fails "arbitrary recorded pid cannot authorize force" $?
+      # Narrow stub isolates current-state display; production identity is
+      # separately exercised above and in the detached local process fixture.
+      worker_owned() { worker_select "$1"; }
+      # Even an identity stub must not bypass the production PID 1 refusal.
+      printf '1\n' > "$HOME_DIR/workers/job/pid"
+      worker_observe job
+      check "PID 1 receipt stays interrupted" interrupted "$WORKER_OBS_STATE"
+      check "PID 1 receipt has no live status" '' "$WORKER_OBS_STATUS"
+      check "PID 1 receipt cannot authorize control" 0 "$WORKER_OBS_CONTROL"
+      printf '%s\n' "$fixture_pid" > "$HOME_DIR/workers/job/pid"
+      out="$(worker_watch job)"
+      check_contains "ready error is not displayed as live status" 'status=acting' "$out"
+      case "$out" in *'"status":"error"'*) no "stale ready error hidden" "$out";; *) ok "stale ready error hidden";; esac
+      printf 'run_id=other\nstatus=other-worker\ncycle=9\n' > "$STATE_FILE"
+      out="$(worker_watch job)"
+      case "$out" in *other-worker*) no "foreign run state hidden" "$out";; *) ok "foreign run state hidden";; esac
+      rm "$STATE_FILE"; mkfifo "$STATE_FILE"
+      out="$(worker_watch job)"
+      check_contains "FIFO state never opened" 'launch job' "$out"
+      out="$(worker_jobs)"
+      check_contains "jobs has readable launch" 'launch job' "$out"
+      check_contains "jobs offers attach" '/attach ID' "$out"
+      chat_attach job </dev/null >/dev/null 2>&1
+      check_fails "attach refuses one-turn nonterminal" $?
+      true ) || no "worker control group completed" aborted
+    d="$(new_project)"
+    ( load_lib "$d"
+      mkdir -p "$HOME_DIR/workers/stream"
+      : > "$HOME_DIR/workers/stream/output.log"
+      mkfifo "$d/stream.pipe"
+      worker_capture "$HOME_DIR/workers/stream" < "$d/stream.pipe" & reader=$!
+      # Producer holds the pipe open after a tiny partial line. The test must
+      # observe it BEFORE EOF, not confuse final output with prompt flushing.
+      ( printf tiny; sleep 2 ) > "$d/stream.pipe" & producer=$!
+      sleep 1
+      check "small partial output promptly retained" tiny "$(cat "$HOME_DIR/workers/stream/output.log")"
+      wait "$producer"; wait "$reader"
+      true ) || no "worker capture control group completed" aborted
+fi
+
 # ----------------------------------------------- worker resource bounds --
 if want "worker-bounds"; then
     d="$(new_project)"
@@ -6758,7 +7066,7 @@ if want chat-spec-input; then
         true ) || no 'chat-spec parser group completed' 'subshell aborted'
     ( load_lib "$d"
         cd "$spec_cwd"
-        chat_infer() { printf 'Discussion only; no action.\n' > "$2"; }
+        chat_infer_main() { printf 'Discussion only; no action.\n' > "$2"; }
         main --project "$d" --engine custom --spec 'spec file.md' chat 'plan this spec'
     ) > "$spec_cwd/planning-output" 2>&1
     check_ok 'chat-spec one-shot planning succeeds' "$?"
@@ -6802,6 +7110,80 @@ if want chat-spec-input; then
     check 'chat-spec control byte rejected' 1 "$rc"
 fi
 
+# Exercise the real background wait path, with only its inference entry mocked.
+if want chat-async-protocol; then
+    d="$(new_project)"
+    ( load_lib "$d"
+        CHAT_DIR="$HOME_DIR/chat"; mkdir "$CHAT_DIR"
+        CHAT_LAUNCH_ARGS=(); ENGINE=custom
+        printf 'unchanged' > "$HOME_DIR/requested"
+        worker_start() { printf 'start\n' >> "$HOME_DIR/dispatched"; }
+        worker_stop() { printf 'stop\n' >> "$HOME_DIR/dispatched"; }
+        worker_force_stop() { printf 'force\n' >> "$HOME_DIR/dispatched"; }
+        request_command() {
+            printf 'request\n' >> "$HOME_DIR/dispatched"
+            [ "$1" = --file ] && cat "$2" > "$HOME_DIR/requested"
+        }
+        chat_infer_main() {
+            printf '%s\n' "$BASH_SUBSHELL" > "$HOME_DIR/infer-subshell"
+            printf '%s\n' "$1" > "$HOME_DIR/infer-prompt"
+            printf '%s\n' "$reply" > "$2"
+        }
+        chat_propose request 'old proposal' >/dev/null
+        oldid="$(cat "$CHAT_DIR/proposal-id")"
+        reply='Only discussing.'
+        caller_subshell=$BASH_SUBSHELL
+        chat_input yes >/dev/null; check_ok 'async discussion succeeds' "$?"
+        check 'async ordinary discussion proposal empty' '' "$(cat "$CHAT_DIR/proposal")"
+        check 'async discussion remains literal history' 'Ralphie: Only discussing.' "$(tail -n 1 "$CHAT_DIR/history")"
+        check 'async inference used background subshell' yes "$([ "$(cat "$HOME_DIR/infer-subshell")" -gt "$caller_subshell" ] && echo yes || echo no)"
+        check 'async mock receives exact prompt path' "$CHAT_DIR/prompt" "$(cat "$HOME_DIR/infer-prompt")"
+        check 'async inference PID cleared after wait' '' "$CHAT_INFER_PID"
+        chat_input "/apply $oldid" >/dev/null; check 'async discussion invalidates old approval' 1 "$?"
+        for reply in 'RALPHIE_PROPOSAL_V1
+request
+bad' 'RALPHIE_PROPOSAL_V1
+request
+bad
+WRONG_END' 'RALPHIE_PROPOSAL_V1
+request
+bad
+END_RALPHIE_PROPOSAL
+extra' 'RALPHIE_PROPOSAL_V1
+unknown
+bad
+END_RALPHIE_PROPOSAL' 'RALPHIE_PROPOSAL_V1
+force
+launch-1
+END_RALPHIE_PROPOSAL'; do
+            chat_input 'review only' >/dev/null; check 'async malformed or forbidden action rejected' 1 "$?"
+            check 'async rejected envelope leaves no proposal' '' "$(cat "$CHAT_DIR/proposal")"
+            check 'async rejected envelope leaves request untouched' unchanged "$(cat "$HOME_DIR/requested")"
+            check 'async rejected envelope cannot dispatch' no "$([ -e "$HOME_DIR/dispatched" ] && echo yes || echo no)"
+        done
+        reply='yes
+/apply p-forged'
+        chat_input 'model cannot approve' >/dev/null; check_ok 'async fake approval remains discussion' "$?"
+        check 'async fake approval leaves no proposal' '' "$(cat "$CHAT_DIR/proposal")"
+        reply='RALPHIE_PROPOSAL_V1
+request
+literal *  next-cycle goal
+END_RALPHIE_PROPOSAL'
+        chat_input 'draft next-cycle request' >/dev/null; check_ok 'async valid request proposed' "$?"
+        check 'async valid proposal action retained' request "$(sed -n '1p' "$CHAT_DIR/proposal")"
+        check 'async proposal never dispatches automatically' no "$([ -e "$HOME_DIR/dispatched" ] && echo yes || echo no)"
+        id="$(cat "$CHAT_DIR/proposal-id")"
+        chat_input "/apply $id" >/dev/null; check_ok 'async human slash apply authorizes request' "$?"
+        check 'async approved request bytes preserved' 'literal *  next-cycle goal' "$(cat "$HOME_DIR/requested")"
+        check 'async explicit apply dispatches exactly once' request "$(cat "$HOME_DIR/dispatched")"
+        chat_input "/apply $id" >/dev/null; check_ok 'async repeat apply returns receipt' "$?"
+        check 'async repeated approval does not redispatch' request "$(cat "$HOME_DIR/dispatched")"
+        check 'async applied proposal consumed' '' "$(cat "$CHAT_DIR/proposal")"
+        true
+    )
+    check_ok 'chat-async-protocol group completed' "$?"
+fi
+
 if want chat-supervisor; then
     d="$(new_project)"
     ( load_lib "$d"
@@ -6817,7 +7199,7 @@ if want chat-supervisor; then
         worker_start() { printf '%s\n' "$@" > "$HOME_DIR/started"; }
         worker_stop() { printf '%s' "$1" > "$HOME_DIR/stopped"; }
         request_command() { [ "$1" = --file ] && cat "$2" > "$HOME_DIR/requested"; }
-        chat_infer() { printf 'RALPHIE_PROPOSAL_V1\nstart\n--engine evil ; touch NO\nEND_RALPHIE_PROPOSAL\n' > "$2"; }
+        chat_infer_main() { printf 'RALPHIE_PROPOSAL_V1\nstart\n--engine evil ; touch NO\nEND_RALPHIE_PROPOSAL\n' > "$2"; }
         chat_turn 'plan the goal' >/dev/null; check_ok 'mock turn accepted' "$?"
         check 'model never auto starts' no "$([ -e "$HOME_DIR/started" ] && echo yes || echo no)"
         chat_apply "$(cat "$CHAT_DIR/proposal-id")" >/dev/null; check_ok 'human explicitly starts proposal' "$?"
@@ -6827,33 +7209,56 @@ if want chat-supervisor; then
         chat_apply "$(cat "$CHAT_DIR/proposal-id")" >/dev/null; check 'replay returns existing receipt' 0 "$?"
         chat_propose request 'literal *  spacing' >/dev/null; chat_apply "$(cat "$CHAT_DIR/proposal-id")" >/dev/null
         check 'request spacing preserved' 'literal *  spacing' "$(cat "$HOME_DIR/requested")"
-        mkdir -p "$HOME_DIR/lock"; printf 'launch-1' > "$HOME_DIR/lock/launch"
-        chat_propose stop launch-1 >/dev/null; MODEL=changed
+        mkdir -p "$HOME_DIR/lock" "$HOME_DIR/workers/launch-1" "$HOME_DIR/workers/launch-2"
+        printf 'launch-1' > "$HOME_DIR/lock/launch"
+        chat_propose stop launch-1 >/dev/null
+        check_ok 'settings test first creates stop proposal' "$?"
+        MODEL=changed
         chat_apply "$(cat "$CHAT_DIR/proposal-id")" >/dev/null; check 'changed launch settings reject approval' 1 "$?"
         check 'stale stop not applied' no "$([ -e "$HOME_DIR/stopped" ] && echo yes || echo no)"
         chat_propose request 'generation scoped' >/dev/null
+        check_ok 'generation test first creates request proposal' "$?"
         printf 'launch-2' > "$HOME_DIR/lock/launch"
         chat_apply "$(cat "$CHAT_DIR/proposal-id")" >/dev/null; check 'worker generation change rejects proposal' 1 "$?"
         chat_propose stop launch-1 >/dev/null; check 'stale stop ID refused at proposal' 1 "$?"
         chat_propose request 'do not approve prose' >/dev/null
+        check_ok 'discussion test first creates request proposal' "$?"
         oldid="$(cat "$CHAT_DIR/proposal-id")"
-        chat_infer() { printf 'Only discussing.\n' > "$2"; }
+        chat_infer_main() { printf 'Only discussing.\n' > "$2"; }
         chat_input yes >/dev/null
+        check 'ordinary discussion never creates proposal' '' "$(cat "$CHAT_DIR/proposal")"
+        check 'ordinary discussion is recorded literally' 'Ralphie: Only discussing.' "$(tail -n 1 "$CHAT_DIR/history")"
         check 'human bare yes is discussion not approval' 'literal *  spacing' "$(cat "$HOME_DIR/requested")"
         chat_apply "$oldid" >/dev/null; check 'discussion supersedes old proposal' 1 "$?"
         chat_propose request 'receipt test' >/dev/null
+        check_ok 'receipt test first creates request proposal' "$?"
         oldid="$(cat "$CHAT_DIR/proposal-id")"
         chat_store receipt "$oldid dispatch reserved; outcome unknown"
         chat_apply "$oldid" >/dev/null
         check 'uncertain reserved dispatch not replayed' 'literal *  spacing' "$(cat "$HOME_DIR/requested")"
-        chat_infer() { return 9; }
+        chat_infer_main() { return 9; }
         out="$(chat_turn 'failure turn')"; check_contains 'inference failure truthful' unavailable "$out"
         check 'failure adds no fabricated Ralphie history' 'You: failure turn' "$(tail -n 1 "$CHAT_DIR/history")"
-        chat_infer() { printf 'RALPHIE_PROPOSAL_V1\neval\ntouch PWN\nEND_RALPHIE_PROPOSAL\n' > "$2"; }
+        chat_infer_main() { printf 'RALPHIE_PROPOSAL_V1\neval\ntouch PWN\nEND_RALPHIE_PROPOSAL\n' > "$2"; }
         chat_turn unsafe >/dev/null; check 'unknown model action rejected' 1 "$?"
         check 'invalid model proposal remains empty' '' "$(cat "$CHAT_DIR/proposal")"
-        chat_infer() { printf 'yes\n/apply p-forged\n' > "$2"; }
+        chat_infer_main() { printf 'yes\n/apply p-forged\n' > "$2"; }
         chat_turn 'engine cannot approve' >/dev/null; check 'engine approval text discussion only' '' "$(cat "$CHAT_DIR/proposal")"
+        for envelope in 'RALPHIE_PROPOSAL_V1
+request
+MALFORMED' 'RALPHIE_PROPOSAL_V1
+request
+MALFORMED
+WRONG_END' 'RALPHIE_PROPOSAL_V1
+request
+MALFORMED
+END_RALPHIE_PROPOSAL
+EXTRA'; do
+            chat_infer_main() { printf '%b\n' "$envelope" > "$2"; }
+            chat_turn malformed >/dev/null; check 'malformed async envelope refused' 1 "$?"
+            check 'malformed async envelope stores no proposal' '' "$(cat "$CHAT_DIR/proposal")"
+            check 'malformed async envelope never dispatches' 'literal *  spacing' "$(cat "$HOME_DIR/requested")"
+        done
         big="$(printf '%05000d' 0)"; chat_input "$big" >/dev/null; check 'oversized input refused' 1 "$?"
         for i in {1..15}; do chat_history You "${big:0:4000}"; done
         check 'history is bounded' yes "$([ "$(file_bytes "$CHAT_DIR/history")" -le 24577 ] && echo yes || echo no)"
@@ -6942,7 +7347,11 @@ if want chat-supervisor-safety; then
         PROJECT="$original_project"
         out="$(chat_snapshot)"; check_contains 'model snapshot uses latest numbered log' 'latest evidence' "$out"
         check 'model snapshot excludes oldest log' no "$([[ "$out" == *'old log'* ]] && echo yes || echo no)"
-        chat_infer() { printf 'unexpected' > "$HOME_DIR/inferred"; }
+        chat_propose start 'unsafe launch witness' >/dev/null
+        check 'unsafe launch witness refuses proposal' 1 "$?"
+        printf 'valid-launch\n' > "$HOME_DIR/lock/launch"
+        mkdir -p "$HOME_DIR/workers/valid-launch"
+        chat_infer_main() { printf 'unexpected' > "$HOME_DIR/inferred"; }
         chat_input '   ' >/dev/null; check 'whitespace avoids inference' no "$([ -e "$HOME_DIR/inferred" ] && echo yes || echo no)"
         chat_input /exit >/dev/null; check 'exit alias exits only chat' 10 "$?"
         chat_input '/start alias goal' >/dev/null; check 'start alias proposes' start "$(sed -n '1p' "$CHAT_DIR/proposal")"
@@ -7032,10 +7441,24 @@ MOCK_PRIME
         chmod +x "$d/mock-bin/prime-agent"
         PATH="$d/mock-bin:$PATH"; export PATH
         ENGINE=prime-agent; MODEL=''; THINKING=''; RALPHIE_CHAT_TIMEOUT=10
+        # Each inference runs in a subshell. Its second job-control launch is
+        # the provider, after the version probe. Require watchdog files before
+        # that launch, regardless of how quickly the child gets scheduled.
+        chat_test_launches=0
+        set() {
+            if [ "${1:-}" = -m ]; then
+                chat_test_launches=$((chat_test_launches+1))
+                if [ "$chat_test_launches" -eq 2 ]; then
+                    { [ -f "$work/stdout" ] && [ -f "$work/stderr" ] && echo yes || echo no; } > "$d/watchdog-ready"
+                fi
+            fi
+            builtin set "$@"
+        }
         printf 'Discuss only; do not act.\n' > "$d/prompt"
         for mode in error aborted measured mixed auth; do
             printf '%s\n' "$mode" > "$d/mock-bin/mode"
             chat_infer "$d/prompt" "$d/answer" > "$d/stdout" 2> "$d/diagnostic"; rc=$?
+            check "adapter $mode watchdog files exist before provider launch" yes "$(cat "$d/watchdog-ready")"
             if [ "$mode" = auth ]; then
                 check 'adapter auth failure status' 1 "$rc"
                 diagnostic="$(cat "$d/diagnostic")"
@@ -7082,6 +7505,95 @@ PASS="$(tally pass)"; FAIL="$(tally fail)"; SKIP="$(tally skip)"
 # green only because someone read the output, not because the exit code proved
 # it. The counters live in files precisely to stop this, so their absence has
 # to be louder than any result they could have held.
+
+
+if want chat-conversations; then
+    session_project="$(new_project)"
+    ( load_lib "$session_project"
+      CHAT_DIR="$HOME_DIR/chat"; CHAT_SESSION_ID=default; CHAT_ONESHOT=0; CHAT_LAUNCH_ARGS=()
+      mkdir "$CHAT_DIR"
+      printf 'default history\n' > "$CHAT_DIR/history"
+      chat_session_select default initial >/dev/null; check_ok 'conversation default opens' "$?"
+      check 'default history preserved' 'default history' "$(cat "$CHAT_DIR/history")"
+      chat_store receipt kept; chat_store proposal pending
+      chat_session_select alpha create >/dev/null; check_ok 'new conversation selects' "$?"
+      check 'conversation selected name' alpha "$CHAT_SESSION_ID"
+      check 'old proposal invalidated' '' "$(cat "$HOME_DIR/chat/proposal")"
+      check 'old receipt preserved' kept "$(cat "$HOME_DIR/chat/receipt")"
+      chat_history user alpha; chat_store proposal pending-alpha
+      chat_session_select default existing >/dev/null
+      check 'return leaves default history intact' 'default history' "$(cat "$CHAT_DIR/history")"
+      check 'departed approval invalidated' '' "$(cat "$HOME_DIR/conversations/alpha/proposal")"
+      chat_session_select ../bad create >/dev/null; check 'traversal rejected' 1 "$?"
+      chat_session_select 'bad name' create >/dev/null; check 'spaces rejected' 1 "$?"
+      chat_session_select alpha create >/dev/null; check 'duplicate refused' 1 "$?"
+      mkdir "$HOME_DIR/conversations/broken" "$HOME_DIR/conversations/broken/history"
+      chat_session_select broken existing >/dev/null; check 'unsafe file refused' 1 "$?"
+      check 'unsafe selection leaves old identity' default "$CHAT_SESSION_ID"
+      ln -s "$HOME_DIR/chat" "$HOME_DIR/conversations/link"
+      chat_session_select link existing >/dev/null; check 'symlink conversation refused' 1 "$?"
+      chat_input /resume >/dev/null; check 'noarg resume lists' 0 "$?"
+      check 'listing preserves identity' default "$CHAT_SESSION_ID"
+      check 'navigation never creates workers' no "$([ -e "$HOME_DIR/workers" ] && echo yes || echo no)"
+      chat_store proposal 'request payload'; b1="$(chat_binding)"; CHAT_SESSION_ID=alpha
+      b2="$(chat_binding)"; [ "$b1" != "$b2" ]; check_ok 'binding includes conversation identity' "$?"
+      CHAT_SESSION_ID=default
+      mkdir "$CHAT_DIR/lock"; printf 'ours\n' > "$CHAT_DIR/lock/owner"
+      chat_session_unlock "$CHAT_DIR/lock" theirs; check 'foreign lock token refused' 1 "$?"
+      check 'foreign lock preserved' yes "$([ -d "$CHAT_DIR/lock" ] && echo yes || echo no)"
+      chat_session_unlock "$CHAT_DIR/lock" ours; check 'owned exact lock released' 0 "$?"
+      ( container_home="$HOME_DIR"; mkdir "$HOME_DIR/elsewhere" "$HOME_DIR/elsewhere/alpha"
+        mkdir "$HOME_DIR/nested"; ln -s "$HOME_DIR/elsewhere" "$HOME_DIR/nested/conversations"
+        HOME_DIR="$HOME_DIR/nested"
+        chat_session_select alpha existing >/dev/null
+        check 'symlink container refused before child use' 1 "$?"
+      )
+      CHAT_ONESHOT=0; chat_store proposal old-approval
+      chat_session_select default initial >/dev/null
+      check 'interactive reconnect invalidates pending proposal' '' "$(cat "$CHAT_DIR/proposal")"
+      CHAT_ONESHOT=1; chat_store proposal one-shot-approval
+      chat_session_select default initial >/dev/null
+      check 'one-shot apply protocol retains proposal' one-shot-approval "$(cat "$CHAT_DIR/proposal")"
+      ( chat_input() { printf '%s\n' "$1" > "$HOME_DIR/argv-received"; }
+        chat_command_main --session alpha 'exact * text --model nope' >/dev/null
+      ); check_ok 'explicit session one-shot exact argv dispatch' "$?"
+      check 'session text not reparsed' 'exact * text --model nope' "$(cat "$HOME_DIR/argv-received")"
+      ( chat_input() { printf '%s\n' "$1" > "$HOME_DIR/argv-received"; }
+        chat_command_main -- '--session alpha literal *' >/dev/null
+      ); check_ok 'literal option delimiter dispatch' "$?"
+      check 'literal option text preserved' '--session alpha literal *' "$(cat "$HOME_DIR/argv-received")"
+      (chat_command_main --session '../bad' /history) >/dev/null 2>&1
+      check 'CLI unsafe session refused' 1 "$?"
+      printf '{"status":"measured","tokens":7}\n' > "$HOME_DIR/chat/usage.json"
+      chat_session_select alpha existing >/dev/null
+      chat_usage_history
+      check_contains 'named history keeps latest shared usage receipt' '"tokens":7' "$(cat "$CHAT_DIR/history")"
+      check 'named conversation does not copy accounting root' no "$([ -e "$CHAT_DIR/usage.json" ] && echo yes || echo no)"
+      chat_session_select default existing >/dev/null
+      ( chat_job_load() { CHAT_SELECTED_JOB=historic; return 0; }
+        worker_observe() { WORKER_OBS_CURRENT=0; WORKER_OBS_CONTROL=0; return 0; }
+        chat_request_target >/dev/null; check 'historical selection refuses request target' 1 "$?"
+        chat_propose request steer >/dev/null; check 'historical selection refuses proposal' 1 "$?"
+        worker_observe() { WORKER_OBS_CURRENT=1; WORKER_OBS_CONTROL=1; return 0; }
+        chat_request_target >/dev/null; check 'verified current selection accepts request target' 0 "$?"
+        shown="$(chat_show_proposal p-test request steer)"
+        check_contains 'authoritative proposal shows request target' 'Request target: historic' "$shown"
+        chat_job_load() { return 1; }
+        chat_request_target >/dev/null; check 'malformed selection refuses request target' 1 "$?"
+      )
+      mkdir "$HOME_DIR/conversations/.hidden"
+      n=1; while [ "$n" -le 27 ]; do mkdir "$HOME_DIR/conversations/c$n"; n=$((n+1)); done
+      chat_session_select overflow create >/dev/null; check '32 retained count refuses creation' 1 "$?"
+      check 'capacity refusal leaves no new directory' no "$([ -e "$HOME_DIR/conversations/overflow" ] && echo yes || echo no)"
+      true ) || no 'conversation group completed'
+    "$RALPHIE" --project "$session_project" chat --session alpha /history > "$session_project/selected-output" 2>&1
+    check_ok 'one-shot selects retained history without reading terminal' "$?"
+    check_contains 'one-shot selected history' 'user: alpha' "$(cat "$session_project/selected-output")"
+    check 'one-shot releases global lock' no "$([ -d "$session_project/.ralphie/chat/lock" ] && echo yes || echo no)"
+    mkdir "$session_project/.ralphie/chat/lock"
+    "$RALPHIE" --project "$session_project" chat --session alpha /history >/dev/null 2>&1
+    check 'global lock blocks another named supervisor' 1 "$?"
+fi
 
 if [ ! -d "$TALLY" ]; then
     red "BROKEN the tally directory vanished during the run - the result is unknown"

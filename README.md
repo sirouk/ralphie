@@ -27,12 +27,25 @@ Ralphie; the engine and the project's own build/test tools must be installed.
 ## Supervisor chat
 
 ```bash
-./ralphie.sh                        # open/resume chat; do not start work
+./ralphie.sh                        # open default conversation; do not start work
 ./ralphie.sh chat                   # the same interactive client
 ./ralphie.sh chat "What should we prepare before starting?"  # one turn, then exit
 ./ralphie.sh run                    # explicitly resume the autonomous loop
 /path/to/ralphie.sh --project "/path/to/my project" --engine prime-agent chat
 ./ralphie.sh --spec "docs/product spec.md" --once chat
+```
+
+Inside interactive chat:
+
+```text
+/help                         # grouped command guide; no model call
+/start Fix the failing tests  # review the proposal and its settings
+/apply p-ID                   # replace p-ID with the displayed proposal ID
+/new tests                    # create a named conversation; no worker starts
+/jobs                         # find the retained launch ID
+/select LAUNCH-ID              # remember this job in the conversation
+/follow                       # follow selected job; q detaches, x proposes stop
+/stop LAUNCH-ID                # propose a safe-boundary stop, then /apply its ID
 ```
 
 **Only zero arguments default to chat.** Bare invocation and `chat` require
@@ -45,10 +58,80 @@ it works with redirected input/output and never reads a terminal. Use `run chat`
 for the objective text `chat`. Put global options **before** `chat`.
 
 Chat is a concise `You:` / `Ralphie:` conversation about the project's goal,
-preparation, progress and steering. It retains bounded conversation history under
-`.ralphie/chat/`, with separate locks, call cleanup and usage receipts. It reads
+preparation, progress and steering. It retains bounded conversation history, with
+chat cleanup and accounting separate from the worker. One project-wide chat lock
+and one independent worker lock apply across all conversations. It reads
 project and worker facts without initializing or repairing the worker ledger.
 Opening chat does not start project work.
+
+### Resume discussion, select work
+
+A conversation is discussion context, not a worker or saved execution setup:
+
+```text
+/new tests          # create and select tests
+/sessions           # list conversations
+/switch default     # return to the original history
+/resume tests       # restore tests history and its advisory job selection
+/jobs
+/select LAUNCH-ID   # choose any retained job explicitly
+/follow             # inspect it; q returns to chat
+```
+
+Startup selects `default`. To reopen another existing conversation directly:
+
+```bash
+./ralphie.sh --engine prime-agent chat --session tests
+./ralphie.sh chat --session tests "What remains?"  # one turn, never reads input
+./ralphie.sh chat -- "--session"                  # literal one-turn message
+```
+
+Only `--session` immediately after `chat` is a conversation option; use `--`
+after `chat` to send option-looking prose literally. Global options still go
+before `chat`. The reconnect command does not restore saved run settings.
+
+Names use 1–32 ASCII letters, digits, `_` or `-`, starting with a letter or digit. `default` keeps the existing `.ralphie/chat/`
+history; named conversations live under `.ralphie/conversations/NAME/`. At
+**32 retained conversations including default**, creation is refused. History
+is not automatically pruned to make room. `/resume` and `/switch` require an
+existing name; neither creates work, resumes an engine, restores a workspace,
+or changes the project ledger.
+
+Selection is a navigation preference, **not conversation ownership of a job**.
+Any conversation can select any retained job. The selected job and current
+project worker may differ. A missing or historical selection never silently
+becomes the current worker for control. With no selection, observation and
+`/stop` can use the current worker; stop still displays its exact target and
+requires `/apply ID`. Steering requests are project-wide next-cycle requests,
+not private conversation queues; a conflicting historical selection is refused.
+
+To do new work, use `/start GOAL` and approve its fresh proposal. New starts use
+**this invocation's settings**, not historical engine options, budgets or a
+saved configuration. To use a spec, reopen with `--spec FILE chat`. The stopped
+historical job stays retained; restoring its conversation does not restart it.
+
+### Terminal view and input
+
+On recognized xterm, screen, tmux and rxvt terminals, interactive chat uses a
+compact alternate-screen view with a sanitized latest-turn preview of at most
+120 characters. This is only a display preview; it does not shorten submitted
+input. Other terminals use ordinary output. No new runtime dependency or tmux
+installation is required.
+
+Full authority belongs in normal terminal scrollback, not a clipped preview.
+The first proposal leaves the compact view for the rest of that chat session and
+prints its full action, payload and settings. `/proposal` displays the same pending
+proposal again; it does not create a fresh ID or refresh its authorization.
+`/history` also leaves the compact view. `/help` shows a grouped command guide
+outside the compact view, then returns. Scrollback retention still depends on
+your terminal's settings.
+
+Readline keeps normal arrow-key editing and Unicode input. **Empty-left job
+navigation is not supported on Bash 3.2**; use `/jobs`, then `/attach LAUNCH-ID`.
+For multiline input, enter `/paste`, type the lines, then `/send` on its own line.
+Use `/cancel` on its own line to discard that input. The 4096-byte message limit
+still applies. A waiting indicator shows while supervisor inference runs; it is
+not a model token stream or proof of remote progress.
 
 ### Discuss, propose, apply
 
@@ -57,30 +140,44 @@ but only your explicit `/apply ID` authorizes the displayed action. Saying “ye
 or receiving a model-generated command does not authorize anything. Model output
 is parsed as data, never evaluated as shell code.
 
-All slash commands are local and make no model call:
+Control commands below are local and make no model call. The `/paste` composer
+is also local, but `/send` submits its message for normal processing and may call
+the supervisor model:
 
 | Command | Effect |
 |---|---|
 | `/start GOAL` or `/run GOAL` | Propose a background run. |
 | `/start` | Propose running the selected `--spec`; otherwise ask for a goal. |
 | `/request TEXT` | Propose a next-cycle steering request. |
-| `/stop [LAUNCH-ID]` | Propose stopping the current background worker. |
+| `/stop [LAUNCH-ID]` | Propose a safe-boundary stop of the explicit or selected job; with no selection, use the current worker. |
+| `/kill LAUNCH-ID` or `/nuke LAUNCH-ID` | Propose force termination; requires `/apply ID`. |
+| `/proposal` | Redisplay the current proposal without changing its authorization. |
 | `/apply ID` | Approve the current displayed proposal. |
 | `/cancel` | Discard the proposal, not a running inference call or worker. |
 | `/status` | Read project, worker and request facts. |
-| `/watch [LAUNCH-ID]` | Print a bounded worker/receipt/log snapshot, then return. |
-| `/history` | Show retained conversation. |
-| `/help` | List commands. |
+| `/sessions` or `/resume` | List retained conversations. |
+| `/new NAME` | Create and select a conversation; no worker starts. |
+| `/resume NAME` or `/switch NAME` | Select an existing conversation; no engine resumes. |
+| `/jobs` | List retained launches and their observed states; not all are running. |
+| `/select LAUNCH-ID` | Remember a job selection in this conversation; no execution change. |
+| `/follow [LAUNCH-ID]`, `/attach [LAUNCH-ID]` or `/watch --follow [LAUNCH-ID]` | Follow bounded snapshots in interactive chat; an explicit ID also selects it. |
+| `/watch [LAUNCH-ID]` | Print a bounded worker/receipt/log snapshot, then return; defaults to selection, otherwise the current worker. |
+| `/history` | Show retained conversation in normal scrollback. |
+| `/paste` | Begin multiline input; `/send` submits and `/cancel` discards. |
+| `/help` | Show the grouped command guide. |
 | `/quit` or `/exit` | Leave chat without stopping the worker. |
 
 For example, discuss the goal, enter `/start Fix the failing tests`, review the
 launch settings, then enter `/apply` followed by the displayed proposal ID.
-Use `/status` and `/watch` to inspect progress. To steer, enter
+Use `/jobs` to find the launch ID, then `/attach LAUNCH-ID` to follow it or
+`/watch LAUNCH-ID` for one snapshot. Detaching returns to chat and does not stop
+the worker. To steer, enter
 `/request Add a regression test for empty input`, then approve its new ID.
 
-Proposals bind to the displayed action, settings and worker generation. Changed
-settings or generation invalidate approval; interactive reconnect discards the
-old proposal. Start preserves the original project and run options, including
+Proposals bind to the displayed action, conversation, selected job, settings and
+worker generation. Changes invalidate approval; switching conversations or
+interactive reconnect discards pending authority. Start preserves the current
+invocation's original project and run options, including
 engine/model, gates, acceptance, budgets and permissions.
 
 With `--spec FILE chat`, the **full selected spec is the execution objective**,
@@ -97,6 +194,32 @@ completed**. Gate outcomes remain separate evidence. Stop targets the displayed
 worker and requests a safe preparation/cycle boundary; “stop requested” does not
 mean “stopped”. The worker keeps its six phases and never waits for chat.
 
+### Stop safely, or explicitly force termination
+
+Prefer `/stop LAUNCH-ID`, review the proposal, then `/apply ID`. This asks for a
+safe boundary; it does not interrupt an active engine call immediately. In follow
+mode, press `x` or type `/stop` then Enter to return to chat with a stop proposal
+for that fixed displayed job. Neither action stops or signals the worker. Review
+the full proposal in normal scrollback and approve its ID. A finished, missing or
+changed target is refused, never replaced with another worker. Outside follow,
+ordinary `x` is just message text.
+
+For an unresponsive worker, `/kill LAUNCH-ID` (alias `/nuke LAUNCH-ID`) displays
+a force proposal. **Review its launch identity and warning before `/apply ID`.**
+Ralphie checks the current lock/token and the recorded process identity. It
+refuses workers without the new identity witness, including older launches, or
+whose recorded script path no longer matches. It snapshots at most 256 processes,
+sends TERM to verified identities, then after two seconds sends KILL to matching
+survivors. It does not signal a whole process group.
+
+Force can interrupt edits, gates and commits. Retained files and receipts support
+recovery, but **interrupted work is not promised saved or committed**. Inspect the
+working tree, ledger and gates before resuming. A stale PID alone cannot authorize
+force. These identity checks are best effort: same-user metadata tampering and
+the race between checking a PID and signaling it remain limitations. Escaped or
+new descendants and accepted remote requests may continue; remote cancellation
+and stopped billing are not guaranteed.
+
 ### Background work and retained evidence
 
 An approved start launches the normal worker in the background. Pending is not
@@ -110,7 +233,13 @@ or survival across a reboot.
 Each launch retains the **first 1 MiB** of console output in
 `.ralphie/workers/LAUNCH-ID/output.log`, then drains and discards excess output.
 This is not a rolling log or live tail. `/watch` is a snapshot in both interactive
-and one-turn chat. Worker engine logs and ledger evidence are separate.
+and one-turn chat. `/follow` (also `/attach` or `/watch --follow`) refreshes
+bounded snapshots; it cannot recover console output discarded after the cap.
+Press `q`, Esc or Ctrl-C to detach without stopping work; `?` shows follow help.
+Final, interrupted or unknown jobs show a snapshot and return automatically.
+A final process state or exit code is not proof that the goal passed its gates.
+Follow requires interactive chat with a terminal. It does not provide an engine
+shell or engine input. Worker engine logs and ledger evidence are separate.
 
 There is room for **32 retained launch entries**, including old or refused
 launches. Admission refuses at capacity before making another launch spec copy;
@@ -157,8 +286,9 @@ timeout cleanup targets local adapter processes and their observed descendants;
 it cannot guarantee cancellation of an already accepted remote request, escaped
 processes, or provider billing. `/cancel` only clears a proposal.
 
-Inference can incur charges. Chat retains the latest usage receipt and eight
-prior receipts: **nine recent calls, not a lifetime total**. Measured usage stays
+Inference can incur charges. Across all conversations in this project, chat
+retains the latest usage receipt and eight prior receipts: **nine recent
+project-chat calls, not a per-conversation or lifetime total**. Measured usage stays
 separate from worker accounting; missing measurements are unavailable, not zero.
 Bounded context, output and time are not a strict spending cap.
 
@@ -354,7 +484,7 @@ An answer also becomes a durable lesson, so it is never asked twice.
 ## Commands
 
 ```
-./ralphie.sh                        Open/resume interactive chat
+./ralphie.sh                        Open default interactive conversation
 ./ralphie.sh chat "MESSAGE"         One supervisor turn, then exit
 ./ralphie.sh "what you want done"   Run the loop
 ./ralphie.sh start --once "..."     Launch a background worker
