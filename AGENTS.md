@@ -18,7 +18,7 @@ explaining what it is for and why it exists:
 | 4 ENGINE | the driver table, capability model, invocation, retries |
 | 5 LOOP | observe → decide → act → verify → record → learn |
 | 6 HUMAN | the non-blocking question channel |
-| 7 INTERFACE | CLI, doctor, status, self-update, main |
+| 7 INTERFACE | CLI, supervisor chat, worker launch, doctor, status, self-update, main |
 
 Two places are deliberately shaped to be read before anything else, because
 they are the program:
@@ -54,7 +54,12 @@ how the previous version reached 9,547 lines.
    `true` and Ralphie committed a broken project while reporting success.
 3. **Resumable.** Any interruption must leave recoverable state.
 4. **Append-only ledger.** `events.jsonl` is never rewritten.
-5. **Never block on a human.** No `read` from a terminal. Ever.
+5. **Never block the worker on a human.** No autonomous worker may `read` from
+   a terminal. The user explicitly authorized one narrow exception: the
+   foreground interactive supervisor chat client may read terminal input when
+   both stdin and stdout are terminals. One-turn chat never reads a terminal.
+   Chat must have separate locks, history and cleanup; closing it must not stop
+   the worker. This exception does not permit prompts in any worker phase.
 6. **Never waste a token** on something a shell command can determine.
 7. **Explicit operator choices are honoured**, including `--engine`.
 
@@ -149,6 +154,43 @@ cd /tmp && mkdir demo && cd demo && git init -q
 # create something broken with a test that proves it
 /path/to/ralphie.sh --once -v "fix the failing test"
 ```
+
+## Supervisor chat
+
+Chat is a control surface, not a second execution loop. Keep `cycle_once` at six
+phases. Dispatch chat before ordinary ledger repair or worker preparation;
+snapshots are read-only and conversation is chat-local. Only explicit `/apply ID`
+authorizes a displayed, finite, settings- and generation-bound proposal. Never
+evaluate model output or rewrite live objectives, gates or state. Requests belong
+to the next-cycle channel; presented is not completed. Start and stop receipts
+must reflect observed worker identity and actual lifecycle state.
+
+Preserve original launch options and all gate/acceptance/ownership checks.
+`--spec FILE chat` keeps the full exact spec authoritative, not the proposal title.
+Keep worker console retention honest: first 1 MiB, then drain excess; watch is a
+bounded snapshot, not a rolling/live tail. Refuse at 32 retained launch entries
+before another launch spec copy. Never prune receipts automatically; manual
+archiving requires all launchers/workers stopped and preserves whole launch dirs.
+
+Prime supervisor support requires exactly 0.9.5 and its reviewed internal
+owned-worker frontend, not a generic no-tools sandbox claim. Unsupported
+providers fail without fallback. Selected custom inference requires the explicit
+trusted `RALPHIE_CHAT_ADAPTER` executable, not merely a custom worker command.
+Keep chat accounting and cleanup separate from worker totals and children. Usage
+retains nine recent receipts, not a lifetime total. Enforce 4096-byte human input,
+32 KiB inference input, 8 KiB answers and a 90-second default (maximum 300-second)
+inference allowance. Local cancellation cannot guarantee remote cancellation or
+stop billing. No tmux dependency, OS-service, controlling-terminal or host logout
+survival guarantee is implied.
+
+Only zero arguments default to chat. Bare non-terminal invocation must fail;
+unattended bare jobs migrate to `run`. Options-only and objective invocations
+remain runs. Put global options before `chat`. The only terminal-read exception
+is the interactive client described in invariant 5. Worker phases never prompt.
+Verify dispatch, authority, resource limits and independent worker lifecycle with
+offline mocks and terminal tests. Record current verification separately from
+historical `graphify-out/` receipts; do not rebuild or relabel those receipts as
+evidence for new chat behavior.
 
 ## Changing the engine table
 

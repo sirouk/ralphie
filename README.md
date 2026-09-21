@@ -24,6 +24,149 @@ Ralphie; the engine and the project's own build/test tools must be installed.
 
 ---
 
+## Supervisor chat
+
+```bash
+./ralphie.sh                        # open/resume chat; do not start work
+./ralphie.sh chat                   # the same interactive client
+./ralphie.sh chat "What should we prepare before starting?"  # one turn, then exit
+./ralphie.sh run                    # explicitly resume the autonomous loop
+/path/to/ralphie.sh --project "/path/to/my project" --engine prime-agent chat
+./ralphie.sh --spec "docs/product spec.md" --once chat
+```
+
+**Only zero arguments default to chat.** Bare invocation and `chat` require
+terminal stdin and stdout. Otherwise they fail promptly without consuming piped
+input or starting a worker. Cron and unattended jobs that used no arguments must
+add `run`. Options-only invocations still run: `--once`, `--project DIR` alone,
+and objective-bearing invocations retain their run behavior. Use
+`--project DIR chat` to chat. `chat "MESSAGE"` accepts one nonempty turn and exits;
+it works with redirected input/output and never reads a terminal. Use `run chat`
+for the objective text `chat`. Put global options **before** `chat`.
+
+Chat is a concise `You:` / `Ralphie:` conversation about the project's goal,
+preparation, progress and steering. It retains bounded conversation history under
+`.ralphie/chat/`, with separate locks, call cleanup and usage receipts. It reads
+project and worker facts without initializing or repairing the worker ledger.
+Opening chat does not start project work.
+
+### Discuss, propose, apply
+
+**Discussion is not authorization.** Ordinary messages may produce a proposal,
+but only your explicit `/apply ID` authorizes the displayed action. Saying “yes”
+or receiving a model-generated command does not authorize anything. Model output
+is parsed as data, never evaluated as shell code.
+
+All slash commands are local and make no model call:
+
+| Command | Effect |
+|---|---|
+| `/start GOAL` or `/run GOAL` | Propose a background run. |
+| `/start` | Propose running the selected `--spec`; otherwise ask for a goal. |
+| `/request TEXT` | Propose a next-cycle steering request. |
+| `/stop [LAUNCH-ID]` | Propose stopping the current background worker. |
+| `/apply ID` | Approve the current displayed proposal. |
+| `/cancel` | Discard the proposal, not a running inference call or worker. |
+| `/status` | Read project, worker and request facts. |
+| `/watch [LAUNCH-ID]` | Print a bounded worker/receipt/log snapshot, then return. |
+| `/history` | Show retained conversation. |
+| `/help` | List commands. |
+| `/quit` or `/exit` | Leave chat without stopping the worker. |
+
+For example, discuss the goal, enter `/start Fix the failing tests`, review the
+launch settings, then enter `/apply` followed by the displayed proposal ID.
+Use `/status` and `/watch` to inspect progress. To steer, enter
+`/request Add a regression test for empty input`, then approve its new ID.
+
+Proposals bind to the displayed action, settings and worker generation. Changed
+settings or generation invalidate approval; interactive reconnect discards the
+old proposal. Start preserves the original project and run options, including
+engine/model, gates, acceptance, budgets and permissions.
+
+With `--spec FILE chat`, the **full selected spec is the execution objective**,
+not the proposal title or a shorter `/start GOAL`. The proposal shows its path,
+digest and a bounded excerpt: read the full file before approval. A changed spec
+invalidates the proposal. On approved launch, validated spec bytes are copied
+exactly, including trailing newlines, into that launch's retained spec. Merely
+opening chat does not install it as the worker objective.
+
+A request is queued for a cycle boundary, not injected into an active engine
+call. Chat does not rewrite live objectives, gates or state. Queued means stored;
+presented means included in a durable engine prompt, **not implemented or
+completed**. Gate outcomes remain separate evidence. Stop targets the displayed
+worker and requests a safe preparation/cycle boundary; “stop requested” does not
+mean “stopped”. The worker keeps its six phases and never waits for chat.
+
+### Background work and retained evidence
+
+An approved start launches the normal worker in the background. Pending is not
+proof of startup: identity-bound acknowledgment establishes that it started.
+Closing chat leaves it running. Reopen chat to inspect it; no tmux is required.
+This is **not an OS service or full daemonization guarantee**. Standard input,
+output and error are detached from the terminal, but Ralphie cannot guarantee
+absence of a controlling terminal, survival of host/session-wide logout cleanup,
+or survival across a reboot.
+
+Each launch retains the **first 1 MiB** of console output in
+`.ralphie/workers/LAUNCH-ID/output.log`, then drains and discards excess output.
+This is not a rolling log or live tail. `/watch` is a snapshot in both interactive
+and one-turn chat. Worker engine logs and ledger evidence are separate.
+
+There is room for **32 retained launch entries**, including old or refused
+launches. Admission refuses at capacity before making another launch spec copy;
+nothing is automatically deleted. To free space, stop all launchers and workers,
+verify they have exited, then manually move complete launch directories outside
+`.ralphie/workers/` to an archive. Keep each spec and its receipts together.
+
+### Supervisor inference and limits
+
+Supervisor inference is separate from the coding engine. The built-in adapter
+requires **Prime Agent exactly 0.9.5**. It passes `--no-tools` and **keeps
+extensions enabled**, including provider extensions such as `ccs-max`. It uses
+that version's source-reviewed internal owned-worker frontend
+(`PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND=1`), not the shared daemon.
+This is a version-specific integration constraint, **not a generic `--no-tools`
+sandbox guarantee**. Unsupported versions and explicitly selected unsupported
+providers fail without Ralphie substituting another provider. The exact explicit
+model selector is forwarded unchanged. The worker engine permissions below are unchanged.
+
+Prime filters built-in and extension-registered tools out of its tool registry
+under `--no-tools`, including attempts to activate them through the extension API.
+This does **not** disable extension code or hooks. Installed extensions are trusted
+host code: they can write files, access the network, change the system prompt, or
+select a model through their APIs. Trust them to honor your model choice and the
+text-only supervisor contract. Private cwd, sessions, and usage receipts separate
+supervisor calls from worker conversations; they do not sandbox extensions or
+account for arbitrary work an extension starts itself. Ralphie only dispatches
+proposed actions through `/apply`; it cannot impose that rule on extension host
+code. `--offline` disables startup network operations, not all network access.
+
+For a custom supervisor, select `--engine custom` and set
+`RALPHIE_CHAT_ADAPTER` to a **trusted executable path**. A worker's
+`RALPHIE_ENGINE_CMD` alone is not a supervisor adapter. The custom adapter reads
+the supervisor envelope on stdin and receives `--model` and `--thinking` as
+arguments. Ralphie executes it directly, without shell evaluation; the operator
+must trust it to honor the text-only contract. Neither adapter is an OS sandbox
+or a promise of no host filesystem writes or network access.
+
+Each human message is limited to 4096 bytes. The assembled inference input is
+limited to **32 KiB** and the answer to **8 KiB**. Inference defaults to **90
+seconds**; `RALPHIE_CHAT_TIMEOUT` accepts 1–300 seconds. Version probing and
+cleanup add time, so this is not a hard whole-command deadline. Interrupt or
+timeout cleanup targets local adapter processes and their observed descendants;
+it cannot guarantee cancellation of an already accepted remote request, escaped
+processes, or provider billing. `/cancel` only clears a proposal.
+
+Inference can incur charges. Chat retains the latest usage receipt and eight
+prior receipts: **nine recent calls, not a lifetime total**. Measured usage stays
+separate from worker accounting; missing measurements are unavailable, not zero.
+Bounded context, output and time are not a strict spending cap.
+
+Historical `graphify-out/` verification records describe only the versions they
+measured. They are unchanged and do not certify this chat implementation.
+
+---
+
 ## Start from a specification
 
 Plant `ralphie.sh` in a blank directory or an existing project, then run:
@@ -191,8 +334,10 @@ Review the new file and add any custom commands before the next run.
 
 ## The human is never blocked
 
-Ralphie has no interactive mode, no wizard, and no interview. It cannot stall
-waiting for someone to type.
+The autonomous worker has no wizard or interview. It never reads from a
+terminal and cannot stall waiting for someone to type. Only the explicitly
+user-authorized interactive supervisor chat may wait for terminal input; that
+client is independent of the worker.
 
 When it needs a decision, it writes a numbered question to `.ralphie/ASK.md`,
 optionally fires `$RALPHIE_NOTIFY_CMD`, and **goes and does other work**.
@@ -209,7 +354,11 @@ An answer also becomes a durable lesson, so it is never asked twice.
 ## Commands
 
 ```
+./ralphie.sh                        Open/resume interactive chat
+./ralphie.sh chat "MESSAGE"         One supervisor turn, then exit
 ./ralphie.sh "what you want done"   Run the loop
+./ralphie.sh start --once "..."     Launch a background worker
+./ralphie.sh watch [LAUNCH-ID]      Worker receipt and retained log snapshot
 ./ralphie.sh run --once "..."      Explicit run; options precede objective text
 ./ralphie.sh status                 Cycles, gates, budget, open questions
 ./ralphie.sh doctor                 Engines, capabilities, gates, git
@@ -258,6 +407,8 @@ Useful options:
 ---
 
 ## Engines
+
+This section describes autonomous worker engines, not supervisor inference.
 
 | Engine | Capabilities | What Ralphie adds |
 |---|---|---|
@@ -476,7 +627,9 @@ So cron and CI can react without parsing text:
 3. **Interrupted runs can resume.** Preserve objective files and state; detected
    acceptance damage is refused until explicitly repaired.
 4. **The ledger is append-only.** Counters can be rebuilt; acceptance identity must be retained. Evidence follows the documented ledger retention limits.
-5. **The human is never blocked.** Questions are files, not prompts.
+5. **The worker never waits for a human.** Worker questions are files, not
+   prompts. Only the user-authorized interactive chat client may read terminal
+   input; one-turn chat and autonomous runs never do.
 6. **Never waste a token** on something a shell command already knows.
 7. **Handled failures and signals record a reason.** An untrappable kill can
    leave a stale lock; `status` detects the missing worker and reports interruption.
@@ -520,7 +673,7 @@ that work identity. Acceptance runs once in each eligible health-green verificat
 even for engines with native gates. It uses the health watchdog (`GATE_TIMEOUT`)
 and writes `.ralphie/log/acceptance-N.log` plus ledger pass/fail evidence.
 
-A bare resume restores the command from `.ralphie/acceptance`. Missing, changed,
+A resumed run (`run` or `--once`) restores the command from `.ralphie/acceptance`. Missing, changed,
 or malformed configuration fails closed. Supplying a different explicit objective
 without `--accept` clears the old requirement; supplying a new command starts a
 fresh work identity. Repeating the same objective and command resumes the existing
