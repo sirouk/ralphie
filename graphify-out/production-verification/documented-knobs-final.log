@@ -1,0 +1,30 @@
+
+[2mralphie test suite[0m
+[2m==================[0m
+
+[2mstatic[0m
+
+[2mcli[0m
+
+[2mcore[0m
+
+[2mledger[0m
+
+[2mlock[0m
+
+[2mgates[0m
+
+[2mengine[0m
+
+[2mreport[0m
+
+[2mhuman[0m
+
+[2mloop (mock engine, no network)[0m
+  [1;32mok[0m   every tuning knob is documented
+
+[2mbudget[0m
+
+[2m==================[0m
+[1;32mPASS   1 passed, 0 skipped[0m
+

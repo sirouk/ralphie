@@ -1,0 +1,38 @@
+
+[2mralphie test suite[0m
+[2m==================[0m
+
+[2mstatic[0m
+
+[2mcli[0m
+
+[2mcore[0m
+
+[2mledger[0m
+
+[2mlock[0m
+
+[2mgates[0m
+
+[2mengine[0m
+
+[2mreport[0m
+
+[2mhuman[0m
+
+[2mloop (mock engine, no network)[0m
+  [1;32mok[0m   updating the recovery copy is refused [direct]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [direct]
+  [1;32mok[0m   recovery alias refusal explains the conflict [direct]
+  [1;32mok[0m   updating the recovery copy is refused [parent-symlink]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [parent-symlink]
+  [1;32mok[0m   recovery alias refusal explains the conflict [parent-symlink]
+  [1;32mok[0m   updating the recovery copy is refused [case-alias]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [case-alias]
+  [1;32mok[0m   recovery alias refusal explains the conflict [case-alias]
+
+[2mbudget[0m
+
+[2m==================[0m
+[1;32mPASS   9 passed, 0 skipped[0m
+

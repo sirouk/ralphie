@@ -1,0 +1,27 @@
+
+  ralphie 3.1.0  /private/tmp/ralphie-production-hcl5xesd/prime fixture
+discovering how this project proves itself correct...
+  + n=0; for f in ./*.sh; do [ -f "$f" ] || continue; head -40 "$f" | grep -q ralphie-kernel && continue; n=$((n+1)); bash -n "$f" || exit 1; done; [ "$n" -gt 0 ]
+gates: 1 active
+  + bash verify.sh
+  engine  prime-agent  [autonomy gates memory subagents resume skills json usage]
+  gates   2
+  mode    self-driving; ralphie supplies durability, evidence and memory
+  limit   1 cycles
+  branch  master
+  undo    git reset --keep 88c68f0877d5c7360ea24f5efd7c9a8353a631c7   (everything this run does)
+
+── cycle 1 ─────────────────────────────────────────────
+gates: red  (bash verify.sh)
+  focus: repair
+  engine: prime-agent (autonomous)
+  used    58286 tokens this run
+  said: Changed calc.sh from subtraction to addition; both required gates pass.
+gates: green
+committed d603051  ralphie: Changed calc.sh from subtraction to addition; both required gates pass.
+  cycle 1 took 45s
+  learned: The calculator must add its two arguments, including negative values.
+objective complete
+
+  done. 1 green cycles.
+

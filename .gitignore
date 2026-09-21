@@ -4,3 +4,9 @@
 # Editor and OS noise
 .DS_Store
 *.swp
+
+# Machine-local graph tooling and query history; published maps stay tracked.
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/
+graphify-out/memory/

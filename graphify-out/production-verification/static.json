@@ -1,0 +1,50 @@
+{
+  "source_sha256": "432b3bf7b0dd81371646fda0d5e5e0cbc94067fd11dfc76bc41c2627c81f6514",
+  "checks": [
+    {
+      "command": [
+        "/bin/bash",
+        "-n",
+        "ralphie.sh"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/bin/bash",
+        "-n",
+        "test.sh"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "shellcheck",
+        "-S",
+        "error",
+        "-e",
+        "SC1090,SC1091,SC2317",
+        "ralphie.sh"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "bash_version": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)",
+  "shellcheck_version": "ShellCheck - shell script analysis tool\nversion: 0.11.0\nlicense: GNU General Public License, version 3\nwebsite: https://www.shellcheck.net\n"
+}

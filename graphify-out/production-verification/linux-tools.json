@@ -1,0 +1,10 @@
+{
+  "lane": "linux-tools",
+  "exit": 0,
+  "elapsed_seconds": 514.92,
+  "sha256": {
+    "ralphie.sh": "432b3bf7b0dd81371646fda0d5e5e0cbc94067fd11dfc76bc41c2627c81f6514",
+    "test.sh": "aebc48548482ad4ffefa2962f56f0e8a8f6b528798f56d957027a7da99cd7b90"
+  },
+  "log": "/private/tmp/ralphie-production-hcl5xesd/receipts/linux-tools.log"
+}

@@ -1,0 +1,8 @@
+{
+  "structural_input_tokens": 0,
+  "structural_output_tokens": 0,
+  "host_review_tokens": null,
+  "total_analysis_tokens": null,
+  "total_cost": null,
+  "note": "No external semantic-extraction API or engine invocation. Session review usage not exposed."
+}

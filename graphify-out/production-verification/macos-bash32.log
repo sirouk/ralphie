@@ -1,0 +1,1627 @@
+{"lane": "macos-bash32", "input_sha256": {"ralphie.sh": "432b3bf7b0dd81371646fda0d5e5e0cbc94067fd11dfc76bc41c2627c81f6514", "test.sh": "aebc48548482ad4ffefa2962f56f0e8a8f6b528798f56d957027a7da99cd7b90"}}
+
+[2mralphie test suite[0m
+[2m==================[0m
+
+  [1;32mok[0m   rotation does not invalidate live binding
+  [1;32mok[0m   binding event has left all retained generations
+
+  continuing this objective (say a new one, or: ralphie.sh forget):
+    same explicit objective
+  [1;32mok[0m   resume after retention window retains requirement
+  [1;32mok[0m   durable resume binding
+  [1;32mok[0m   durable resume work
+  [1;32mok[0m   identical explicit objective keeps requirement
+  [1;32mok[0m   identical explicit objective retains identity
+  [1;32mok[0m   identical explicit objective retains work
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   config missing after rotation fails closed
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   binding missing after rotation fails closed
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   missing state identity cannot clear identical objective binding
+objective cleared - the next run will decide for itself
+  [1;32mok[0m   explicit forget clears orphaned config
+  [1;32mok[0m   forget tombstone prevents stale config reactivation
+  [1;32mok[0m   objective identity hashes full spec bytes
+  [1;32mok[0m   identical spec acceptance prepares
+  [1;32mok[0m   identical spec preserves binding
+
+  continuing this objective (say a new one, or: ralphie.sh forget):
+    full specification
+                                                                                                                                                                                                                                                                                               [1;32mok[0m   spec resume uses saved identity
+  [1;32mok[0m   spec resume preserves binding
+  [1;32mok[0m   new spec bytes reset acceptance
+  [1;32mok[0m   new spec has no stale requirement
+  [1;32mok[0m   new spec exact-byte hash
+  [1;32mok[0m   acceptance command need not exist yet
+objective acceptance not met (exit 1); health-green progress can still be saved
+  [1;32mok[0m   acceptance starts red
+  [1;32mok[0m   forged done cannot override acceptance
+  [1;32mok[0m   acceptance can become green
+  [1;32mok[0m   baseline alone is not actual work
+  [1;32mok[0m   trusted changed work allows acceptance completion
+  [1;32mok[0m   acceptance does not auto-stop progress
+  [1;32mok[0m   opt-in green route requires acceptance
+  [1;32mok[0m   acceptance without health is not done
+  [1;32mok[0m   acceptance resumes
+  [1;32mok[0m   resume retains binding
+  [1;32mok[0m   resume retains actual work
+  [1;32mok[0m   changed command binds again
+  [1;32mok[0m   changed command resets actual work
+  [1;32mok[0m   changed command has new identity
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   corrupt config fails closed on resume
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   missing config fails closed on resume
+  [1;32mok[0m   explicit new objective resets missing binding
+  [1;32mok[0m   new objective has no inherited command
+gate reached its 1s limit - terminating
+/private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p2415931796/ralphie.sh: line 831: 27144 Terminated: 15          ( cd "$PROJECT" && exec "$GATE_SH" -c "$GATE_PRELUDE$cmd" ) > "$out" 2>&1 < /dev/null
+objective acceptance not met (exit 124); health-green progress can still be saved
+  [1;32mok[0m   watchdog timeout fails acceptance
+  [1;32mok[0m   watchdog evidence includes timeout rc
+acceptance configuration is missing or damaged; supply --accept again or set a new objective
+  [1;32mok[0m   mid-run config tamper blocks pass
+  [1;32mok[0m   config edits do not replace memory command
+objective cleared - the next run will decide for itself
+  [1;32mok[0m   forget clears damaged requirement
+  [1;32mok[0m   forget has no command
+  [1;32mok[0m   invalid acceptance argument rejected
+  [1;32mok[0m   invalid acceptance argument rejected
+  [1;32mok[0m   invalid acceptance argument rejected
+  [1;32mok[0m   invalid acceptance argument rejected
+  [1;32mok[0m   missing acceptance argument rejected
+  [1;32mok[0m   duplicate acceptance argument rejected
+  [1;32mok[0m   acceptance red still saves incremental commit
+  [1;32mok[0m   first cycle records acceptance fail
+  [1;32mok[0m   done report cannot bypass red acceptance
+  [1;32mok[0m   resumed cycle independently passes acceptance
+  [1;32mok[0m   second changed cycle completes objective
+  [1;32mok[0m   acceptance runs once per eligible verify
+  [1;32mok[0m   spec-input: multiline path with spaces runs
+  [1;32mok[0m   spec-input: last requirement reaches mock
+  [1;32mok[0m   spec-input: metacharacters reach mock literally
+  [1;32mok[0m   spec-input: cwd wins over script directory
+  [1;32mok[0m   spec-input: original multiline content stored
+  [1;32mok[0m   spec-input: source unchanged
+  [1;32mok[0m   spec-input: shell syntax not evaluated
+  [1;32mok[0m   spec-input: source not staged
+  [1;32mok[0m   spec-input: resume without file option
+  [1;32mok[0m   spec-input: resume keeps stored content
+  [1;32mok[0m   spec-input: resume does not reread source
+  [1;32mok[0m   spec-input: project-local document accepted
+  [1;32mok[0m   spec-input: source excluded from automatic staging
+  [1;32mok[0m   spec-input: project-local source unchanged
+  [1;32mok[0m   spec-input: refuses missing
+  [1;32mok[0m   spec-input: explains missing refusal
+  [1;32mok[0m   spec-input: refuses directory
+  [1;32mok[0m   spec-input: explains directory refusal
+  [1;32mok[0m   spec-input: refuses nul
+  [1;32mok[0m   spec-input: explains nul refusal
+  [1;32mok[0m   spec-input: refuses control
+  [1;32mok[0m   spec-input: explains control refusal
+  [1;32mok[0m   spec-input: refuses empty
+  [1;32mok[0m   spec-input: explains empty refusal
+  [1;32mok[0m   spec-input: refuses large
+  [1;32mok[0m   spec-input: explains large refusal
+  [1;32mok[0m   spec-input: refuses large-control
+  [1;32mok[0m   spec-input: explains large-control refusal
+  [1;32mok[0m   spec-input: refuses unreadable
+  [1;32mok[0m   spec-input: refuses ambiguous objective
+  [1;32mok[0m   spec-input: refuses ambiguous positional
+  [1;32mok[0m   spec-input: refuses ambiguous duplicate
+  [1;32mok[0m   spec-input: refuses ambiguous empty-objective
+  [1;32mok[0m   spec-input: refuses ambiguous run-text
+  [1;32mok[0m   spec-input: refuses ambiguous non-run
+  [1;32mok[0m   spec-input: missing option value
+  [1;32mok[0m   spec-input: failures never invoke engine
+  [1;32mok[0m   spec-input: failures do not create ledger
+  [1;32mok[0m   spec-input: fixture is exactly 4000 bytes
+  [1;32mok[0m   spec-input: exact 4000 byte boundary accepted
+  [1;32mok[0m   spec-input: final boundary bytes reach engine
+  [1;32mok[0m   spec-input: positional path remains ordinary objective
+  [1;32mok[0m   spec-input: positional path is not read
+  [1;32mok[0m   spec-input: blank project runs
+  [1;32mok[0m   spec-input: blank project stores objective
+  [1;32mok[0m   spec-large: exact cap fixture
+  [1;32mok[0m   spec-large: blank build at exact cap
+  [1;32mok[0m   spec-large: final requirement implemented
+  [1;32mok[0m   spec-large: exact stored bytes
+  [1;32mok[0m   spec-large: supplied plan unchanged
+  [1;32mok[0m   spec-large: supplied plan unstaged
+  [1;32mok[0m   spec-large: honest excerpt label
+  [1;32mok[0m   spec-large: entire-file instruction
+  [1;32mok[0m   spec-large: full tail absent from brief
+  [1;32mok[0m   spec-large: verifiable plan recorded
+  [1;32mok[0m   spec-large: bounded commit message
+  [1;32mok[0m   spec-large: real acceptance gate passes
+  [1;32mok[0m   spec-large: gate rejects broken output
+  [1;32mok[0m   spec-large: bounded /private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p2380325720/prompt
+  [1;32mok[0m   spec-large: bounded /private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p2380325720/.ralphie/state
+  [1;32mok[0m   spec-large: bounded /private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p2380325720/.ralphie/events.jsonl
+  [1;32mok[0m   spec-large: hash includes full bytes
+  [1;32mok[0m   spec-large: tail changes identity
+
+  continuing this objective (say a new one, or: ralphie.sh forget):
+    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxthe objective file vanished or changed; restored from this run
+  [1;32mok[0m   spec-large: stored-source tamper detected
+  [1;32mok[0m   spec-large: stored-source tamper restored
+  [1;32mok[0m   spec-large: malformed resume rejected
+  [1;32mok[0m   spec-large: malformed resume explained
+  [1;32mok[0m   spec-large: malformed resume leaves source intact
+  [1;32mok[0m   spec-large: library group completed
+  [1;32mok[0m   spec-large: source changed resume
+  [1;32mok[0m   spec-large: resume reads stored tail
+  [1;32mok[0m   spec-large: source deleted resume
+  [1;32mok[0m   spec-large: resume preserves every stored byte
+  [1;32mok[0m   request literal accepted
+  [1;32mok[0m   request bytes preserved
+  [1;32mok[0m   request shell text is inert
+  [1;32mok[0m   producer does not initialize state
+  [1;32mok[0m   request file accepted
+  [1;32mok[0m   request file exact bytes
+  [1;32mok[0m   empty request refused
+  [1;32mok[0m   missing file refused
+  [1;32mok[0m   directory refused
+  [1;32mok[0m   NUL refused
+  [1;32mok[0m   oversize refused
+  [1;32mok[0m   same membership does not reset progress
+  [1;32mok[0m   same membership not pending
+  [1;32mok[0m   new membership pending
+  [1;32mok[0m   pending request prevents done
+  [1;32mok[0m   membership changes identity
+  [1;32mok[0m   state loss retains all active requirements
+  [1;32mok[0m   list explains presentation only
+  [1;32mok[0m   archive refuses live worker
+  [1;32mok[0m   refused archive preserves active body
+  [1;32mok[0m   stopped archive succeeds
+  [1;32mok[0m   archive never means completed
+  [1;32mok[0m   archive preserves accepted bytes
+  [1;32mok[0m   archive preserves receipt
+  [1;32mok[0m   archive preserves abandoned reservation
+  [1;32mok[0m   archive resets active membership
+  [1;32mok[0m   empty batch preserves base identity
+  [1;32mok[0m   empty batch clears old started identity
+  [1;32mok[0m   archive not injected
+  [1;32mok[0m   publication recovers missing active directory
+  [1;32mok[0m   interrupted archive retains body
+  [1;32mok[0m   32 active submissions accepted
+  [1;32mok[0m   33rd active submission refused
+  [1;32mok[0m   explicit archive recycles capacity
+  [1;32mok[0m   dead producer lock recovered
+  [1;32mok[0m   concurrent producer 50953 accepted
+  [1;32mok[0m   concurrent producer 50954 accepted
+  [1;32mok[0m   concurrent producer 50955 accepted
+  [1;32mok[0m   concurrent producer 50956 accepted
+  [1;32mok[0m   concurrent producer 50957 accepted
+  [1;32mok[0m   concurrent producer 50958 accepted
+  [1;32mok[0m   concurrent producer 50959 accepted
+  [1;32mok[0m   concurrent producer 50962 accepted
+  [1;32mok[0m   archive racing publication succeeds
+  [1;32mok[0m   publication racing archive succeeds
+  [1;32mok[0m   publication cannot disappear across archive
+  [1;32mok[0m   racing body retained once
+  [1;32mok[0m   archive holds locks before rename
+  [1;32mok[0m   worker start cannot cross archive rename
+  [1;32mok[0m   paused archive completes
+  [1;32mok[0m   publication resumes after archive
+  [1;32mok[0m   new batch contains racing producer
+  [1;32mok[0m   old batch retains prior producer
+  [1;32mok[0m   live engine handshake
+  [1;32mok[0m   submit while engine held
+  [1;32mok[0m   live producer preserves state
+  [1;32mok[0m   live producer preserves ledger
+  [1;32mok[0m   live worker excludes archive
+  [1;32mok[0m   current prompt snapshot unchanged
+  [1;32mok[0m   held cycle exits
+  [1;32mok[0m   resume with pending request
+  [1;32mok[0m   next prompt presents live submission
+  [1;32mok[0m   combined first work completes
+  [1;32mok[0m   full spec tail readable by engine
+  [1;32mok[0m   first request reaches prompt
+  [1;32mok[0m   combined preserves every spec byte
+  [1;32mok[0m   spec exact identity
+  [1;32mok[0m   identical spec with new request resumes
+  [1;32mok[0m   new request retains acceptance binding
+  [1;32mok[0m   request does not pollute base identity
+  [1;32mok[0m   new request clears old acceptance work
+  [1;32mok[0m   no work cannot complete new request
+  [1;32mok[0m   resume includes new request
+  [1;32mok[0m   same spec/request membership preserves streak
+  [1;32mok[0m   same spec/request membership retains binding
+  [1;32mok[0m   new boundary invalidates in-memory pass
+  [1;32mok[0m   new boundary invalidates in-memory work
+  [1;32mok[0m   bare resume works on stored spec and requests
+  [1;32mok[0m   new actual work permits completion
+  [1;32mok[0m   completion retains acceptance binding
+  [1;32mok[0m   resume preserves exact full spec
+[2mstatic[0m
+  [1;32mok[0m   syntax: parses under this bash
+  [1;32mok[0m   syntax: parses under /bin/bash (3.2 on macOS)
+  [1;32mok[0m   shellcheck: no error-level findings
+  [1;32mok[0m   shebang is portable
+  [1;32mok[0m   no bash-4-only constructs
+  [1;32mok[0m   a streamed install runs immediately
+  [1;32mok[0m   a streamed install persists itself
+  [1;32mok[0m   the persisted file starts with a shebang
+  [1;32mok[0m   the persisted file is executable
+  [1;32mok[0m   the persisted file parses
+  [1;32mok[0m   the persisted file runs standalone
+  [1;32mok[0m   the persisted file is still self-updateable
+
+[2mcli[0m
+  [1;32mok[0m   --help exits 0
+  [1;32mok[0m   --help mentions the loop
+  [1;32mok[0m   --help lists commands
+  [1;32mok[0m   version prints a version
+  [1;32mok[0m   unknown flag is rejected
+  [1;32mok[0m   doctor exits 0
+  [1;32mok[0m   doctor reports engines
+  [1;32mok[0m   doctor reports bash version
+  [1;32mok[0m   status exits 0 on a fresh project
+  [1;32mok[0m   --help documents --quiet
+  [1;32mok[0m   --help documents RALPHIE_QUIET
+  [1;32mok[0m   commentary prints by default
+  [1;32mok[0m   --quiet takes the commentary away
+  [1;32mok[0m   -q is the same flag
+  [1;32mok[0m   RALPHIE_QUIET=1 is the same flag
+  [1;32mok[0m   --quiet exits 0
+  [1;32mok[0m   -v after --quiet wins
+
+[2mcore[0m
+  [1;32mok[0m   sha_of is stable and discriminating
+  [1;32mok[0m   json_escape handles quote and backslash
+  [1;32mok[0m   json_escape folds newlines
+  [1;32mok[0m   count_of on no match returns single 0
+  [1;32mok[0m   count_of counts lines
+  [1;32mok[0m   is_int accepts digits
+  [1;32mok[0m   is_int rejects non-digits
+  [1;32mok[0m   is_int rejects empty
+  [1;32mok[0m   human_secs seconds
+  [1;32mok[0m   human_secs minutes
+  [1;32mok[0m   human_secs hours
+  [1;32mok[0m   info prints when quiet is off
+  [1;32mok[0m   dim prints when quiet is off
+  [1;32mok[0m   quiet suppresses info
+  [1;32mok[0m   quiet suppresses dim
+  [1;32mok[0m   quiet keeps warnings
+  [1;32mok[0m   quiet keeps errors
+  [1;32mok[0m   quiet keeps plain output
+  [1;32mok[0m   quiet keeps good news
+  [1;32mok[0m   a suppressed line still returns 0
+
+[2mledger[0m
+  [1;32mok[0m   state round-trips
+  [1;32mok[0m   state default when missing
+  [1;32mok[0m   state_bump adds
+  [1;32mok[0m   unknown state keys are ignored
+  [1;32mok[0m   rewriting a key leaves one value
+  [1;32mok[0m   events.jsonl is valid JSON with escapes intact
+  [1;32mok[0m   one event is one line
+  [1;32mok[0m   events only ever append
+  [1;32mok[0m   prune keeps the newest cycle
+  [1;32mok[0m   prune keeps inside the window
+  [1;32mok[0m   prune removes outside the window
+  [1;32mok[0m   an oversized ledger is rotated, not truncated
+  [1;32mok[0m   the rotated ledger keeps every event
+  [1;32mok[0m   fingerprint changes when the tree changes
+  [1;32mok[0m   fingerprint is stable when nothing changes
+  [1;32mok[0m   ledger_init does not touch .gitignore
+  [1;32mok[0m   a run ignores ralphie's own state
+  [1;32mok[0m   it does so without touching .gitignore
+
+[2mlock[0m
+  [1;32mok[0m   lock acquires
+  [1;32mok[0m   second lock is refused
+  [1;32mok[0m   lock re-acquires after release
+  [1;32mok[0m   a stale lock from a dead pid is cleared
+
+[2mgates[0m
+  [1;32mok[0m   a runnable passing command is accepted
+  [1;32mok[0m   a runnable failing command is still accepted (project is broken, not the gate)
+  [1;32mok[0m   a missing command is rejected
+  [1;32mok[0m   a missing TOOL is rejected
+  [1;32mok[0m   a broken PROJECT import is accepted as a real gate
+  [1;32mok[0m   gates_count is a single 0 with no gates
+  [1;32mok[0m   run_gates with no gates does not fail
+  [1;32mok[0m   all-passing gates report green
+  [1;32mok[0m   a failing gate reports red
+  [1;32mok[0m   the failing gate is identified
+  [1;32mok[0m   a gate containing a pipe reports the real failure
+  [1;32mok[0m   a passing piped gate still passes
+flaky gate: 'test -f "/private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p174224988/.ralphie/run/flaky-marker" || { : > "/private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p174224988/.ralphie/run/flaky-marker"; exit 1; }' failed then passed - not a real failure
+  [1;32mok[0m   a gate that fails then passes is treated as passing
+  [1;32mok[0m   the flaky gate is identified
+  [1;32mok[0m   a consistently failing gate still fails
+  [1;32mok[0m   a consistent failure is not called flaky
+  [1;32mok[0m   GATE_RETRIES=0 trusts the first result
+  [1;32mok[0m   comments and blanks are not gates
+  [1;32mok[0m   discovery writes a gates file
+  [1;32mok[0m   the gates file explains itself
+  [1;32mok[0m   env-only selection is explicit
+  [1;32mok[0m   env-only selection chooses custom
+  [1;32mok[0m   provider fallback shim is present
+custom exit 1 (permanent)
+  [1;32mok[0m   failed env-selected custom stays failed
+  [1;32mok[0m   custom actually received the prompt
+  [1;32mok[0m   failed custom never calls a provider
+  [1;32mok[0m   missing env-selected executable fails closed
+  [1;32mok[0m   missing custom does not select a provider
+  [1;32mok[0m   missing custom never probes a provider
+  [1;32mok[0m   missing custom explains the failure
+  [1;32mok[0m   explicit CLI selection overrides env selection
+  [1;32mok[0m   requirements identifies Python
+  [1;32mok[0m   requirements proposes project pytest
+  [1;32mok[0m   requirements proposes project ruff
+  [1;32mok[0m   requirements proposes project mypy
+  [1;32mok[0m   requirements discovers three runnable checks
+  [1;32mok[0m   an existing empty gate file remains operator-owned
+  [1;32mok[0m   empty gate guidance names manual gates
+  [1;32mok[0m   empty gate guidance names rediscovery
+  [1;32mok[0m   help explains workspace boundary
+  [1;32mok[0m   explicit rediscovery restores Python candidates
+
+[2mengine[0m
+  [1;32mok[0m   prime-agent declares autonomy
+  [1;32mok[0m   prime-agent declares gates
+  [1;32mok[0m   prime-agent declares memory
+  [1;32mok[0m   prime-agent declares subagents
+  [1;32mok[0m   prime-agent declares resume
+  [1;32mok[0m   prime-agent declares skills
+  [1;32mok[0m   prime-agent declares json
+  [1;32mok[0m   prime-agent declares usage
+  [1;32mok[0m   prime-agent does not claim to stream
+  [1;32mok[0m   engine_has finds a capability
+  [1;32mok[0m   engine_has rejects a missing capability
+  [1;32mok[0m   prime-agent scores above codex
+  [1;32mok[0m   engine_build(prime-agent, oneshot) returns success
+  [1;32mok[0m   engine_build(prime-agent) produced argv
+  [1;32mok[0m   engine_build(claude, oneshot) returns success
+  [1;32mok[0m   engine_build(claude) produced argv
+  [1;32mok[0m   engine_build(codex, oneshot) returns success
+  [1;32mok[0m   engine_build(codex) produced argv
+  [1;32mok[0m   engine_build(prime-agent, autonomous) returns success
+  [1;32mok[0m   autonomous mode passes --autonomous
+  [1;32mok[0m   autonomous mode passes the gates through
+  [1;32mok[0m   an empty ENGINE_ENV is safe to measure
+  [1;32mok[0m   guarded expansion of an empty array is safe
+  [1;32mok[0m   prime-agent records real usage
+  [1;32mok[0m   claude does not claim usage it cannot show
+  [1;32mok[0m   codex does not claim usage it cannot show
+  [1;32mok[0m   codex streams
+  [1;32mok[0m   prime-agent buffers its answer
+  [1;32mok[0m   claude buffers its answer
+  [1;32mok[0m   a rate limit is transient
+  [1;32mok[0m   an auth failure is permanent
+  [1;32mok[0m   no quota is permanent
+  [1;32mok[0m   an unexplained failure is unknown
+  [1;32mok[0m   a timeout exit is transient
+  [1;32mok[0m   a real answer is usable
+  [1;32mok[0m   an empty answer is rejected
+  [1;32mok[0m   an auth challenge page is rejected as an answer
+  [1;32mok[0m   a sign-in page is rejected as an answer
+  [1;32mok[0m   child_pids_of finds the children of a real process
+  [1;32mok[0m   the ps fallback agrees with pgrep
+  [1;32mok[0m   kill_tree leaves no children behind
+  [1;32mok[0m   a custom engine appears in the table
+
+[2mreport[0m
+  [1;32mok[0m   status parses
+  [1;32mok[0m   summary parses
+  [1;32mok[0m   lesson parses
+  [1;32mok[0m   a dash means no question
+  [1;32mok[0m   a missing block degrades to progress
+  [1;32mok[0m   status synonyms normalise
+  [1;32mok[0m   an unknown status degrades to progress
+  [1;32mok[0m   lessons are deduplicated
+  [1;32mok[0m   an empty lesson is ignored
+  [1;32mok[0m   the memory file stays bounded
+  [1;32mok[0m   short task unchanged
+  [1;32mok[0m   nested source is unambiguous
+  [1;32mok[0m   long task points to full source
+  [1;32mok[0m   huge task excerpt bounded
+  [1;32mok[0m   task source untouched
+  [1;32mok[0m   short question unchanged
+  [1;32mok[0m   question source pointer
+  [1;32mok[0m   huge question bounded
+  [1;32mok[0m   question source untouched
+  [1;32mok[0m   stored lesson visibly shortened
+  [1;32mok[0m   huge lesson storage bounded
+  [1;32mok[0m   learning ledger bounded too
+  [1;32mok[0m   older useful lesson survives huge lesson
+  [1;32mok[0m   lesson prompt byte budget
+  [1;32mok[0m   lesson omission is visible
+  [1;32mok[0m   no partial lesson lines
+  [1;32mok[0m   newest lesson complete
+  [1;32mok[0m   older lessons stay stored
+  [1;32mok[0m   legacy giant does not evict recent useful lessons
+  [1;32mok[0m   legacy giant prompt remains bounded
+  [1;32mok[0m   history labels engine attempt
+  [1;32mok[0m   history preserves gate evidence
+  [1;32mok[0m   next brief shows failed approach
+  [1;32mok[0m   huge attempt visibly shortened
+  [1;32mok[0m   failed approach history bounded
+
+[2mhuman[0m
+  [1;32mok[0m   a question is recorded
+  [1;32mok[0m   the same question is not asked twice
+  [1;32mok[0m   a different question is recorded
+  [1;32mok[0m   answering closes the question
+  [1;32mok[0m   an answer becomes a durable lesson
+  [1;32mok[0m   the answered question is marked
+  [1;32mok[0m   the notify hook receives the message
+
+[2mloop (mock engine, no network)[0m
+  [1;32mok[0m   the loop reports the gate turning green
+  [1;32mok[0m   the engine's change landed on disk
+  [1;32mok[0m   green work is committed
+  [1;32mok[0m   the engine received a prompt
+  [1;32mok[0m   the prompt states the gates
+  [1;32mok[0m   the prompt states the contract
+  [1;32mok[0m   a still-red gate is reported
+  [1;32mok[0m   red work is not committed
+  [1;32mok[0m   a cycle that changes nothing says so
+  [1;32mok[0m   a quiet run still exits 0
+  [1;32mok[0m   --quiet drops the cycle banner
+  [1;32mok[0m   --quiet drops the cycle detail
+  [1;32mok[0m   --quiet keeps the gate verdict
+  [1;32mok[0m   --quiet keeps a warning on stderr
+  [1;32mok[0m   a stalled loop stops itself
+  [1;32mok[0m   a stalled loop asks for help
+  [1;32mok[0m   a permanent failure is named
+  [1;32mok[0m   a permanent failure is not retried (2s)
+  [1;32mok[0m   a transient failure is retried
+  [1;32mok[0m   a transient failure is classified
+  [1;32mok[0m   a silent buffered engine survives
+  [1;32mok[0m   a silent streaming engine is terminated
+  [1;32mok[0m   an auth challenge page is not accepted as work
+  [1;32mok[0m   a reported lesson is remembered
+  [1;32mok[0m   a reported question reaches the human channel
+  [1;32mok[0m   the ask command shows it
+  [1;32mok[0m   baseline notice cycle succeeds
+  [1;32mok[0m   baseline partial save is explicit
+  [1;32mok[0m   baseline manual save guidance
+  [1;32mok[0m   baseline protected warning is bounded
+  [1;32mok[0m   baseline new file is saved
+  [1;32mok[0m   baseline engine edit remains on disk
+  [1;32mok[0m   baseline original commit is unchanged
+  [1;32mok[0m   baseline operator edit remains on disk
+  [1;32mok[0m   baseline has no unborn warning
+  [1;32mok[0m   unborn notice cycle succeeds
+  [1;32mok[0m   unborn partial save is explicit
+  [1;32mok[0m   unborn manual save guidance
+  [1;32mok[0m   unborn protected warning is bounded
+  [1;32mok[0m   unborn new file is saved
+  [1;32mok[0m   unborn engine edit remains on disk
+  [1;32mok[0m   unborn original is not committed
+  [1;32mok[0m   unborn original remains on disk
+  [1;32mok[0m   unborn baseline guidance precedes engine spend
+  [1;32mok[0m   unborn guidance avoids blind add
+  [1;32mok[0m   pre-existing work is never committed (mine.txt)
+  [1;32mok[0m   pre-existing work is never committed (tracked.txt)
+  [1;32mok[0m   pre-existing work is never committed (sp ace.txt)
+  [1;32mok[0m   pre-existing work is never committed (réservé.txt)
+  [1;32mok[0m   the operator's file is untouched
+  [1;32mok[0m   the agent's own change is committed
+  [1;32mok[0m   an engine path containing spaces is found
+  [1;32mok[0m   a project path containing spaces completes a cycle
+  [1;32mok[0m   work commits from a path containing spaces
+  [1;32mok[0m   doctor works from a path containing spaces
+  [1;32mok[0m   deleting a gate never produces a commit
+  [1;32mok[0m   the deleted gate is restored
+  [1;32mok[0m   the tampering is reported
+  [1;32mok[0m   the cycle is marked untrusted
+  [1;32mok[0m   the lesson is remembered
+  [1;32mok[0m   a human is asked to review it
+  [1;32mok[0m   the project is still genuinely broken
+  [1;32mok[0m   a gate the engine adds is kept
+  [1;32mok[0m   adding a gate is not treated as tampering
+  [1;32mok[0m   the added gate is honoured in the same cycle
+  [1;32mok[0m   deleting .ralphie does not break the run
+  [1;32mok[0m   the engine answer survives the deletion
+  [1;32mok[0m   gates are restored from memory
+  [1;32mok[0m   nothing is committed after state deletion
+  [1;32mok[0m   the ledger directory is re-created
+
+── cycle 1 ─────────────────────────────────────────────
+gates: none - nothing here can be verified
+  focus: propose
+  [1;32mok[0m   no-gate observe cannot complete
+  [1;32mok[0m   observe measured absence of health gates
+  [1;32mok[0m   no-gate observe keeps running
+  [1;32mok[0m   no-gate done report cannot complete
+  [1;32mok[0m   no-gate learn keeps running
+  [1;32mok[0m   neither completion path records done without gates
+
+── cycle 2 ─────────────────────────────────────────────
+gates: green
+  focus: propose
+nothing left to do - gates green, no outstanding work
+  [1;32mok[0m   green observe still completes
+  [1;32mok[0m   green done report still completes
+  [1;32mok[0m   verified completion sets done
+  [1;32mok[0m   no-gate done cycle exits normally
+  [1;32mok[0m   no-gate done run pauses instead of completing
+  [1;32mok[0m   no-gate done cycle is unverified
+  [1;32mok[0m   no-gate done cycle never records done
+  [1;32mok[0m   no-gate done output never claims completion
+  [1;32mok[0m   no-gate done commit stays unverified
+  [1;32mok[0m   no-gate progress cycle exits normally
+  [1;32mok[0m   no-gate progress run pauses instead of completing
+  [1;32mok[0m   no-gate progress cycle is unverified
+  [1;32mok[0m   no-gate progress cycle never records done
+  [1;32mok[0m   no-gate progress output never claims completion
+  [1;32mok[0m   no-gate progress commit stays unverified
+  [1;32mok[0m   no gates is never called green
+  [1;32mok[0m   the operator is told nothing can be verified
+  [1;32mok[0m   unverified work is explicitly reported
+  [1;32mok[0m   the commit message admits it was not verified
+  [1;32mok[0m   the commit message does not claim green
+  [1;32mok[0m   work on an already-dirty file is seen
+  [1;32mok[0m   the gate turning green is noticed
+  [1;32mok[0m   an unsaveable green cycle is reported, not hidden
+  [1;32mok[0m   the operator is told how to save it
+  [1;32mok[0m   the work is left on disk, not discarded
+  [1;32mok[0m   work in untouched files is committed
+  [1;32mok[0m   the operator's file is still excluded
+  [1;32mok[0m   a concurrent read-only command does not block the commit
+  [1;32mok[0m   the ledger keeps one run id
+  [1;32mok[0m   a filename is never executed as code
+  [1;32mok[0m   no injected text is persisted as a gate
+  [1;32mok[0m   the shell gate globs instead of interpolating
+  [1;32mok[0m   the answer is stored exactly as typed
+  [1;32mok[0m   the answer is one line, not split by an escape
+  [1;32mok[0m   a missing option value explains itself
+  [1;32mok[0m   a non-numeric count is rejected clearly
+  [1;32mok[0m   output survives being piped into head
+  [1;32mok[0m   a truncated read prints no error
+  [1;32mok[0m   a full read is still complete JSON
+  [1;32mok[0m   work left over from a red cycle is committed once green
+  [1;32mok[0m   an autonomous commit never includes .env
+  [1;32mok[0m   an autonomous commit never includes big.bin
+  [1;32mok[0m   an autonomous commit never includes node_modules
+  [1;32mok[0m   the real work is still committed
+  [1;32mok[0m   a possible secret is escalated to the operator
+  [1;32mok[0m   build output is noted, not escalated
+  [1;32mok[0m   build output does not become a question
+  [1;32mok[0m   the held-back file is left on disk, not destroyed
+  [1;32mok[0m   a timed-out gate is named as a timeout
+  [1;32mok[0m   the operator is asked about the limit
+  [1;32mok[0m   the engine is told it was a timeout, not a defect
+  [1;32mok[0m   the engine is told not to guess a root cause
+  [1;32mok[0m   a stale stop request is reported, not obeyed silently
+  [1;32mok[0m   the run actually does work
+  [1;32mok[0m   the stale stop file is cleared
+  [1;32mok[0m   the commit records Ralphie-Engine
+  [1;32mok[0m   the commit records Ralphie-Run
+  [1;32mok[0m   the commit records Ralphie-Version
+  [1;32mok[0m   an unrunnable --gate is rejected out loud
+  [1;32mok[0m   a rejected --gate is not persisted
+  [1;32mok[0m   a runnable --gate is added
+  [1;32mok[0m   the operator's .gitignore is never written
+  [1;32mok[0m   no housekeeping lands in the commit
+  [1;32mok[0m   the exclusion is local to the clone
+  [1;32mok[0m   ralphie state stays out of git status
+  [1;32mok[0m   an engine without usage reports no tokens
+  [1;32mok[0m   no token figure is invented
+  [1;32mok[0m   status shows no token line without data
+  [1;32mok[0m   status --json reports zero rather than omitting the field
+  [1;32mok[0m   status --json is a single line
+  [1;32mok[0m   status --json is valid JSON with typed fields
+  [1;32mok[0m   status --json reports open questions
+./test.sh: line 1970: /private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p137457624/.ralphie/OBJECTIVE.md: No such file or directory
+  [1;32mok[0m   forget clears the objective
+  [1;32mok[0m   the objective file is gone
+  [1;32mok[0m   forget is safe to repeat
+  [1;32mok[0m   a resumed objective is announced
+  [1;32mok[0m   the stored objective is shown
+  [1;32mok[0m   an explicit objective still leads
+  [1;32mok[0m   the backlog is still shown as context
+  [1;32mok[0m   completed backlog items are not shown
+  [1;32mok[0m   every tuning knob is documented
+  [1;32mok[0m   damaging the gates never yields a commit [rm -f .ralphie/gates]
+  [1;32mok[0m   damaging the gates never yields a commit [: > .ralphie/gates]
+  [1;32mok[0m   damaging the gates never yields a commit [sed -i.bak 's/^grep/# grep/']
+  [1;32mok[0m   damaging the gates never yields a commit [rm -f .ralphie/gates; mkdir ]
+  [1;32mok[0m   damaging the gates never yields a commit [chmod 000 .ralphie/gates]
+  [1;32mok[0m   damaging the gates never yields a commit [printf 'grep -q WORKING app.]
+  [1;32mok[0m   damaging the gates never yields a commit [rm -rf .ralphie]
+  [1;32mok[0m   no shell errors leak [deletes a tracked file]
+  [1;32mok[0m   no secret is ever committed [deletes a tracked file]
+  [1;32mok[0m   no shell errors leak [secret in a subdirectory]
+  [1;32mok[0m   no secret is ever committed [secret in a subdirectory]
+  [1;32mok[0m   no shell errors leak [symlink to a system file]
+  [1;32mok[0m   no secret is ever committed [symlink to a system file]
+  [1;32mok[0m   no shell errors leak [force-adds its own secret]
+  [1;32mok[0m   no secret is ever committed [force-adds its own secret]
+  [1;32mok[0m   no shell errors leak [gates file is a symlink]
+  [1;32mok[0m   no secret is ever committed [gates file is a symlink]
+  [1;32mok[0m   a read-only state directory fails fast (1s)
+  [1;32mok[0m   a flooding gate log is trimmed to its tail (262144b)
+  [1;32mok[0m   the prompt stays small under a flood (5488b)
+  [1;32mok[0m   a second run refuses to start
+  [1;32mok[0m   the loop still commits under interference
+  [1;32mok[0m   the ledger is not split across run ids
+  [1;32mok[0m   the state file is never torn
+  [1;32mok[0m   the lock is released at the end
+  [1;32mok[0m   a gate that eats a gate never yields a commit
+  [1;32mok[0m   the eaten gate is restored and stays
+  [1;32mok[0m   the tampering is recorded in the ledger
+  [1;32mok[0m   the project is still broken
+  [1;32mok[0m   ralphie's own file is not a gate
+  [1;32mok[0m   a renamed copy of ralphie is not a gate either
+  [1;32mok[0m   an unverified cycle is not counted green
+  [1;32mok[0m   an unverified cycle is counted honestly
+  [1;32mok[0m   status admits nothing checked it
+  [1;32mok[0m   a detached HEAD is called out
+  [1;32mok[0m   and escalated to the operator
+  [1;32mok[0m   a slow notification hook still delivers
+  [1;32mok[0m   a gate leaves no orphaned process
+  [1;32mok[0m   no job-control noise reaches the operator
+  [1;32mok[0m   only one of four racing runs starts a cycle
+  [1;32mok[0m   redetect refuses while a loop is running
+  [1;32mok[0m   redetect works once the loop is done
+  [1;32mok[0m   an in-flight rename is left entirely alone
+  [1;32mok[0m   an unusable state file is reported, not ignored
+  [1;32mok[0m   the state file is repaired to a real file
+  [1;32mok[0m   the cycle number is recorded again
+  [1;32mok[0m   the cycle is numbered in the output
+  [1;32mok[0m   the recovery point still works
+  [1;32mok[0m   a whitespace-only reply is not an answer
+  [1;32mok[0m   an injected report block cannot declare done
+  [1;32mok[0m   an injected report block cannot cause a commit
+  [1;32mok[0m   the project is still reported broken
+  [1;32mok[0m   corrupt state (trunc) produces no shell error
+  [1;32mok[0m   corrupt state (binary) produces no shell error
+  [1;32mok[0m   corrupt state (dup) produces no shell error
+  [1;32mok[0m   corrupt state (huge) produces no shell error
+  [1;32mok[0m   a bad update source leaves the script untouched [evil.txt]
+  [1;32mok[0m   the script still runs afterwards [evil.txt]
+  [1;32mok[0m   a bad update source leaves the script untouched [fake-ralphie.sh]
+  [1;32mok[0m   the script still runs afterwards [fake-ralphie.sh]
+  [1;32mok[0m   a bad update source leaves the script untouched [truncated.sh]
+  [1;32mok[0m   the script still runs afterwards [truncated.sh]
+  [1;32mok[0m   a bad update source leaves the script untouched [adir]
+  [1;32mok[0m   the script still runs afterwards [adir]
+  [1;32mok[0m   a bad update source leaves the script untouched [nope.sh]
+  [1;32mok[0m   the script still runs afterwards [nope.sh]
+  [1;32mok[0m   a plaintext http source is refused
+  [1;32mok[0m   an identical source reports already current
+  [1;32mok[0m   same-version changed bytes can update intentionally
+  [1;32mok[0m   update publishes the complete candidate
+  [1;32mok[0m   successful update retains exact previous bytes
+  [1;32mok[0m   update refuses partial-copy failure
+  [1;32mok[0m   update failure preserves original bytes [partial-copy]
+  [1;32mok[0m   failed update never claims publication [partial-copy]
+  [1;32mok[0m   update refuses backup-copy failure
+  [1;32mok[0m   update failure preserves original bytes [backup-copy]
+  [1;32mok[0m   failed update never claims publication [backup-copy]
+  [1;32mok[0m   update refuses backup-corrupt failure
+  [1;32mok[0m   update failure preserves original bytes [backup-corrupt]
+  [1;32mok[0m   failed update never claims publication [backup-corrupt]
+  [1;32mok[0m   update refuses backup-directory failure
+  [1;32mok[0m   update failure preserves original bytes [backup-directory]
+  [1;32mok[0m   failed update never claims publication [backup-directory]
+  [1;32mok[0m   update refuses publish failure
+  [1;32mok[0m   update failure preserves original bytes [publish]
+  [1;32mok[0m   failed update never claims publication [publish]
+  [1;32mok[0m   failed publication retains exact previous bytes
+  [1;32mok[0m   update refuses source-changed failure
+  [1;32mok[0m   update preserves an edit made while downloading
+  [1;32mok[0m   failed update never claims publication [source-changed]
+  [1;32mok[0m   update rejects computed version metadata
+  [1;32mok[0m   version rejection preserves the original [computed]
+  [1;32mok[0m   nonliteral or ambiguous version explains the refusal [computed]
+  [1;32mok[0m   update rejects duplicate version metadata
+  [1;32mok[0m   version rejection preserves the original [duplicate]
+  [1;32mok[0m   nonliteral or ambiguous version explains the refusal [duplicate]
+  [1;32mok[0m   update rejects older version metadata
+  [1;32mok[0m   version rejection preserves the original [older]
+  [1;32mok[0m   older version explains the refusal
+  [1;32mok[0m   an update through a symlink chain succeeds
+  [1;32mok[0m   candidate validation executes no candidate code
+  [1;32mok[0m   update preserves the entry symlink
+  [1;32mok[0m   update preserves the intermediate symlink
+  [1;32mok[0m   update preserves target permissions
+  [1;32mok[0m   symlink update changes the intended target completely
+  [1;32mok[0m   symlink update keeps the old target bytes as previous
+  [1;32mok[0m   a stalled wget update is refused
+  [1;32mok[0m   the update explains the downloader deadline
+  [1;32mok[0m   update requests a 60-second whole-download deadline
+  [1;32mok[0m   the downloader receives no operator stdin
+  [1;32mok[0m   download timeout preserves original bytes
+  [1;32mok[0m   the timed-out downloader is reaped
+  [1;32mok[0m   an installed CLI updates with an independent selected project
+  [1;32mok[0m   the CLI publishes the complete installed candidate
+  [1;32mok[0m   the selected project retains the previous installed script
+  [1;32mok[0m   the replaced CLI still executes
+  [1;32mok[0m   updating the recovery copy is refused [direct]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [direct]
+  [1;32mok[0m   recovery alias refusal explains the conflict [direct]
+  [1;32mok[0m   updating the recovery copy is refused [parent-symlink]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [parent-symlink]
+  [1;32mok[0m   recovery alias refusal explains the conflict [parent-symlink]
+  [1;32mok[0m   updating the recovery copy is refused [case-alias]
+  [1;32mok[0m   recovery alias refusal preserves previous bytes [case-alias]
+  [1;32mok[0m   recovery alias refusal explains the conflict [case-alias]
+  [1;32mok[0m   the remote is never advanced
+  [1;32mok[0m   the work is committed locally
+  [1;32mok[0m   no push is ever recorded
+  [1;32mok[0m   earlier ledger lines are never rewritten
+  [1;32mok[0m   every ledger line is valid JSON
+  [1;32mok[0m   a configured custom engine is selected
+  [1;32mok[0m   the custom engine actually ran
+  [1;32mok[0m   the objective survives a red gate
+  [1;32mok[0m   and the urgent problem is stated separately
+  [1;32mok[0m   the commit records the real objective
+  [1;32mok[0m   the verify result is reused instead of re-running gates (2 of 3)
+  [1;32mok[0m   six instant gates do not cost seconds of waiting (4s)
+  [1;32mok[0m   gates deleted between runs are restored
+  [1;32mok[0m   the restoration is reported
+  [1;32mok[0m   a broken project is still never committed
+  [1;32mok[0m   editing the running script is reported
+  [1;32mok[0m   and escalated to a human
+  [1;32mok[0m   a self-modifying cycle cannot claim done
+  [1;32mok[0m   an engine question is attributed to the engine
+  [1;32mok[0m   work is committed inside a git worktree
+  [1;32mok[0m   a multi-line --gate is refused
+  [1;32mok[0m   the smuggled second command is never stored
+  [1;32mok[0m   the file it would have deleted is untouched
+  [1;32mok[0m   non-numeric state still yields valid JSON
+  [1;32mok[0m   the cycle count is rebuilt from the ledger
+  [1;32mok[0m   the rebuild is reported
+  [1;32mok[0m   a directory in place of .ralphie/gates is repaired
+  [1;32mok[0m   no raw shell error leaks for gates
+  [1;32mok[0m   a directory in place of .ralphie/ASK.md is repaired
+  [1;32mok[0m   no raw shell error leaks for ASK.md
+  [1;32mok[0m   a directory in place of .ralphie/MEMORY.md is repaired
+  [1;32mok[0m   no raw shell error leaks for MEMORY.md
+  [1;32mok[0m   a directory in place of .ralphie/state is repaired
+  [1;32mok[0m   no raw shell error leaks for state
+  [1;32mok[0m   a stated password is withheld
+  [1;32mok[0m   an aws key is withheld
+  [1;32mok[0m   a github token is withheld
+  [1;32mok[0m   an ordinary answer is untouched
+  [1;32mok[0m   a secret never reaches the durable memory
+  [1;32mok[0m   the useful part of the answer is kept
+  [1;32mok[0m   an implausible origin is refused [https://github.com/a/b/../../../../evil]
+  [1;32mok[0m   an implausible origin is refused [https://github.com/a/b/c/d]
+  [1;32mok[0m   an implausible origin is refused [https://github.com/a b/c]
+  [1;32mok[0m   a normal origin still derives a usable url
+  [1;32mok[0m   an unwritable state directory is diagnosed honestly
+  [1;32mok[0m   it is not blamed on a stale lock
+  [1;32mok[0m   a phantom red with no evidence is impossible
+  [1;32mok[0m   no message claims the gates passed when they did not
+  [1;32mok[0m   editing the running script is reported
+  [1;32mok[0m   no gate lesson is fabricated
+  [1;32mok[0m   self-improvement is not blocked, as documented
+  [1;32mok[0m   separate --once runs still reach the stall exit code
+  [1;32mok[0m   the streak is carried between processes
+  [1;32mok[0m   rotation happens below the keep window
+  [1;32mok[0m   a second rotation shifts, it does not overwrite
+  [1;32mok[0m   the oldest generation survives
+  [1;32mok[0m   five generations are retained, not three
+  [1;32mok[0m   the newest generation is first
+  [1;32mok[0m   the oldest retained generation is correct
+  [1;32mok[0m   rotate_ledger stands alone
+  [1;32mok[0m   and it really rotated, so the silence means something
+  [1;32mok[0m   a fallback is recorded per cycle, not adopted
+  [1;32mok[0m   a transient failure is classified as transient
+  [1;32mok[0m   the engine is not permanently demoted
+  [1;32mok[0m   a one-minute run stays close to one minute (64s)
+  [1;32mok[0m   no gate event is recorded without its evidence
+  [1;32mok[0m   the ledger records every passing cycle
+  [1;32mok[0m   every passing cycle produced a commit
+  [1;32mok[0m   one backlog item per green cycle
+  [1;32mok[0m   cycle artifacts stay inside the keep window (2)
+  [1;32mok[0m   a read-only gates file keeps its content
+  [1;32mok[0m   a read-only memory file keeps its lessons
+  [1;32mok[0m   a read-only objective keeps its text
+  [1;32mok[0m   a refused commit is reported
+  [1;32mok[0m   a refused commit is not counted green
+  [1;32mok[0m   a refused commit is counted blocked
+  [1;32mok[0m   and not as a gate failure
+  [1;32mok[0m   and escalated to the operator
+  [1;32mok[0m   the refusal is in the ledger
+  [1;32mok[0m   a committed path is released
+  [1;32mok[0m   the operator's later edit is never committed
+  [1;32mok[0m   a gate broken by ignored content is still detected
+  [1;32mok[0m   no fabricated gate event is written
+  [1;32mok[0m   state and git agree on the number of green cycles
+  [1;32mok[0m   the ledger agrees too (no rotation loss at this size)
+  [1;32mok[0m   one backlog item per green cycle
+  [1;32mok[0m   the lesson counter matches MEMORY.md
+  [1;32mok[0m   cycle artifacts stay inside the keep window (2)
+  [1;32mok[0m   no per-run snapshots accumulate (1)
+  [1;32mok[0m   every ledger line in every generation is valid JSON
+  [1;32mok[0m   a staged-only revision survives
+  [1;32mok[0m   the working tree is untouched
+  [1;32mok[0m   the agent's work is still committed
+  [1;32mok[0m   the operator's file is not committed
+  [1;32mok[0m   no phantom staged deletion is left behind
+  [1;32mok[0m   and calc.py really is tracked
+  [1;32mok[0m   no private index file is left behind
+  [1;32mok[0m   the agent's new work is committed
+  [1;32mok[0m   a stale claim never commits the operator's later work
+  [1;32mok[0m   the operator's text is intact on disk
+  [1;32mok[0m   the operator is warned about their own changes
+  [1;32mok[0m   a deleted dependency invalidates the cached verdict
+  [1;32mok[0m   no fabricated gate event is written
+  [1;32mok[0m   a run cannot declare success without running a gate
+  [1;32mok[0m   a self-created repo never commits .ralphie/
+  [1;32mok[0m   and .ralphie is ignored from the first run
+  [1;32mok[0m   a rebuild never invents green cycles
+  [1;32mok[0m   unverified cycles are recovered as unverified (3)
+  [1;32mok[0m   repeated --once runs reach done
+  [1;32mok[0m   an unreadable owned file does not fail a command
+  [1;32mok[0m   nor any other command
+  [1;32mok[0m   an unreadable file keeps its content
+  [1;32mok[0m   deliberate write protection is not stripped
+  [1;32mok[0m   a newline in a filename does not break ownership
+  [1;32mok[0m   a dead run is not reported as running
+  [1;32mok[0m   status --json agrees
+  [1;32mok[0m   the loss is noticed and repaired
+  [1;32mok[0m   the loop never retargets itself to work nobody asked for
+  [1;32mok[0m   every cycle still works on the stated objective (2)
+  [1;32mok[0m   a path containing a TAB is claimed correctly
+  [1;32mok[0m   an edited TAB path releases the claim
+  [1;32mok[0m   an operator edit releases the claim
+  [1;32mok[0m   identical bytes restore the claim
+  [1;32mok[0m   a binary file is claimed correctly
+  [1;32mok[0m   a deletion by ralphie is eventually committed
+  [1;32mok[0m   an in-progress merge is not concluded
+  [1;32mok[0m   the operator can still abort their merge
+  [1;32mok[0m   and is told why nothing was committed
+  [1;32mok[0m   a fresh repository does not hit an unbound variable
+  [1;32mok[0m   the first commit leaves no phantom staged deletions
+  [1;32mok[0m   green cycles match commits
+  [1;32mok[0m   losing the exclusion list refuses the commit
+  [1;32mok[0m   the red cycle really left owned work
+  [1;32mok[0m   a released claim is not immediately re-taken
+  [1;32mok[0m   the outside edit stays on disk
+  [1;32mok[0m   a restored gate goes back in its original place
+  [1;32mok[0m   the operator's header stays at the top
+  [1;32mok[0m   the ledger exists, so this test can fail
+  [1;32mok[0m   five status calls write nothing to the ledger
+  [1;32mok[0m   an unreadable file leaks no raw shell error
+  [1;32mok[0m   a duplicate record does not shadow the true claim
+  [1;32mok[0m   the gate verdict is still reported honestly
+  [1;32mok[0m   a refused commit is not counted green
+  [1;32mok[0m   it is counted as blocked instead
+  [1;32mok[0m   no pass line enters the append-only ledger
+  [1;32mok[0m   the ledger records why it was blocked
+  [1;32mok[0m   status explains the blocked cycle
+  [1;32mok[0m   rm state keeps pass_count
+  [1;32mok[0m   rm state keeps fail_count
+  [1;32mok[0m   rm state keeps blocked_count
+  [1;32mok[0m   rm state keeps learned_count
+  [1;32mok[0m   rm state keeps total_seconds
+  [1;32mok[0m   the elapsed total was actually non-zero (8s)
+  [1;32mok[0m   a clean-tree run still fails closed
+  [1;32mok[0m   a damaged memory file does not disable the gates
+  [1;32mok[0m   and the real gate still runs
+  [1;32mok[0m   untrusted cycles are counted (3)
+  [1;32mok[0m   status shows them
+  [1;32mok[0m   a tampering cycle is never green
+  [1;32mok[0m   status --json reports them too
+  [1;32mok[0m   and the blocked bucket
+  [1;32mok[0m   the gate name appears once, not twice
+  [1;32mok[0m   a symlinked gate file stays a symlink
+  [1;32mok[0m   the operator's real file is the one repaired
+  [1;32mok[0m   'statuss' is refused, not run as an objective
+  [1;32mok[0m   'stat' is refused, not run as an objective
+  [1;32mok[0m   'doctorr' is refused, not run as an objective
+  [1;32mok[0m   'gate' is refused, not run as an objective
+  [1;32mok[0m   'hel' is refused, not run as an objective
+  [1;32mok[0m   'logs' is refused, not run as an objective
+  [1;32mok[0m   a real one-word objective still works
+  [1;32mok[0m   every cycle lands in exactly one bucket
+  [1;32mok[0m   green cycles equal the commits git really holds
+  [1;32mok[0m   the operator's work survives all of it
+  [1;32mok[0m   and is still on disk
+  [1;32mok[0m   the ledger agrees with the state file on greens
+  [1;32mok[0m   and on untrusted cycles
+  [1;32mok[0m   a run after repeated SIGKILLs still works
+  [1;32mok[0m   the stale lock is released
+  [1;32mok[0m   the append-only ledger is still valid JSON throughout
+  [1;32mok[0m   no green is reported that history cannot show (0 green, 0 commits)
+  [1;32mok[0m   work orphaned by a kill is still on disk
+  [1;32mok[0m   the seal holds against: rm...
+  [1;32mok[0m   the seal holds against: for...
+  [1;32mok[0m   the seal holds against: for...
+  [1;32mok[0m   the seal holds against: true...
+  [1;32mok[0m   an intact seal still allows the commit
+  [1;32mok[0m   a healthy gate file clears the broken flag
+  [1;32mok[0m   a committed cycle is not recorded as blocked
+  [1;32mok[0m   and the work really was committed
+  [1;32mok[0m   and the rebuild does not invent blocked cycles
+  [1;32mok[0m   an ordinary objective is not refused: asks for input
+  [1;32mok[0m   an ordinary objective is not refused: gate the pipeline
+  [1;32mok[0m   an ordinary objective is not refused: logging is broken
+  [1;32mok[0m   an ordinary objective is not refused: runs too slowly
+  [1;32mok[0m   an ordinary objective is not refused: helper needs a test
+  [1;32mok[0m   an empty argument is not a typo
+  [1;32mok[0m   a lone typo is still refused
+  [1;32mok[0m   a loop making no progress stops early (stopped at 3 of 20)
+  [1;32mok[0m   and says so
+  [1;32mok[0m   --quiet keeps the recovery point
+  [1;32mok[0m   a gate file pointing outside the project is refused
+  [1;32mok[0m   and nothing is committed on an unverifiable tree
+  [1;32mok[0m   a capable engine runs autonomously
+  [1;32mok[0m   a weak engine is driven one shot at a time
+  [1;32mok[0m   a capable engine is told it may delegate
+  [1;32mok[0m   a weak engine is not told to delegate
+  [1;32mok[0m   a capable engine keeps its own memory
+  [1;32mok[0m   a weak engine is not asked to keep memory it has not got
+  [1;32mok[0m   ralphie's own lessons reach a weak engine
+  [1;32mok[0m   and reach a capable one too
+  [1;32mok[0m   capability decides priority, not the engine's name
+  [1;32mok[0m   the most capable engine scores highest
+  [1;32mok[0m   a fresh repo does not commit the operator's draft
+  [1;32mok[0m   nor their secrets
+  [1;32mok[0m   but it does commit its own work
+  [1;32mok[0m   status still works with no timing line in the ledger
+  [1;32mok[0m   status still prints something
+  [1;32mok[0m   doctor still works with no timing line in the ledger
+  [1;32mok[0m   doctor still prints something
+  [1;32mok[0m   gates still works with no timing line in the ledger
+  [1;32mok[0m   gates still prints something
+  [1;32mok[0m   memory still works with no timing line in the ledger
+  [1;32mok[0m   memory still prints something
+  [1;32mok[0m   log still works with no timing line in the ledger
+  [1;32mok[0m   log still prints something
+  [1;32mok[0m   version still works with no timing line in the ledger
+  [1;32mok[0m   version still prints something
+  [1;32mok[0m   closed stdout (normal, 1 lines) exits 141
+  [1;32mok[0m   closed stdout (normal, 1 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (normal, 1 lines) records actual exit reason
+  [1;32mok[0m   closed stdout (normal, 3 lines) exits 141
+  [1;32mok[0m   closed stdout (normal, 3 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (normal, 3 lines) records actual exit reason
+  [1;32mok[0m   closed stdout (normal, 6 lines) exits 141
+  [1;32mok[0m   closed stdout (normal, 6 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (normal, 6 lines) records actual exit reason
+  [1;32mok[0m   closed stdout (ignored, 1 lines) exits 141
+  [1;32mok[0m   closed stdout (ignored, 1 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (ignored, 1 lines) records actual exit reason
+  [1;32mok[0m   closed stdout (ignored, 3 lines) exits 141
+  [1;32mok[0m   closed stdout (ignored, 3 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (ignored, 3 lines) records actual exit reason
+  [1;32mok[0m   closed stdout (ignored, 6 lines) exits 141
+  [1;32mok[0m   closed stdout (ignored, 6 lines) preserves ledger JSON
+  [1;32mok[0m   closed stdout (ignored, 6 lines) records actual exit reason
+  [1;32mok[0m   17-hop restore fails closed
+  [1;32mok[0m   17-hop restore never modifies external target
+  [1;32mok[0m   17-hop gate cannot execute external contents
+  [1;32mok[0m   external gate was not executed
+  [1;32mok[0m   unresolved link limit is failure
+  [1;32mok[0m   cyclic link resolution is failure
+  [1;32mok[0m   resolved 16-hop internal gate is restored
+  [1;32mok[0m   internal target receives remembered gate
+  [1;32mok[0m   failed resolution is not treated as project root
+  [1;32mok[0m   empty resolution is not treated as project root
+  [1;32mok[0m   a two-hop symlink chain out of the project is refused
+  [1;32mok[0m   and nothing is committed
+  [1;32mok[0m   a run without version control exits cleanly
+  [1;32mok[0m   it runs every cycle it was asked for
+  [1;32mok[0m   and every cycle did real work
+  [1;32mok[0m   a broken gate symlink is not written through
+  [1;32mok[0m   a harness that loses its counters exits non-zero
+  [1;32mok[0m   and says so plainly
+  [1;32mok[0m   a swallowed failure is caught, not reported as green
+  [1;32mok[0m   and the loss is named
+  [1;32mok[0m   an empty filter run exits non-zero
+  [1;32mok[0m   and names the filter
+  [1;32mok[0m   [seed 3] the operator's work is never committed
+  [1;32mok[0m   [seed 3] and is still on disk
+  [1;32mok[0m   [seed 3] every cycle lands in exactly one bucket
+  [1;32mok[0m   [seed 3] green cycles equal real commits
+  [1;32mok[0m   [seed 3] the reported green count never overstates history
+  [1;32mok[0m   [seed 3] no raw shell error reaches the operator
+  [1;32mok[0m   [seed 3] the run really ran (4 cycles)
+  [1;32mok[0m   [seed 3] the ledger is valid JSON throughout
+  [1;32mok[0m   [seed 3] exits with a documented code (3)
+  [1;32mok[0m   [seed 3] no lock is left behind
+  [1;32mok[0m   [seed 3] cycle numbers never go backwards
+  [1;32mok[0m   [seed 3] ralphie commits no state, secret or artefact
+  [1;32mok[0m   [seed 17] the operator's work is never committed
+  [1;32mok[0m   [seed 17] and is still on disk
+  [1;32mok[0m   [seed 17] every cycle lands in exactly one bucket
+  [1;32mok[0m   [seed 17] green cycles equal real commits
+  [1;32mok[0m   [seed 17] the reported green count never overstates history
+  [1;32mok[0m   [seed 17] no raw shell error reaches the operator
+  [1;32mok[0m   [seed 17] the run really ran (4 cycles)
+  [1;32mok[0m   [seed 17] the ledger is valid JSON throughout
+  [1;32mok[0m   [seed 17] exits with a documented code (3)
+  [1;32mok[0m   [seed 17] no lock is left behind
+  [1;32mok[0m   [seed 17] cycle numbers never go backwards
+  [1;32mok[0m   [seed 17] ralphie commits no state, secret or artefact
+  [1;32mok[0m   [seed 101] the operator's work is never committed
+  [1;32mok[0m   [seed 101] and is still on disk
+  [1;32mok[0m   [seed 101] every cycle lands in exactly one bucket
+  [1;32mok[0m   [seed 101] green cycles equal real commits
+  [1;32mok[0m   [seed 101] the reported green count never overstates history
+  [1;32mok[0m   [seed 101] no raw shell error reaches the operator
+  [1;32mok[0m   [seed 101] the run really ran (8 cycles)
+  [1;32mok[0m   [seed 101] the ledger is valid JSON throughout
+  [1;32mok[0m   [seed 101] exits with a documented code (3)
+  [1;32mok[0m   [seed 101] no lock is left behind
+  [1;32mok[0m   [seed 101] cycle numbers never go backwards
+  [1;32mok[0m   [seed 101] ralphie commits no state, secret or artefact
+  [1;32mok[0m   the sweep really exercised the commit path (4 commits)
+  [1;32mok[0m   a damaged list claims nothing
+  [1;32mok[0m   and the cycle really ran, so that means something
+  [1;32mok[0m   and the next run does not commit the operator's work
+  [1;32mok[0m   the fixture really does track .ralphie/gates
+  [1;32mok[0m   the tracked gate file really did change
+  [1;32mok[0m   ralphie never commits its own state, even when tracked
+  [1;32mok[0m   but it still commits real work
+  [1;32mok[0m   the state file is repaired to a file
+  [1;32mok[0m   no orphaned temp files accumulate
+  [1;32mok[0m   the ledger still names every cycle
+  [1;32mok[0m   no cycle event is recorded as cycle 0
+  [1;32mok[0m   a git that cannot stage is never counted green
+  [1;32mok[0m   and the operator is told why
+  [1;32mok[0m   a destroyed repository is never counted green
+  [1;32mok[0m   and it says the repository is gone
+  [1;32mok[0m   safe accounting run completes
+  [1;32mok[0m   safe engine commit counts green
+  [1;32mok[0m   safe engine commit does not stall
+  [1;32mok[0m   safe engine history retained
+state was missing; rebuilt cycle=3 from the ledger
+  [1;32mok[0m   safe ledger rebuild agrees with green count
+  [1;32mok[0m   protected accounting run completes
+  [1;32mok[0m   protected engine commit counts green
+  [1;32mok[0m   protected engine commit does not stall
+  [1;32mok[0m   protected engine history retained
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   protected ledger rebuild agrees with green count
+  [1;32mok[0m   stolen accounting run completes
+  [1;32mok[0m   stolen engine history never counts green
+  [1;32mok[0m   stolen engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   stolen ledger rebuild agrees with green count
+  [1;32mok[0m   empty accounting run completes
+  [1;32mok[0m   empty engine history never counts green
+  [1;32mok[0m   empty engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   empty ledger rebuild agrees with green count
+  [1;32mok[0m   rewind accounting run completes
+  [1;32mok[0m   rewind engine history never counts green
+  [1;32mok[0m   rewind engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   rewind ledger rebuild agrees with green count
+  [1;32mok[0m   secret accounting run completes
+  [1;32mok[0m   secret engine history never counts green
+  [1;32mok[0m   secret engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   secret ledger rebuild agrees with green count
+  [1;32mok[0m   transient accounting run completes
+  [1;32mok[0m   transient engine history never counts green
+  [1;32mok[0m   transient engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   transient ledger rebuild agrees with green count
+  [1;32mok[0m   branch accounting run completes
+  [1;32mok[0m   branch engine history never counts green
+  [1;32mok[0m   branch engine history counts blocked
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   branch ledger rebuild agrees with green count
+  [1;32mok[0m   red accounting run completes
+  [1;32mok[0m   red engine history never counts green
+  [1;32mok[0m   red gates count failure
+state was missing; rebuilt cycle=1 from the ledger
+  [1;32mok[0m   red ledger rebuild agrees with green count
+  [1;32mok[0m   no git and no gates is never green
+  [1;32mok[0m   no git and no gates counts real work as unverified
+state was missing; rebuilt cycle=2 from the ledger
+  [1;32mok[0m   unverified count survives ledger rebuild
+  [1;32mok[0m   ledger rebuild never invents green cycles
+  [1;32mok[0m   an unknown silent failure is never counted green
+  [1;32mok[0m   and it is reported, not hidden
+  [1;32mok[0m   and no commit was invented
+  [1;32mok[0m   the control run still goes green
+  [1;32mok[0m   the sub-project's own work IS committed
+  [1;32mok[0m   and nothing outside the sub-project is
+  [1;32mok[0m   the secret never reaches history
+  [1;32mok[0m   the operator's draft is still on disk
+  [1;32mok[0m   the operator's index is left alone
+  [1;32mok[0m   subproject fingerprints use repository paths
+  [1;32mok[0m   subproject ownership notices changed bytes
+  [1;32mok[0m   subproject changed ownership becomes protected
+  [1;32mok[0m   subproject work is saved
+  [1;32mok[0m   subproject runtime stays out of the commit
+  [1;32mok[0m   subproject commit excludes sibling changes
+  [1;32mok[0m   subproject commit excludes large.bin
+  [1;32mok[0m   subproject large.bin remains on disk
+  [1;32mok[0m   subproject commit excludes outside-link
+  [1;32mok[0m   subproject outside-link remains on disk
+  [1;32mok[0m   subproject newline path remains protected
+  [1;32mok[0m   subproject operator bytes remain intact
+  [1;32mok[0m   subproject never claims sibling changes
+  [1;32mok[0m   subproject retires legacy sibling ownership
+  [1;32mok[0m   subproject accepts a valid engine commit
+  [1;32mok[0m   subproject rejects engine commits of runtime state
+3 path(s) were already modified before this run - they will not be committed
+no baseline commit: existing protected files will remain unsaved, even if the engine edits them
+  before engine work, consider stopping to review and commit only a safe baseline; do not add private files blindly
+  [1;32mok[0m   unborn staged path is protected
+  [1;32mok[0m   unborn staged path is recorded exactly
+  [1;32mok[0m   unborn new work is committed
+  [1;32mok[0m   unborn protected path is not committed
+  [1;32mok[0m   unborn exact staged revision survives
+  [1;32mok[0m   unborn current working bytes remain on disk
+  [1;32mok[0m   literal-pathspec magic project saves its own work
+  [1;32mok[0m   literal-pathspec magic project excludes sibling work
+  [1;32mok[0m   literal-pathspec sibling work stays on disk
+  [1;32mok[0m   literal-pathspec gate commands retain intentional Git expressions
+2 path(s) were already modified before this run - they will not be committed
+  [1;32mok[0m   literal-pathspec wildcard exclusion preserves other engine work
+  [1;32mok[0m   literal-pathspec wildcard filename is saved
+  [1;32mok[0m   literal-pathspec protected wildcard file remains uncommitted
+  [1;32mok[0m   literal-pathspec exact staged bytes survive for operator*.txt
+  [1;32mok[0m   literal-pathspec working bytes survive for operator*.txt
+  [1;32mok[0m   literal-pathspec exact staged bytes survive for new-other.txt
+  [1;32mok[0m   literal-pathspec working bytes survive for new-other.txt
+  [1;32mok[0m   sibling-ownership run succeeds
+  [1;32mok[0m   sibling-ownership saved accepted project can complete
+  [1;32mok[0m   sibling-ownership project work saved
+  [1;32mok[0m   sibling-ownership external work stays uncommitted
+  [1;32mok[0m   sibling-ownership external bytes remain on disk
+  [1;32mok[0m   sibling-ownership no false outstanding project work
+  [1;32mok[0m   runtime-ownership root never claims tracked gates
+  [1;32mok[0m   runtime-ownership root retires legacy runtime claims
+  [1;32mok[0m   runtime-ownership root run succeeds
+  [1;32mok[0m   runtime-ownership root saved accepted work completes
+  [1;32mok[0m   runtime-ownership root keeps operator gate changes on disk
+  [1;32mok[0m   runtime-ownership root leaves no false unsaved work
+  [1;32mok[0m   runtime-ownership subproject never claims tracked gates
+  [1;32mok[0m   runtime-ownership subproject retires legacy runtime claims
+  [1;32mok[0m   runtime-ownership subproject run succeeds
+  [1;32mok[0m   runtime-ownership subproject saved accepted work completes
+  [1;32mok[0m   runtime-ownership subproject keeps operator gate changes on disk
+  [1;32mok[0m   runtime-ownership subproject leaves no false unsaved work
+  [1;32mok[0m   the fixture really did break the project
+  [1;32mok[0m   a flaky verify gate never promotes work
+  [1;32mok[0m   and the cycle is not counted green
+  [1;32mok[0m   and the operator is told the gate cannot decide
+  [1;32mok[0m   a genuinely green project still commits
+  [1;32mok[0m   the ledger is repaired to a file
+  [1;32mok[0m   and it records again
+  [1;32mok[0m   status never offers a destructive undo
+  [1;32mok[0m   and neither does the run banner
+  [1;32mok[0m   it offers the non-destructive one
+  [1;32mok[0m   the undo it recommends keeps the operator's edit
+  [1;32mok[0m   it either undoes the commit or refuses, never both-and-lose
+  [1;32mok[0m   status --json normalizes poisoned cycle
+  [1;32mok[0m   status --json normalizes poisoned pass
+  [1;32mok[0m   status --json normalizes poisoned fail
+  [1;32mok[0m   status --json normalizes poisoned lessons
+  [1;32mok[0m   status --json normalizes poisoned blocked
+  [1;32mok[0m   status --json normalizes poisoned untrusted
+  [1;32mok[0m   status --json normalizes poisoned unverified
+  [1;32mok[0m   status --json survives a poisoned state file
+  [1;32mok[0m   and still reports the project
+  [1;32mok[0m   the previous gate file is kept
+  [1;32mok[0m   and the operator is told where
+  [1;32mok[0m   the baseline no longer pins the old gate
+  [1;32mok[0m   and the next run does not restore it
+  [1;32mok[0m   file-answer custom engine completes through its advertised destination
+  [1;32mok[0m   file-answer destination is the current attempt path
+  [1;32mok[0m   file-answer prompt is delivered intact on stdin
+  [1;32mok[0m   file-answer report is parsed from the file
+  [1;32mok[0m   file-answer diagnostics stay in the log
+  [1;32mok[0m   file-answer does not overwrite an inherited destination
+  [1;32mok[0m   file-answer destination stays local to the child environment
+  [1;32mok[0m   file-answer honors the explicit custom provider
+  [1;32mok[0m   version probe does not inherit operator stdin
+  [1;32mok[0m   completed version probe is reaped
+  [1;32mok[0m   completed version probe releases child tracking
+  [1;32mok[0m   version probe is bounded without timeout or gtimeout
+  [1;32mok[0m   version probe returns before the mock's own expiry
+  [1;32mok[0m   version probe requests the fixed fifteen second allowance
+  [1;32mok[0m   terminated version probe leaves no live process or zombie
+  [1;32mok[0m   terminated version probe releases child tracking
+  [1;32mok[0m   Prime is preferred even over a higher capability count
+  [1;32mok[0m   explicit engine outranks Prime preference
+  [1;32mok[0m   custom command outranks Prime preference
+  [1;32mok[0m   unresponsive Prime yields to a responsive engine
+  [1;32mok[0m   missing Prime yields to a responsive engine
+  [1;32mok[0m   Prime receives the operator gate timeout
+  [1;32mok[0m   Prime receives intact gate arguments
+  [1;32mok[0m   Prime gate timeout cannot exceed its call
+  [1;32mok[0m   zero gate timeout uses the finite call boundary
+  [1;32mok[0m   unbounded calls delegate continuation to Ralphie
+  [1;32mok[0m   unbounded Prime argv never sends invalid zero timeout
+  [1;32mok[0m   run deadline bounds an otherwise unlimited call
+  [1;32mok[0m   run deadline also bounds native gates
+  [1;32mok[0m   elapsed budget never becomes an unlimited Prime timeout
+  [1;32mok[0m   Prime CLI error is not an autonomous success
+  [1;32mok[0m   custom autonomous crashes are not successful answers
+  [1;32mok[0m   known Prime gate boundary proceeds to independent verification
+  [1;32mok[0m   killed Prime never borrows a previous gate diagnostic
+  [1;32mok[0m   a terminal crash overrides an earlier gate diagnostic
+  [1;32mok[0m   known Prime work limit avoids repeating the paid attempt
+  [1;32mok[0m   oneshot failure cannot claim an autonomous boundary
+  [1;32mok[0m   an unexplained mock failure is not promoted
+  [1;32mok[0m   failure reason retains exact final exit and class
+  [1;32mok[0m   failure reason names retained log
+  [1;32mok[0m   failure reason includes attempt count
+  [1;32mok[0m   retained log contains the actual diagnostic
+  [1;32mok[0m   failure reason does not relay sensitive log text
+  [1;32mok[0m   terminal does not relay sensitive log text
+  [1;32mok[0m   explicit failure never attempts another provider
+  [1;32mok[0m   permanent mock failure remains a failure
+  [1;32mok[0m   permanent reason retains exact exit and class
+  [1;32mok[0m   permanent reason names retained log
+  [1;32mok[0m   permanent reason does not relay sensitive log text
+  [1;32mok[0m   usage includes paid compaction and branch summaries
+  [1;32mok[0m   cost includes real auxiliary model calls once
+  [1;32mok[0m   auxiliary usage reread does not inflate lifetime totals
+  [1;32mok[0m   latest child aggregate replaces original usage
+  [1;32mok[0m   real aggregate costs only
+  [1;32mok[0m   retained runs do not inflate lifetime delta
+  [1;32mok[0m   rereading aggregate does not double-charge
+  [1;32mok[0m   attribution supplies initially missing usage
+  [1;32mok[0m   late child delta is charged once
+  [1;32mok[0m   late child cost is replayed
+  [1;32mok[0m   selector resolution is delegated: openai/gpt-5
+  [1;32mok[0m   no invented default fallback: openai/gpt-5
+  [1;32mok[0m   no false missing-model warning: openai/gpt-5
+  [1;32mok[0m   mock receives exact explicit selector: openai/gpt-5
+  [1;32mok[0m   selector resolution is delegated: openai/gpt-5:high
+  [1;32mok[0m   no invented default fallback: openai/gpt-5:high
+  [1;32mok[0m   no false missing-model warning: openai/gpt-5:high
+  [1;32mok[0m   mock receives exact explicit selector: openai/gpt-5:high
+  [1;32mok[0m   selector resolution is delegated: gpt-*
+  [1;32mok[0m   no invented default fallback: gpt-*
+  [1;32mok[0m   no false missing-model warning: gpt-*
+  [1;32mok[0m   mock receives exact explicit selector: gpt-*
+  [1;32mok[0m   selector resolution is delegated: unknown-selector
+  [1;32mok[0m   no invented default fallback: unknown-selector
+  [1;32mok[0m   no false missing-model warning: unknown-selector
+  [1;32mok[0m   mock receives exact explicit selector: unknown-selector
+  [1;32mok[0m   the lifetime token total is what was really spent
+  [1;32mok[0m   and THIS run is charged only for itself
+  [1;32mok[0m   and so is the cost
+  [1;32mok[0m   a converging repair reaches its ninth cycle
+  [1;32mok[0m   red-cycle work is saved when verification passes
+  [1;32mok[0m   initial operator edits stay out of the commit
+  [1;32mok[0m   initial operator edits remain on disk
+  [1;32mok[0m   the operator is returned to their own branch
+  [1;32mok[0m   the base branch is left untouched
+  [1;32mok[0m   the work branch is ahead of the base
+  [1;32mok[0m   the branch carries the work
+  [1;32mok[0m   the base branch is remembered
+  [1;32mok[0m   no nonsense undo command on an empty repo
+  [1;32mok[0m   no stray git output leaks
+  [1;32mok[0m   an empty repo is described honestly
+  [1;32mok[0m   a repository is created for the operator
+  [1;32mok[0m   the recovery point is the pre-run commit
+  [1;32mok[0m   the undo command is shown up front
+  [1;32mok[0m   status repeats the undo command
+  [1;32mok[0m   undo really restores the tree
+  [1;32mok[0m   --no-commit is honoured
+  [1;32mok[0m   a second run resumes the cycle count
+  [1;32mok[0m   the ledger records both runs
+  [1;32mok[0m   SIGTERM stops the run
+  [1;32mok[0m   no descendant is orphaned
+  [1;32mok[0m   the lock is released on signal
+  [1;32mok[0m   the stop is recorded honestly
+  [1;32mok[0m   the run remains inspectable afterwards
+  [1;32mok[0m   stop writes a stop request
+  [1;32mok[0m   a machine with no engine says so clearly
+  [1;32mok[0m   a TERM-ignoring gate without timeout returns 124
+  [1;32mok[0m   gate forced termination is bounded
+  [1;32mok[0m   gate process is gone
+  [1;32mok[0m   a gate with a cooperative parent still times out
+  [1;32mok[0m   orphaned TERM-ignoring child is killed
+  [1;32mok[0m   watchdog preserves an ordinary gate failure
+  [1;32mok[0m   watchdog preserves an ordinary gate success
+  [1;32mok[0m   engine timeout applies without a run budget or timeout binary
+  [1;32mok[0m   engine forced termination is bounded
+  [1;32mok[0m   engine process is gone
+  [1;32mok[0m   engine bound does not depend on external timeout behavior
+  [1;32mok[0m   a timed-out commit fails
+  [1;32mok[0m   a timed-out commit sets the failure flag
+  [1;32mok[0m   commit hook forced termination is bounded
+  [1;32mok[0m   a killed pre-commit hook cannot create a commit
+  [1;32mok[0m   hook process is gone
+  [1;32mok[0m   hook timeout leaves actionable evidence
+  [1;32mok[0m   unsaved work survives hook timeout
+
+[2mbudget[0m
+  [1;32mok[0m   an unlimited run reports no deadline
+  [1;32mok[0m   an unlimited run does not cap the engine timeout
+  [1;32mok[0m   an unlimited run is never out of time
+  [1;32mok[0m   the remaining budget is measured
+  [1;32mok[0m   a long engine timeout is capped by the budget
+  [1;32mok[0m   a timeout inside the budget is left alone
+  [1;32mok[0m   an overrun budget reports zero, never a negative
+  [1;32mok[0m   an expired budget is detected
+  [1;32mok[0m   an expired budget never asks for timeout 0
+  [1;32mok[0m   a self-driving engine is given only the time that is left
+  [1;32mok[0m   an unlimited run still gets the full engine timeout
+  [1;32mok[0m   finite output over ceiling fails even if process already exited
+  [1;32mok[0m   resource limit class is independent of report text
+  [1;32mok[0m   oversized answer cannot claim done
+  [1;32mok[0m   autonomous mode cannot forgive a resource-limit
+  [1;32mok[0m   oversized output blocks rather than completes
+  [1;32mok[0m   blocked reason names output resource-limit
+  [1;32mok[0m   output resource limit is not retried
+  [1;32mok[0m   resource limit does not invoke provider fallback
+  [1;32mok[0m   continuous output fails with all timeouts disabled
+  [1;32mok[0m   continuous producer stopped before natural exit
+  [1;32mok[0m   continuous producer is gone
+  [1;32mok[0m   large finite burst fails
+  [1;32mok[0m   oversized failed capture is bounded before copying
+  [1;32mok[0m   failed capture has tail marker
+  [1;32mok[0m   file answers count toward ceiling
+  [1;32mok[0m   oversized file answer is cleared
+  [1;32mok[0m   normal bounded output succeeds
+  [1;32mok[0m   full answer parsed before retention
+  [1;32mok[0m   retained capture fits 256 KiB
+  [1;32mok[0m   truncated capture has explicit marker
+  [1;32mok[0m   retained capture fits 256 KiB
+  [1;32mok[0m   truncated capture has explicit marker
+  [1;32mok[0m   final report remains in retained tail
+  [1;32mok[0m   prompt was not trimmed
+  [1;32mok[0m   provider session was not trimmed
+  [1;32mok[0m   ordinary nonzero exit preserved without timeouts
+  [1;32mok[0m   the watchdog reports a hard limit as a timeout
+  [1;32mok[0m   the watchdog enforces a hard limit without timeout(1) (7s)
+  [1;32mok[0m   the watchdog leaves nothing running
+  [1;32mok[0m   with no limit the engine's own exit code is returned
+  [1;32mok[0m   a --minutes 1 run stops close to its limit (63s)
+  [1;32mok[0m   the time limit is reported
+  [1;32mok[0m   reaching a limit is a clean exit
+  [1;32mok[0m   the run is left paused, not blocked
+  [1;32mok[0m   the ledger records why it stopped
+  [1;32mok[0m   interrupted work is left on disk
+  [1;32mok[0m   interrupted work is still claimed by ralphie
+  [1;32mok[0m   the engine is not left running past the limit
+  [1;32mok[0m   an unlimited run still completes its cycle
+  [1;32mok[0m   an unlimited run never mentions a time limit
+  [1;32mok[0m   --cycles 2 runs exactly two cycles
+  [1;32mok[0m   the cycle limit is reported
+  [1;32mok[0m   project-target script and project share canonical directory
+  [1;32mok[0m   project-target alias cannot hide an unreviewed script
+  [1;32mok[0m   project-target-self group completed
+  [1;32mok[0m   project-target explicit directory overrides environment
+  [1;32mok[0m   project-target canonical directory with spaces
+  [1;32mok[0m   project-target discovery stays read-only
+  [1;32mok[0m   project-target missing directory rejected
+  [1;32mok[0m   project-target missing directory explained
+  [1;32mok[0m   project-target does not create a mistyped directory
+  [1;32mok[0m   project-target missing value rejected
+  [1;32mok[0m   project-target relative environment completes real loop
+  [1;32mok[0m   project-target engine cwd
+  [1;32mok[0m   project-target engine receives canonical environment
+  [1;32mok[0m   project-target prompt uses canonical project
+  [1;32mok[0m   project-target explicit directory completes real loop
+  [1;32mok[0m   project-target specification stays relative to invocation cwd
+  [1;32mok[0m   project-target status reads selected project
+  [1;32mok[0m   project-target status reports selected project
+  [1;32mok[0m   project-target no state outside target: installed
+  [1;32mok[0m   project-target no state outside target: caller
+  [1;32mok[0m   project-target no state outside target: wrong target
+  [1;32mok[0m   discover blank succeeds
+  [1;32mok[0m   discover canonical spaced path
+  [1;32mok[0m   discover no git
+  [1;32mok[0m   discover spaced custom presence
+  [1;32mok[0m   discover blank tree exactly unchanged
+  [1;32mok[0m   discover unwritable directory succeeds
+  [1;32mok[0m   discover unwritable creates no ledger
+  [1;32mok[0m   discover unborn repository
+  [1;32mok[0m   discover clean repository
+  [1;32mok[0m   discover branch
+  [1;32mok[0m   discover existing succeeds
+  [1;32mok[0m   discover dirty
+  [1;32mok[0m   discover born
+  [1;32mok[0m   discover stack
+  [1;32mok[0m   discover known plan count
+  [1;32mok[0m   discover configured distinct
+  [1;32mok[0m   discover candidates distinct
+  [1;32mok[0m   discover candidate command
+  [1;32mok[0m   discover existing filesystem index ledger exactly unchanged
+  [1;32mok[0m   discover rejects unexpected
+  [1;32mok[0m   discover invalid argument reason unexpected
+  [1;32mok[0m   discover rejects --redetect
+  [1;32mok[0m   discover invalid argument reason --redetect
+  [1;32mok[0m   discover rejects --once
+  [1;32mok[0m   discover invalid argument reason --once
+  [1;32mok[0m   discover invalid arguments leave tree unchanged
+  [1;32mok[0m   discover never calls provider parser gate hook filter or network
+  [1;32mok[0m   completion-proof clean verified no-change can complete
+  [1;32mok[0m   completion-proof refused save cannot accept done report
+  [1;32mok[0m   completion-proof untrusted work cannot accept done report
+  [1;32mok[0m   completion-proof self edit still requires review
+  [1;32mok[0m   completion-proof empty checks cannot accept done report
+  [1;32mok[0m   completion-proof red checks cannot accept done report
+  [1;32mok[0m   completion-proof clean control completes
+1 path(s) were already modified before this run - they will not be committed
+  [1;32mok[0m   completion-proof protected log is not actual work
+  [1;32mok[0m   completion-proof eligible changed bytes are actual work
+  [1;32mok[0m   completion-proof no-commit preserves actual-work proof
+  [1;32mok[0m   completion-proof no-Git content changes are actual work
+  [1;32mok[0m   completion-proof no-Git runtime is not actual work
+  [1;32mok[0m   completion-proof hook reaches a bounded stop
+  [1;32mok[0m   completion-proof hook never claims objective done
+  [1;32mok[0m   completion-proof hook cannot save rejected work
+  [1;32mok[0m   completion-proof hook cannot seed green shortcut
+  [1;32mok[0m   completion-proof resumed unchanged owned work is not done
+  [1;32mok[0m   completion-proof resume retries refused save
+  [1;32mok[0m   completion-proof recovered save completes without new edits
+  [1;32mok[0m   completion-proof recovered save makes real commit
+  [1;32mok[0m   completion-proof only successful save counts green
+  [1;32mok[0m   completion-proof hook-accept reaches a bounded stop
+  [1;32mok[0m   completion-proof hook-accept never claims objective done
+  [1;32mok[0m   completion-proof hook-accept cannot save rejected work
+  [1;32mok[0m   completion-proof hook-accept cannot seed green shortcut
+  [1;32mok[0m   completion-proof resumed unchanged owned work is not done
+  [1;32mok[0m   completion-proof resume retries refused save
+  [1;32mok[0m   completion-proof recovered save completes without new edits
+  [1;32mok[0m   completion-proof recovered save makes real commit
+  [1;32mok[0m   completion-proof only successful save counts green
+  [1;32mok[0m   completion-proof hook-request reaches a bounded stop
+  [1;32mok[0m   completion-proof hook-request never claims objective done
+  [1;32mok[0m   completion-proof hook-request cannot save rejected work
+  [1;32mok[0m   completion-proof hook-request cannot seed green shortcut
+  [1;32mok[0m   completion-proof resumed unchanged owned work is not done
+  [1;32mok[0m   completion-proof resume retries refused save
+  [1;32mok[0m   completion-proof old unsaved work cannot complete new request
+  [1;32mok[0m   completion-proof old work is not credited to new request
+  [1;32mok[0m   completion-proof recovered save makes real commit
+  [1;32mok[0m   completion-proof only successful save counts green
+  [1;32mok[0m   completion-proof source reaches a bounded stop
+  [1;32mok[0m   completion-proof source never claims objective done
+  [1;32mok[0m   completion-proof source cannot save rejected work
+  [1;32mok[0m   completion-proof source cannot seed green shortcut
+  [1;32mok[0m   completion-proof acceptance side effect is remeasured red
+  [1;32mok[0m   completion-proof broken acceptance result stays on disk
+  [1;32mok[0m   completion-proof health reaches a bounded stop
+  [1;32mok[0m   completion-proof health never claims objective done
+  [1;32mok[0m   completion-proof health-green progress may still save
+  [1;32mok[0m   completion-proof final health mutation invalidates acceptance
+  [1;32mok[0m   completion-proof stale acceptance really fails on final tree
+  [1;32mok[0m   completion-proof objective reaches a bounded stop
+  [1;32mok[0m   completion-proof objective never claims objective done
+  [1;32mok[0m   completion-proof objective cannot save rejected work
+  [1;32mok[0m   completion-proof objective cannot seed green shortcut
+  [1;32mok[0m   completion-proof acceptance cannot rewrite objective
+  [1;32mok[0m   completion-proof gates reaches a bounded stop
+  [1;32mok[0m   completion-proof gates never claims objective done
+  [1;32mok[0m   completion-proof gates cannot save rejected work
+  [1;32mok[0m   completion-proof gates cannot seed green shortcut
+  [1;32mok[0m   completion-proof acceptance cannot weaken health
+  [1;32mok[0m   completion-proof control reaches a bounded stop
+  [1;32mok[0m   completion-proof control preserves valid completion
+  [1;32mok[0m   completion-proof control honors commit policy
+  [1;32mok[0m   completion-proof read-only acceptance avoids duplicate health run
+  [1;32mok[0m   completion-proof no-commit reaches a bounded stop
+  [1;32mok[0m   completion-proof no-commit preserves valid completion
+  [1;32mok[0m   completion-proof no-commit honors commit policy
+  [1;32mok[0m   completion-proof unchanged red owned work stalls
+  [1;32mok[0m   completion-proof unchanged red work keeps streak
+  [1;32mok[0m   completion-proof only changed red cycle counts progress
+  [1;32mok[0m   completion-proof observe control first reaches done
+  [1;32mok[0m   completion-proof damaged observe cannot complete shortcut
+  [1;32mok[0m   completion-proof damaged observe adds no done event
+  [1;32mok[0m   exit-descendants child started before cleanup
+/private/var/folders/v2/2ppjynxs689dkprm2gnhf1dh0000gn/T/ralphie-tests.24114/p34405893/ralphie.sh: line 831: 82488 Terminated: 15          PIDFILE="$d/child.pid" /bin/bash -c '"$1" & wait' parent "$d/deaf-child"
+  [1;32mok[0m   exit-descendants cleanup stays bounded
+  [1;32mok[0m   exit-descendants orphan cannot ignore final kill
+  [1;32mok[0m   exit-descendants unrelated process remains alive
+  [1;32mok[0m   exit-descendants tracked list is cleared
+  [1;32mok[0m   cli-report explicit run selects run
+  [1;32mok[0m   cli-report explicit run parses --once
+  [1;32mok[0m   cli-report explicit run preserves objective bytes
+  [1;32mok[0m   cli-report explicit run consumes arguments
+  [1;32mok[0m   cli-report options before run survive
+  [1;32mok[0m   cli-report command-looking objective stays objective
+  [1;32mok[0m   cli-report objective does not redispatch
+  [1;32mok[0m   cli-report separator preserves option-looking text
+  [1;32mok[0m   cli-report separator stops option parsing
+  [1;32mok[0m   cli-report explicit run finishes
+  [1;32mok[0m   cli-report explicit run invokes engine once
+  [1;32mok[0m   cli-report explicit run persists objective
+  [1;32mok[0m   cli-report explicit run presents objective
+  [1;32mok[0m   cli-report explicit run accepts --spec
+  [1;32mok[0m   cli-report spec bytes remain exact
+  [1;32mok[0m   cli-report invalid run option fails
+  [1;32mok[0m   cli-report invalid run option explains why
+  [1;32mok[0m   cli-report integer []
+  [1;32mok[0m   cli-report decimal []
+  [1;32mok[0m   cli-report integer [0]
+  [1;32mok[0m   cli-report decimal [0]
+  [1;32mok[0m   cli-report integer [000]
+  [1;32mok[0m   cli-report decimal [000]
+  [1;32mok[0m   cli-report integer [007]
+  [1;32mok[0m   cli-report decimal [007]
+  [1;32mok[0m   cli-report integer [08]
+  [1;32mok[0m   cli-report decimal [08]
+  [1;32mok[0m   cli-report integer [000184467440737095516161234567890]
+  [1;32mok[0m   cli-report decimal [000184467440737095516161234567890]
+  [1;32mok[0m   cli-report integer [.5]
+  [1;32mok[0m   cli-report decimal [.5]
+  [1;32mok[0m   cli-report integer [1.]
+  [1;32mok[0m   cli-report decimal [1.]
+  [1;32mok[0m   cli-report integer [0001.2300]
+  [1;32mok[0m   cli-report decimal [0001.2300]
+  [1;32mok[0m   cli-report integer [.000]
+  [1;32mok[0m   cli-report decimal [.000]
+  [1;32mok[0m   cli-report integer [000.001]
+  [1;32mok[0m   cli-report decimal [000.001]
+  [1;32mok[0m   cli-report integer [.]
+  [1;32mok[0m   cli-report decimal [.]
+  [1;32mok[0m   cli-report integer [1.2.3]
+  [1;32mok[0m   cli-report decimal [1.2.3]
+  [1;32mok[0m   cli-report integer [-1]
+  [1;32mok[0m   cli-report decimal [-1]
+  [1;32mok[0m   cli-report integer [+1]
+  [1;32mok[0m   cli-report decimal [+1]
+  [1;32mok[0m   cli-report integer [1e3]
+  [1;32mok[0m   cli-report decimal [1e3]
+  [1;32mok[0m   cli-report integer [ 1]
+  [1;32mok[0m   cli-report decimal [ 1]
+  [1;32mok[0m   cli-report integer [1 ]
+  [1;32mok[0m   cli-report decimal [1 ]
+  [1;32mok[0m   cli-report integer [NaN]
+  [1;32mok[0m   cli-report decimal [NaN]
+  [1;32mok[0m   cli-report integer [Infinity]
+  [1;32mok[0m   cli-report decimal [Infinity]
+  [1;32mok[0m   cli-report integer [not-a-number]
+  [1;32mok[0m   cli-report decimal [not-a-number]
+  [1;32mok[0m   cli-report status succeeds
+  [1;32mok[0m   cli-report canonical cycle
+  [1;32mok[0m   cli-report canonical pass count
+  [1;32mok[0m   cli-report large count remains exact
+  [1;32mok[0m   cli-report canonical decimal cost
+  [1;32mok[0m   cli-report typed valid JSON
+  [1;32mok[0m   cli-report live-worker redetect exits 1
+  [1;32mok[0m   cli-report live-worker refusal explained
+  [1;32mok[0m   cli-report live-worker gates preserved
+  [1;32mok[0m   cli-report forget propagates binding failure
+  [1;32mok[0m   cli-report refused forget preserves objective
+  [1;32mok[0m   cli-report refused forget explains why
+  [1;32mok[0m   cli-report main preserves exact command status
+  [1;32mok[0m   cli-report stop rejects directory marker
+  [1;32mok[0m   cli-report refused stop never claims success
+  [1;32mok[0m   cli-report stop preserves directory contents
+  [1;32mok[0m   cli-report stop rejects symlink marker
+  [1;32mok[0m   cli-report symlink evidence preserved
+  [1;32mok[0m   cli-report failed stop write fails
+  [1;32mok[0m   cli-report failed stop write never claims success
+  [1;32mok[0m   cli-report stop checks persisted marker
+  [1;32mok[0m   cli-report normal stop succeeds
+  [1;32mok[0m   cli-report normal stop marker exists
+  [1;32mok[0m   cli-report version succeeds
+  [1;32mok[0m   cli-report version stays labelled
+  [1;32mok[0m   cli-report help succeeds
+  [1;32mok[0m   cli-report help documents explicit run
+  [1;32mok[0m   cli-report help protects durable acceptance identity
+  [1;32mok[0m   cli-report directory backup refuses redetection
+  [1;32mok[0m   cli-report directory backup preserves gates
+  [1;32mok[0m   cli-report directory backup preserves baseline
+  [1;32mok[0m   cli-report directory backup never claims preservation
+  [1;32mok[0m   cli-report backup directory evidence preserved
+  [1;32mok[0m   cli-report readonly backup refuses redetection
+  [1;32mok[0m   cli-report readonly backup preserves gates
+  [1;32mok[0m   cli-report readonly backup preserves baseline
+  [1;32mok[0m   cli-report readonly backup never claims preservation
+  [1;32mok[0m   cli-report copy-fails backup refuses redetection
+  [1;32mok[0m   cli-report copy-fails backup preserves gates
+  [1;32mok[0m   cli-report copy-fails backup preserves baseline
+  [1;32mok[0m   cli-report copy-fails backup never claims preservation
+  [1;32mok[0m   cli-report copy-lies backup refuses redetection
+  [1;32mok[0m   cli-report copy-lies backup preserves gates
+  [1;32mok[0m   cli-report copy-lies backup preserves baseline
+  [1;32mok[0m   cli-report copy-lies backup never claims preservation
+  [1;32mok[0m   cli-report copy-wrong backup refuses redetection
+  [1;32mok[0m   cli-report copy-wrong backup preserves gates
+  [1;32mok[0m   cli-report copy-wrong backup preserves baseline
+  [1;32mok[0m   cli-report copy-wrong backup never claims preservation
+
+[2m==================[0m
+[1;32mPASS   1548 passed, 0 skipped[0m
+

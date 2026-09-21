@@ -1,0 +1,39 @@
+{
+  "exit": 0,
+  "product_sha256": "432b3bf7b0dd81371646fda0d5e5e0cbc94067fd11dfc76bc41c2627c81f6514",
+  "seconds": 1.429,
+  "status": {
+    "version": "3.1.0",
+    "project": "/tmp/tmp.a00MoUha3Z/empty project",
+    "status": "done",
+    "cycle": 1,
+    "pass": 1,
+    "fail": 0,
+    "engine": "custom",
+    "model": "default",
+    "branch": "master",
+    "gates": 1,
+    "lessons": 1,
+    "questions_open": 1,
+    "blocked": 0,
+    "untrusted": 0,
+    "unverified": 0,
+    "tokens": 0,
+    "run_tokens": 0,
+    "run_cost": 0,
+    "seconds": 1,
+    "start_commit": "",
+    "reason": "",
+    "run": "20260921T025506Z-c751db"
+  },
+  "image": "sha256:ae84710b1265e61ebc9e486a5266f95b884c16cd2f26e0650234b2cc1e107d4a",
+  "optional_tools_absent": [
+    "python3",
+    "node",
+    "jq",
+    "curl",
+    "wget"
+  ],
+  "network": "none",
+  "uid": 65534
+}

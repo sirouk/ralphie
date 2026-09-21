@@ -1,0 +1,355 @@
+--- /tmp/ralphie-production-hcl5xesd/candidate/ralphie.sh	2026-09-20 22:25:47
++++ /tmp/ralphie-production-hcl5xesd/final-candidate/ralphie.sh	2026-09-20 22:52:33
+@@ -2591,11 +2591,21 @@
+ engine_live_probe() {
+     # Cheapest possible liveness check: does the binary answer at all? Anything
+     # heavier (an auth round trip, a token spend) is refused here on principle.
+-    local name="$1" c t e; c="$(engine_cmd "$name")"; t="$(timeout_cmd)"
++    local name="$1" c e pid rc; c="$(engine_cmd "$name")"
+     engine_present "$name" || return 1
+     e="$(engine_exe "$c")"
+-    if [ -n "$t" ]; then "$t" 15 "$e" --version >/dev/null 2>&1
+-    else "$e" --version >/dev/null 2>&1; fi
++    # Use the same portable supervision as work calls. A missing timeout(1)
++    # must not leave doctor or automatic selection waiting forever; stdin is
++    # closed because a version probe must never wait for operator input.
++    set -m 2>/dev/null || true
++    { ( exec "$e" --version ) >/dev/null 2>&1 </dev/null & } 2>/dev/null
++    pid=$!
++    set +m 2>/dev/null || true
++    track_pid "$pid"
++    if watchdog_wait "$pid" /dev/null 0 15 "engine version probe" >/dev/null 2>&1; then rc=0
++    else rc=$?; fi
++    untrack_pid "$pid"
++    return "$rc"
+ }
+ 
+ engine_check_model() {
+@@ -2734,6 +2744,10 @@
+         ;;
+       custom)
+         is_true "${YOLO:-1}" || dbg "--no-yolo has no effect on a custom engine"
++        # File answers are leased to this attempt, never an inherited path.
++        if [ "$(engine_answer "$name")" = file ]; then
++            ENGINE_ENV=( "RALPHIE_OUTPUT=$out" )
++        fi
+         if [ -x "${RALPHIE_ENGINE_CMD:-}" ]; then
+             ENGINE_ARGV=( "$RALPHIE_ENGINE_CMD" )
+         else
+@@ -4642,6 +4656,7 @@
+ 
+ USAGE
+   ./ralphie.sh [options] ["what you want done"]
++  ./ralphie.sh run [options] ["what you want done"]
+   ./ralphie.sh <command> [args]
+ 
+ COMMANDS
+@@ -4664,7 +4679,7 @@
+   stop           Ask a running loop to stop after its current cycle.
+                  For a background or cron run, SIGTERM also stops it cleanly.
+                  SIGINT does not: a shell sets it to ignore for background jobs.
+-  update         Replace this script with the latest published version.
++  update         Install from the configured trusted update source.
+   version        Print the version.
+   help           This screen.
+ 
+@@ -4771,6 +4786,8 @@
+   RALPHIE_NO_UPDATE      1 to refuse self-update entirely.
+   RALPHIE_UPDATE_URL     Explicit source for `update`.
+   RALPHIE_PROJECT        Operate on this directory instead of the script's own.
++  RALPHIE_LIB            Internal library mode: 1 loads functions without running
++                         the CLI. Leave unset for normal use.
+ 
+ FILES  (all under .ralphie/, all yours to read and edit)
+   gates          The checks that define "working". Edit freely.
+@@ -4778,11 +4795,11 @@
+   MEMORY.md      Durable lessons. Injected into every prompt.
+   ASK.md         Questions awaiting you. Answering one unblocks the next cycle.
+   events.jsonl   Append-only evidence of everything that happened.
+-  state          Derived state. Safe to delete; it rebuilds.
++  state          Counters and objective/acceptance identity. Do not delete it.
+ 
+ EXIT CODES  (so cron and CI can react without parsing text)
+   0   ran to a clean stop: objective met, limit reached, or stopped on request
+-  1   could not start: no engine, another loop is running, or a bad argument
++  1   could not start, or a command was refused or could not persist its result
+   2   blocked: no engine could complete a cycle (see: ralphie.sh status)
+   3   stalled: several cycles in a row changed nothing
+   130 interrupted
+@@ -4798,7 +4815,8 @@
+ }
+ 
+ # --- self-update --------------------------------------------------------------
+-# One file, replaced atomically, only when it is provably a newer Ralphie.
++# One file, replaced atomically from the configured trusted source. Older
++# versions are refused; changed bytes at the same version are allowed.
+ # A colony ship cannot afford an update that half-lands.
+ 
+ update_url() {
+@@ -4824,7 +4842,8 @@
+ }
+ 
+ self_update() {
+-    local url tmp cur new
++    local url target parent leaf stage backup_stage="" backup candidate mode
++    local cand_ver need valid rc=1 published=0 resolved download_pid download_rc
+     # Honoured here too. The flag existed but the `update` command walked
+     # straight past it, so the one switch an operator can set to forbid
+     # self-replacement did nothing when they asked for it explicitly.
+@@ -4835,43 +4854,111 @@
+     url="$(update_url)" || { warn "no update source (set RALPHIE_UPDATE_URL)"; return 1; }
+     case "$url" in https://*|file://*|/*) ;; *) die "refusing an insecure update source: $url";; esac
+     have curl || have wget || { warn "neither curl nor wget is available"; return 1; }
+-    tmp="$(mktemp 2>/dev/null || printf '%s' "/tmp/ralphie.$$")"
+-    info "checking $url"
+-    if have curl; then curl -fsSL --max-time 60 "$url" -o "$tmp" 2>/dev/null || { rm -f "$tmp"; warn "download failed"; return 1; }
+-    else wget -qO "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; warn "download failed"; return 1; }; fi
+-    # Three independent proofs before anything is replaced.
+-    # A candidate must prove it is a newer Ralphie, not merely look like one.
+-    # A six-line file once passed the old checks, became the kernel, and turned
+-    # every command into a silent no-op that exited 0.
+-    local need sz cand_ver
+-    for need in 'ralphie-kernel' 'LAYER 4 - ENGINE' 'LAYER 5 - LOOP' 'guard_gates' 'run_gates' 'RALPHIE_HELP_EOF'; do
+-        grep -q "$need" "$tmp" 2>/dev/null || { rm -f "$tmp"; warn "downloaded file is missing '$need'; not a ralphie kernel"; return 1; }
+-    done
+-    sz="$(file_bytes "$tmp")"
+-    [ "$sz" -ge "${RALPHIE_MIN_UPDATE_BYTES:-40000}" ] || { rm -f "$tmp"; warn "downloaded file is implausibly small (${sz} bytes)"; return 1; }
+-    bash -n "$tmp" 2>/dev/null || { rm -f "$tmp"; warn "downloaded file does not parse"; return 1; }
+-    # It must run and identify itself, and it must not be older than this one.
+-    cand_ver="$(RALPHIE_LIB=0 bash "$tmp" version 2>/dev/null | head -1 | awk '{print $2}')"
+-    case "$cand_ver" in
+-        [0-9]*.[0-9]*.[0-9]*) ;;
+-        *) rm -f "$tmp"; warn "downloaded file does not report a version"; return 1;;
+-    esac
+-    if [ "$(printf '%s\n%s\n' "$VERSION" "$cand_ver" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$cand_ver" ] \
+-       && [ "$cand_ver" != "$VERSION" ]; then
+-        rm -f "$tmp"; warn "refusing to downgrade from $VERSION to $cand_ver"; return 1
++    # Rename replaces a leaf symlink, so resolve the intended target first.
++    # Both staged executables and their final target share this filesystem.
++    target="$(resolve_link "$SELF")" || { warn "cannot resolve the running script"; return 1; }
++    parent="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)" || return 1
++    leaf="${target##*/}"; target="$parent/$leaf"
++    [ -f "$target" ] && [ -r "$target" ] && [ -w "$target" ] || {
++        warn "the running script is not a readable, writable regular file"; return 1;
++    }
++    resolved="$(cd "$HOME_DIR" 2>/dev/null && pwd -P)" || {
++        warn "cannot locate the previous-copy directory"; return 1;
++    }
++    backup="$resolved/ralphie.previous"
++    # Path text alone misses case aliases on case-insensitive filesystems.
++    if [ "$target" = "$backup" ] || [ "$target" -ef "$backup" ]; then
++        warn "the running script is also the previous-copy path; update cancelled"; return 1
+     fi
+-    cur="$(sha_of < "$SELF")"; new="$(sha_of < "$tmp")"
+-    if [ "$cur" = "$new" ]; then rm -f "$tmp"; good "already current ($VERSION)"; return 0; fi
+-    cp -f "$SELF" "$HOME_DIR/ralphie.previous" 2>/dev/null || true
+-    # Copy ONTO the existing file rather than replacing it: `mv` took the temp
+-    # file's restrictive mode with it (group and other lost read, so they could
+-    # no longer run it) and turned a symlink into a regular file.
+-    chmod +x "$tmp"
+-    if cat "$tmp" > "$SELF" 2>/dev/null; then rm -f "$tmp"
+-    else mv -f "$tmp" "$SELF"; chmod +x "$SELF" 2>/dev/null || true; fi
+-    good "updated. previous copy kept at .ralphie/ralphie.previous"
+-    event update ok "replaced from $url"
+-    return 0
++    stage="$(mktemp -d "$parent/.ralphie-update.XXXXXX" 2>/dev/null)" || {
++        warn "cannot stage an update beside the running script"; return 1;
++    }
++    candidate="$stage/new/$leaf"
++    # One exit path removes ordinary failure scratch. An interrupted update
++    # may leave private staging directories, but never a half-written SELF.
++    while :; do
++        if ! cp -p "$target" "$stage/original" 2>/dev/null || ! cmp -s "$target" "$stage/original"; then
++            warn "cannot snapshot the running script; update cancelled"; break
++        fi
++        info "checking $url"
++        # Bound both downloaders with the same portable process-tree watchdog.
++        # In particular, wget otherwise has no whole-transfer deadline.
++        set -m 2>/dev/null || true
++        ( if have curl; then
++              curl -fsSL --max-time 60 "$url" -o "$stage/download"
++          else wget -qO "$stage/download" "$url"; fi
++        ) < /dev/null > "$stage/download.log" 2>&1 &
++        download_pid=$!; track_pid "$download_pid"
++        set +m 2>/dev/null || true
++        download_rc=0
++        watchdog_wait "$download_pid" "$stage/download.log" 0 60 "update download" || download_rc=$?
++        untrack_pid "$download_pid"
++        [ "$download_rc" -eq 0 ] || { warn "download failed (exit $download_rc)"; break; }
++        valid=1
++        for need in 'ralphie-kernel' 'LAYER 4 - ENGINE' 'LAYER 5 - LOOP' 'guard_gates' 'run_gates' 'RALPHIE_HELP_EOF'; do
++            if ! grep -q "$need" "$stage/download" 2>/dev/null; then
++                warn "downloaded file is missing '$need'; not a ralphie kernel"
++                valid=0; break
++            fi
++        done
++        [ "$valid" = 1 ] || break
++        [ "$(file_bytes "$stage/download")" -ge "${RALPHIE_MIN_UPDATE_BYTES:-40000}" ] || {
++            warn "downloaded file is implausibly small"; break;
++        }
++        bash -n "$stage/download" 2>/dev/null || { warn "downloaded file does not parse"; break; }
++        # Read a literal version, never execute downloaded code to discover it.
++        # Exactly one declaration is required. Same-version fixes are allowed;
++        # these structural checks do not authenticate the configured source.
++        cand_ver="$(sed -n 's/^VERSION="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$stage/download")"
++        case "$cand_ver" in ''|*"$RALPHIE_NL"*) warn "downloaded file needs one literal VERSION=\"major.minor.patch\" declaration"; break;; esac
++        if [ "$(printf '%s\n%s\n' "$VERSION" "$cand_ver" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$cand_ver" ] \
++           && [ "$cand_ver" != "$VERSION" ]; then
++            warn "refusing to downgrade from $VERSION to $cand_ver"; break
++        fi
++        if cmp -s "$target" "$stage/download"; then good "already current ($VERSION)"; rc=0; break; fi
++        # BSD and GNU stat spell mode differently. Preserve all permission bits,
++        # including bits a write to the private candidate might otherwise clear.
++        mode="$(stat -f '%Lp' "$stage/original" 2>/dev/null)" || mode="$(stat -c '%a' "$stage/original" 2>/dev/null)" || mode=""
++        case "$mode" in ''|*[!0-7]*) warn "cannot preserve the running script's mode"; break;; esac
++        if ! mkdir "$stage/new" 2>/dev/null ||
++           ! cp -p "$stage/original" "$candidate" 2>/dev/null ||
++           ! cat "$stage/download" > "$candidate" 2>/dev/null ||
++           ! chmod "$mode" "$candidate" 2>/dev/null ||
++           ! cmp -s "$stage/download" "$candidate"; then
++            warn "could not stage a complete update; the running script is unchanged"; break
++        fi
++        if [ -L "$backup" ] || { [ -e "$backup" ] && [ ! -f "$backup" ]; }; then
++            warn "the previous-copy path is not a regular file: $backup"; break
++        fi
++        backup_stage="$(mktemp -d "$HOME_DIR/.ralphie.previous.XXXXXX" 2>/dev/null)" || {
++            warn "cannot stage the previous copy; the running script is unchanged"; break;
++        }
++        if ! cp -p "$stage/original" "$backup_stage/ralphie.previous" 2>/dev/null ||
++           ! cmp -s "$stage/original" "$backup_stage/ralphie.previous" ||
++           ! mv -f "$backup_stage/ralphie.previous" "$HOME_DIR/" 2>/dev/null ||
++           [ -L "$backup" ] || [ ! -f "$backup" ] ||
++           ! cmp -s "$stage/original" "$backup"; then
++            warn "could not preserve the previous copy; the running script is unchanged"; break
++        fi
++        resolved="$(resolve_link "$SELF")" || resolved=""
++        [ -n "$resolved" ] && resolved="$(cd "$(dirname "$resolved")" 2>/dev/null && pwd -P)/${resolved##*/}"
++        if [ "$resolved" != "$target" ] || [ -L "$target" ] || ! cmp -s "$target" "$stage/original"; then
++            warn "the running script changed during the update; refusing to replace it"; break
++        fi
++        # Moving a same-named file INTO the target directory also refuses a
++        # target entry replaced by a directory, rather than moving inside it.
++        if ! mv -f "$candidate" "$parent/" 2>/dev/null; then
++            warn "could not publish the update; previous copy retained at $backup"; break
++        fi
++        rc=0; published=1; break
++    done
++    rm -rf "$stage" 2>/dev/null || true
++    [ -z "$backup_stage" ] || rm -rf "$backup_stage" 2>/dev/null || true
++    if [ "$published" = 1 ]; then
++        good "updated. previous copy kept at $backup"
++        event update ok "replaced from $url" || true
++    fi
++    return "$rc"
+ }
+ 
+ # --- reporting ----------------------------------------------------------------
+@@ -4930,13 +5017,21 @@
+     # --json` emitted "cycle":nine and exited 0, which is worse than failing.
+     local v; v="$(state_get "$1" 0)"
+     is_int "$v" || v=0
+-    printf '%s' "$v"
++    # Canonical decimal text, without shell arithmetic: leading zeroes are
++    # invalid JSON, and arithmetic can treat them as octal or overflow.
++    v="${v#"${v%%[!0]*}"}"
++    printf '%s' "${v:-0}"
+ }
+ json_dec() {
+-    # Same, for the one decimal field.
+-    local v; v="$(state_get "$1" 0)"
+-    case "$v" in ''|*[!0-9.]*|*.*.*) v=0;; esac
+-    printf '%s' "$v"
++    # Preserve decimal precision while making the integer/fraction parts valid
++    # JSON. A missing part in .5 or 1. is recoverable; a bare dot is not.
++    local v whole fraction=""
++    v="$(state_get "$1" 0)"
++    case "$v" in ''|.|*[!0-9.]*|*.*.*) v=0;; esac
++    whole="${v%%.*}"
++    case "$v" in *.*) fraction="${v#*.}";; esac
++    whole="${whole#"${whole%%[!0]*}"}"
++    printf '%s%s' "${whole:-0}" "${fraction:+.$fraction}"
+ }
+ 
+ run_is_alive() {
+@@ -5055,8 +5150,18 @@
+         # the operator's work, and rediscovery must never be the one command
+         # that loses it without a copy.
+         if [ -s "$GATES_FILE" ]; then
+-            cp -f "$GATES_FILE" "$HOME_DIR/gates.previous" 2>/dev/null || true
+-            dim "  your previous gates were saved to $HOME_DIR/gates.previous"
++            local previous="$HOME_DIR/gates.previous"
++            if [ -L "$previous" ] || { [ -e "$previous" ] && { [ ! -f "$previous" ] || [ ! -w "$previous" ]; }; }; then
++                err "cannot preserve previous gates at $previous; the gate set was not changed"
++                return 1
++            fi
++            ensure_own_file "$previous" "previous gates"
++            if ! cp -f "$GATES_FILE" "$previous" 2>/dev/null || [ ! -f "$previous" ] ||
++               [ -L "$previous" ] || ! cmp -s "$GATES_FILE" "$previous"; then
++                err "could not preserve previous gates at $previous; the gate set was not changed"
++                return 1
++            fi
++            dim "  your previous gates were saved to $previous"
+         fi
+         rm -f "$GATES_FILE" "$GATES_BASELINE_FILE"
+         discover_gates 1
+@@ -5143,11 +5248,17 @@
+ }
+ 
+ parse_args() {
+-    local a
++    local a run_selected=0
+     while [ "$#" -gt 0 ]; do
+         a="$1"
++        # Once run is selected, command-looking words are objective text.
++        # Options still parse normally, just as they do for an implicit run.
++        if [ "$run_selected" = 1 ] && [[ "$a" != -* ]]; then
++            OBJECTIVE_EXPLICIT=1; OBJECTIVE="$*"; break
++        fi
+         case "$a" in
+-            run|discover|status|doctor|gates|ask|answer|request|memory|log|stop|update|version|help|forget)
++            run) CMD=run; run_selected=1; shift;;
++            discover|status|doctor|gates|ask|answer|request|memory|log|stop|update|version|help|forget)
+                 # Keep the real arguments. Flattening to a string and re-splitting
+                 # destroyed the operator's answer: "use *  and keep  spaces" was
+                 # glob-expanded into a file list and had its spacing collapsed.
+@@ -5225,13 +5336,20 @@
+                      atext="$(printf '%s ' "${REST[@]:1}")"; atext="${atext% }"
+                  fi
+                  answer_ask "$qn" "$atext";;
+-        stop)    touch "$STOP_FILE"; good "stop requested - the loop will finish its cycle and exit";;
++        stop)    if [ -L "$STOP_FILE" ] || { [ -e "$STOP_FILE" ] && [ ! -f "$STOP_FILE" ]; }; then
++                     err "cannot request stop: $STOP_FILE is not a regular file"; return 1
++                 fi
++                 ensure_own_file "$STOP_FILE" "stop request"
++                 if ! touch "$STOP_FILE" 2>/dev/null || [ ! -f "$STOP_FILE" ] || [ -L "$STOP_FILE" ]; then
++                     err "could not persist the stop request: $STOP_FILE"; return 1
++                 fi
++                 good "stop requested - the loop will finish its cycle and exit";;
+         update)  self_update; return $?;;
+         gates)   cmd_gates "${REST[0]:-}";;
+         doctor)  cmd_doctor;;
+         *)       return 1;;   # not a simple command: this is a run
+     esac
+-    return 0
++    # Preserve the command's status; a refusal must not become CLI success.
+ }
+ 
+ # --- the run ----------------------------------------------------------------
+@@ -5463,13 +5581,13 @@
+     if [ -e "$HOME_DIR/requests" ] || [ -L "$HOME_DIR/requests" ]; then request_scan; fi
+     ledger_init
+     install_traps
+-    if run_simple_command; then exit 0; else
+-        [ "$CMD" = "run" ] || exit $?
+-    fi
++    local rc=0
++    run_simple_command || rc=$?
++    [ "$CMD" = run ] || exit "$rc"
+ 
+     if is_true "$DO_UPDATE" && ! is_true "${RALPHIE_NO_UPDATE:-0}"; then self_update || true; fi
+     run_prepare || exit 1
+-    local rc=0; loop || rc=$?
++    rc=0; loop || rc=$?
+     run_finish
+     exit "$rc"
+ }

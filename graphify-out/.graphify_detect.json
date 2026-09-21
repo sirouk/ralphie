@@ -1,0 +1,35 @@
+{
+  "files": {
+    "code": [
+      "/Users/chrisk/ralphy-baby/ralphie.sh"
+    ],
+    "document": [],
+    "paper": [],
+    "image": [],
+    "video": []
+  },
+  "total_files": 1,
+  "total_words": 38351,
+  "needs_graph": false,
+  "warning": "Corpus is ~38,351 words - fits in a single context window. You may not need a graph.",
+  "skipped_sensitive": [],
+  "unclassified": [],
+  "walk_errors": [],
+  "ignored": [
+    "/Users/chrisk/ralphy-baby/.github/workflows/",
+    "/Users/chrisk/ralphy-baby/.gitignore",
+    "/Users/chrisk/ralphy-baby/.kilo/.gitignore",
+    "/Users/chrisk/ralphy-baby/.ralphie/",
+    "/Users/chrisk/ralphy-baby/AGENTS.md",
+    "/Users/chrisk/ralphy-baby/LICENSE",
+    "/Users/chrisk/ralphy-baby/README.md",
+    "/Users/chrisk/ralphy-baby/test.sh"
+  ],
+  "pruned_noise_dirs": [
+    "/Users/chrisk/ralphy-baby/.git/",
+    "/Users/chrisk/ralphy-baby/.kilo/worktrees/",
+    "/Users/chrisk/ralphy-baby/graphify-out/"
+  ],
+  "graphifyignore_patterns": 33,
+  "scan_root": "/Users/chrisk/ralphy-baby"
+}

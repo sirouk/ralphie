@@ -1,0 +1,4874 @@
+{
+  "schema_version": 1,
+  "reviewer": "prime_contract",
+  "source_file": "ralphie.sh",
+  "source_sha256": "c21744b635e3b640aa6d65b6c36daa7dc0d8e1e90b7bf45fb09f8937055aa905",
+  "source_line_count": 5478,
+  "reviewed_line_range": [
+    1697,
+    3161
+  ],
+  "coverage": {
+    "assigned_lines": 1465,
+    "all_assigned_lines_read": true,
+    "function_count": 58,
+    "git_functions": 34,
+    "engine_functions": 24,
+    "top_level_global_declarations": 26,
+    "embedded_python_blocks": 1,
+    "method": "Direct reading of every assigned line, regex declaration/bound inventory as a cross-check, selected cross-layer source reading; not AST extraction or execution."
+  },
+  "governing_context": [
+    "AGENTS.md: one standalone Bash3.2 product; literal/NUL Git paths; gates and actual HEAD movement are truth; explicit engine choices honored.",
+    "README.md: operator contract, Engines, Safety and Files sections.",
+    "ralphie.sh layer3 header 918-928 and layer4 header2505-2530."
+  ],
+  "classification_legend": {
+    "EXTRACTED": "Directly present in the frozen source, including exact commands, branches, formats or source-level limitations.",
+    "INFERRED": "Architectural implication of cited source; not independently proven external runtime behavior."
+  },
+  "architectural_constraints": [
+    {
+      "classification": "EXTRACTED",
+      "summary": "One Bash3.2 process orchestrates all layers. Mutable globals and shell dynamic scope are integration contracts; child/subshell assignments do not persist unless stdout/files are used.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2003,
+          "end_line": 2011
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2075,
+          "end_line": 2075
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2662,
+          "end_line": 2668
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2888,
+          "end_line": 2895
+        }
+      ]
+    },
+    {
+      "classification": "EXTRACTED",
+      "summary": "Git paths must be repository-relative NUL records and all filesystem-derived pathspec writes literal; a project can be a subdirectory of a larger repository.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1733,
+          "end_line": 1744
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1783,
+          "end_line": 1796
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2177,
+          "end_line": 2196
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2391,
+          "end_line": 2394
+        }
+      ]
+    },
+    {
+      "classification": "EXTRACTED",
+      "summary": "Automatic saving uses private staging but real-index reconciliation; pre-existing staged paths and protected work remain separate, with HEAD movement as final save postcondition.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2027,
+          "end_line": 2034
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2267,
+          "end_line": 2296
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2484,
+          "end_line": 2502
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4148,
+          "end_line": 4155
+        }
+      ]
+    },
+    {
+      "classification": "EXTRACTED",
+      "summary": "The engine table is the extension point. Native capability reduces Ralphie duplication, while outer verification and operator provider choice stay under Ralphie control.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2505,
+          "end_line": 2537
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2611,
+          "end_line": 2629
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3882,
+          "end_line": 3885
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3131,
+          "end_line": 3136
+        }
+      ]
+    },
+    {
+      "classification": "INFERRED",
+      "summary": "Durable local recovery is best effort under shared OS permissions; no source-level claim can guarantee hostile engine isolation, arbitrary project correctness or future CLI compatibility.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1798,
+          "end_line": 1882
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2211,
+          "end_line": 2265
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2891,
+          "end_line": 2927
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3031,
+          "end_line": 3119
+        }
+      ]
+    }
+  ],
+  "globals": [
+    {
+      "name": "OWNED_FILE",
+      "start_line": 1732,
+      "end_line": 1732,
+      "classification": "EXTRACTED",
+      "source": "OWNED_FILE=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1732,
+          "end_line": 1732
+        }
+      ]
+    },
+    {
+      "name": "SELF_HASH",
+      "start_line": 1930,
+      "end_line": 1930,
+      "classification": "EXTRACTED",
+      "source": "SELF_HASH=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1930,
+          "end_line": 1930
+        }
+      ]
+    },
+    {
+      "name": "RESTORE_BRANCH",
+      "start_line": 2003,
+      "end_line": 2003,
+      "classification": "EXTRACTED",
+      "source": "RESTORE_BRANCH=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2003,
+          "end_line": 2003
+        }
+      ]
+    },
+    {
+      "name": "PRE_DIRTY_FILE",
+      "start_line": 2004,
+      "end_line": 2004,
+      "classification": "EXTRACTED",
+      "source": "PRE_DIRTY_FILE=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2004,
+          "end_line": 2004
+        }
+      ]
+    },
+    {
+      "name": "PRE_DIRTY_SEAL",
+      "start_line": 2005,
+      "end_line": 2005,
+      "classification": "EXTRACTED",
+      "source": "PRE_DIRTY_SEAL=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2005,
+          "end_line": 2005
+        }
+      ]
+    },
+    {
+      "name": "GATES_FILE_BROKEN",
+      "start_line": 2006,
+      "end_line": 2006,
+      "classification": "EXTRACTED",
+      "source": "GATES_FILE_BROKEN=0",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2006,
+          "end_line": 2006
+        }
+      ]
+    },
+    {
+      "name": "UNUSABLE_REPORTED",
+      "start_line": 2007,
+      "end_line": 2007,
+      "classification": "EXTRACTED",
+      "source": "UNUSABLE_REPORTED=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2007,
+          "end_line": 2007
+        }
+      ]
+    },
+    {
+      "name": "GIT_MODE",
+      "start_line": 2008,
+      "end_line": 2008,
+      "classification": "EXTRACTED",
+      "source": "GIT_MODE=repo",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2008,
+          "end_line": 2008
+        }
+      ]
+    },
+    {
+      "name": "GATE_NO_PIPEFAIL",
+      "start_line": 2009,
+      "end_line": 2009,
+      "classification": "EXTRACTED",
+      "source": "GATE_NO_PIPEFAIL=0",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2009,
+          "end_line": 2009
+        }
+      ]
+    },
+    {
+      "name": "OPERATOR_STAGED",
+      "start_line": 2010,
+      "end_line": 2010,
+      "classification": "EXTRACTED",
+      "source": "OPERATOR_STAGED=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2010,
+          "end_line": 2010
+        }
+      ]
+    },
+    {
+      "name": "PRE_DIRTY_N",
+      "start_line": 2011,
+      "end_line": 2011,
+      "classification": "EXTRACTED",
+      "source": "PRE_DIRTY_N=0",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2011,
+          "end_line": 2011
+        }
+      ]
+    },
+    {
+      "name": "RISKY_PATHS",
+      "start_line": 2069,
+      "end_line": 2069,
+      "classification": "EXTRACTED",
+      "source": "RISKY_PATHS='(^|/)[^/]*\\.env($|\\.)|(^|/)\\.envrc$|[._-]env$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\\.(pem|p12|pfx|key|keystore|jks|ppk)$|(^|/)\\.netrc$|(^|/)\\.npmrc$|(^|/)\\.pypirc$|(^|/)\\.git-credentials$|(^|/)credentials(\\.[a-z]+)?$|(^|/)\\.aws/|(^|/)\\.ssh/|(^|/)\\.gnupg/|(^|/)secrets?([._-][^/]*)?\\.(ya?ml|json|toml|ini|env)$|(^|/)service[-_]account[^/]*\\.json$|\\.tfstate(\\.backup)?$|(^|/)\\.terraform/|(^|/)kubeconfig$|(^|/)\\.kube/config$|(^|/)\\.dockercfg$|(^|/)\\.docker/config\\.json$|\\.(jks|p8|pkcs12)$'",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2069,
+          "end_line": 2069
+        }
+      ]
+    },
+    {
+      "name": "BULK_PATHS",
+      "start_line": 2070,
+      "end_line": 2070,
+      "classification": "EXTRACTED",
+      "source": "BULK_PATHS='(^|/)(node_modules|vendor|\\.venv|venv|__pycache__|\\.mypy_cache|\\.pytest_cache|dist|build|target|\\.next|coverage|\\.terraform)/'",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2070,
+          "end_line": 2070
+        }
+      ]
+    },
+    {
+      "name": "GIT_TOP",
+      "start_line": 2152,
+      "end_line": 2152,
+      "classification": "EXTRACTED",
+      "source": "GIT_TOP=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2152,
+          "end_line": 2152
+        }
+      ]
+    },
+    {
+      "name": "PROJECT_PREFIX",
+      "start_line": 2153,
+      "end_line": 2153,
+      "classification": "EXTRACTED",
+      "source": "PROJECT_PREFIX=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2153,
+          "end_line": 2153
+        }
+      ]
+    },
+    {
+      "name": "CY_HEAD",
+      "start_line": 2205,
+      "end_line": 2205,
+      "classification": "EXTRACTED",
+      "source": "CY_HEAD=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2205,
+          "end_line": 2205
+        }
+      ]
+    },
+    {
+      "name": "CY_REF",
+      "start_line": 2206,
+      "end_line": 2206,
+      "classification": "EXTRACTED",
+      "source": "CY_REF=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2206,
+          "end_line": 2206
+        }
+      ]
+    },
+    {
+      "name": "CY_OLD_COMMITS",
+      "start_line": 2207,
+      "end_line": 2207,
+      "classification": "EXTRACTED",
+      "source": "CY_OLD_COMMITS=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2207,
+          "end_line": 2207
+        }
+      ]
+    },
+    {
+      "name": "CY_HISTORY_CAPTURED",
+      "start_line": 2208,
+      "end_line": 2208,
+      "classification": "EXTRACTED",
+      "source": "CY_HISTORY_CAPTURED=0",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2208,
+          "end_line": 2208
+        }
+      ]
+    },
+    {
+      "name": "CY_ENGINE_SAVED",
+      "start_line": 2209,
+      "end_line": 2209,
+      "classification": "EXTRACTED",
+      "source": "CY_ENGINE_SAVED=0",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2209,
+          "end_line": 2209
+        }
+      ]
+    },
+    {
+      "name": "ENGINE_TABLE",
+      "start_line": 2533,
+      "end_line": 2537,
+      "classification": "EXTRACTED",
+      "source": "ENGINE_TABLE='\nprime-agent  | prime-agent | stdout | autonomy gates memory subagents resume skills json usage\nclaude       | claude      | stdout | subagents resume skills json\ncodex        | codex       | file   | resume json stream\n'",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2533,
+          "end_line": 2537
+        }
+      ]
+    },
+    {
+      "name": "ENGINE_LIVE_CACHE",
+      "start_line": 2578,
+      "end_line": 2578,
+      "classification": "EXTRACTED",
+      "source": "ENGINE_LIVE_CACHE=\"\"",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2578,
+          "end_line": 2578
+        }
+      ]
+    },
+    {
+      "name": "ENGINE_ARGV",
+      "start_line": 2662,
+      "end_line": 2662,
+      "classification": "EXTRACTED",
+      "source": "ENGINE_ARGV=()",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2662,
+          "end_line": 2662
+        }
+      ]
+    },
+    {
+      "name": "ENGINE_ENV",
+      "start_line": 2663,
+      "end_line": 2663,
+      "classification": "EXTRACTED",
+      "source": "ENGINE_ENV=()",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2663,
+          "end_line": 2663
+        }
+      ]
+    },
+    {
+      "name": "FAIL_TRANSIENT",
+      "start_line": 2758,
+      "end_line": 2758,
+      "classification": "EXTRACTED",
+      "source": "FAIL_TRANSIENT='rate.?limit|overloaded|too many requests|429|502|503|504|backend error|connection (refused|reset)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|timed? ?out|temporarily unavailable|internal server error'",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2758,
+          "end_line": 2758
+        }
+      ]
+    },
+    {
+      "name": "FAIL_PERMANENT",
+      "start_line": 2759,
+      "end_line": 2759,
+      "classification": "EXTRACTED",
+      "source": "FAIL_PERMANENT='invalid.{0,10}api.?key|authentication.{0,10}failed|unauthorized|401|403|permission denied|insufficient.{0,10}(quota|credit|balance)|model.{0,10}not.{0,10}found|no such model|account.{0,10}(suspended|disabled)'",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2759,
+          "end_line": 2759
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "git_ready",
+      "start_line": 1697,
+      "end_line": 1702,
+      "classification": "EXTRACTED",
+      "summary": "Ask Git whether PROJECT belongs to a repository, including worktrees and submodules.",
+      "inputs": [
+        "PROJECT",
+        "Git executable and inherited Git environment/configuration"
+      ],
+      "outputs": [
+        "Exit status from git rev-parse --git-dir; output suppressed"
+      ],
+      "side_effects": [
+        "Invokes Git metadata discovery"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Does not assume .git is a directory"
+      ],
+      "failure_recovery": [
+        "Nonzero means the caller must choose initialization, refusal, or no-Git mode"
+      ],
+      "interfaces": [
+        "git-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1697,
+          "end_line": 1702
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "ensure_git",
+      "start_line": 1704,
+      "end_line": 1710,
+      "classification": "EXTRACTED",
+      "summary": "Keep an existing repository or initialize one when allowed.",
+      "inputs": [
+        "PROJECT",
+        "RALPHIE_GIT_INIT default 1"
+      ],
+      "outputs": [
+        "0 for ready/initialized repository; 1 when disabled or initialization fails"
+      ],
+      "side_effects": [
+        "May create Git metadata; prints initialization notice; appends git/init event"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "is_true",
+        "info",
+        "event"
+      ],
+      "invariants": [
+        "No initial product commit is made here"
+      ],
+      "failure_recovery": [
+        "Returns 1 without a fallback repository when init fails; caller records fixed run GIT_MODE"
+      ],
+      "interfaces": [
+        "git-init-config",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1704,
+          "end_line": 1710
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "git_identity",
+      "start_line": 1712,
+      "end_line": 1718,
+      "classification": "EXTRACTED",
+      "summary": "Supply repository-local author defaults only when Git cannot resolve existing identity.",
+      "inputs": [
+        "PROJECT",
+        "Inherited Git user.email and user.name"
+      ],
+      "outputs": [
+        "Shell status of final user.name lookup/write; 0 if no repository"
+      ],
+      "side_effects": [
+        "May set local user.email=ralphie@localhost and user.name=Ralphie"
+      ],
+      "calls_or_callbacks": [
+        "git_ready"
+      ],
+      "invariants": [
+        "Existing resolved identity wins; no global config writes"
+      ],
+      "failure_recovery": [
+        "Config write failures propagate through shell status; no explicit diagnostic or rollback here"
+      ],
+      "interfaces": [
+        "git-init-config"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1712,
+          "end_line": 1718
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "git_dirty",
+      "start_line": 1720,
+      "end_line": 1720,
+      "classification": "EXTRACTED",
+      "summary": "Return whether Git porcelain status is nonempty without parsing its paths.",
+      "inputs": [
+        "PROJECT"
+      ],
+      "outputs": [
+        "Boolean exit status; Git diagnostics suppressed"
+      ],
+      "side_effects": [
+        "Runs git status"
+      ],
+      "calls_or_callbacks": [
+        "git_ready"
+      ],
+      "invariants": [
+        "Porcelain output is used only as an emptiness test"
+      ],
+      "failure_recovery": [
+        "No repository or empty/failed status output is false"
+      ],
+      "interfaces": [
+        "git-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1720,
+          "end_line": 1720
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "git_branch",
+      "start_line": 1722,
+      "end_line": 1730,
+      "classification": "EXTRACTED",
+      "summary": "Describe a symbolic branch, detached commit, or missing Git head.",
+      "inputs": [
+        "PROJECT"
+      ],
+      "outputs": [
+        "stdout: short symbolic branch; otherwise short HEAD; otherwise none"
+      ],
+      "side_effects": [
+        "Reads refs through Git"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Symbolic-ref is attempted first, so unborn branches are representable"
+      ],
+      "failure_recovery": [
+        "Falls through to a literal none if both commands fail"
+      ],
+      "interfaces": [
+        "git-refs"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1722,
+          "end_line": 1730
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "nul_list_has",
+      "start_line": 1733,
+      "end_line": 1744,
+      "classification": "EXTRACTED",
+      "summary": "Test exact membership in a NUL-delimited pathname file.",
+      "inputs": [
+        "$1 file",
+        "$2 exact path"
+      ],
+      "outputs": [
+        "0 if any complete NUL record matches; 1 otherwise"
+      ],
+      "side_effects": [
+        "Reads file bytes using read -r -d NUL"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Spaces, tabs, newlines and glob characters remain literal data"
+      ],
+      "failure_recovery": [
+        "Missing/nonregular list or absent match returns 1"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1733,
+          "end_line": 1744
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "path_fingerprint",
+      "start_line": 1745,
+      "end_line": 1758,
+      "classification": "EXTRACTED",
+      "summary": "Fingerprint current readable regular-file bytes at a repository-relative path.",
+      "inputs": [
+        "$1 repository-relative path",
+        "PROJECT/GIT_TOP"
+      ],
+      "outputs": [
+        "stdout: sha_of output, or sentinel - for unavailable bytes"
+      ],
+      "side_effects": [
+        "Reads file content, including a regular-file symlink referent"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "sha_of"
+      ],
+      "invariants": [
+        "Path resolution is anchored at Git root"
+      ],
+      "failure_recovery": [
+        "Absent, nonregular, unreadable, or failed hashing returns -"
+      ],
+      "interfaces": [
+        "ownership-files",
+        "git-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1745,
+          "end_line": 1758
+        }
+      ],
+      "notes": [
+        "INFERRED: This is a content fingerprint, not file-mode or symlink-target custody. sha_of may use cksum on minimal systems (168-177)."
+      ]
+    },
+    {
+      "name": "owned_has",
+      "start_line": 1760,
+      "end_line": 1780,
+      "classification": "EXTRACTED",
+      "summary": "Accept an ownership claim only when a matching path record has the current content fingerprint.",
+      "inputs": [
+        "$1 exact repository-relative path",
+        "OWNED_FILE"
+      ],
+      "outputs": [
+        "Boolean exit status"
+      ],
+      "side_effects": [
+        "Reads ownership file and current file bytes"
+      ],
+      "calls_or_callbacks": [
+        "path_fingerprint"
+      ],
+      "invariants": [
+        "Checks every matching record; a stale duplicate cannot shadow a later valid claim"
+      ],
+      "failure_recovery": [
+        "Missing record file or no exact path/hash pair returns 1"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1760,
+          "end_line": 1780
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "pre_dirty_has",
+      "start_line": 1781,
+      "end_line": 1781,
+      "classification": "EXTRACTED",
+      "summary": "Test whether a path belongs to the protected initial-change set.",
+      "inputs": [
+        "$1 path",
+        "PRE_DIRTY_FILE"
+      ],
+      "outputs": [
+        "Boolean exit status"
+      ],
+      "side_effects": [
+        "Reads protected path list"
+      ],
+      "calls_or_callbacks": [
+        "nul_list_has"
+      ],
+      "invariants": [
+        "Membership uses NUL records, not line splitting"
+      ],
+      "failure_recovery": [
+        "Missing protection list returns false; callers requiring trust must separately call pre_dirty_intact"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1781,
+          "end_line": 1781
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "dirty_paths_nul",
+      "start_line": 1783,
+      "end_line": 1796,
+      "classification": "EXTRACTED",
+      "summary": "Emit changed tracked and untracked repository-relative paths, preserving rename endpoints.",
+      "inputs": [
+        "Git root and HEAD/index state"
+      ],
+      "outputs": [
+        "stdout: NUL-separated paths; duplicates are possible; normally returns 0 even after Git errors"
+      ],
+      "side_effects": [
+        "Reads working tree, index and ignore rules"
+      ],
+      "calls_or_callbacks": [
+        "git_top"
+      ],
+      "invariants": [
+        "--no-renames prevents source/destination collapse",
+        "Unborn repositories include cached paths through ls-files --cached"
+      ],
+      "failure_recovery": [
+        "Each Git listing error is suppressed and converted to success"
+      ],
+      "interfaces": [
+        "git-discovery",
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1783,
+          "end_line": 1796
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "release_owned_paths",
+      "start_line": 1798,
+      "end_line": 1845,
+      "classification": "EXTRACTED",
+      "summary": "Retire claims outside the project, in runtime state, no longer dirty, or holding changed bytes.",
+      "inputs": [
+        "Optional $1=after-cycle",
+        "HOME_DIR/owned.nul",
+        "RUN_DIR",
+        "PRE_DIRTY_FILE and in-memory seal",
+        "Project prefix"
+      ],
+      "outputs": [
+        "Updates OWNED_FILE global; returns 0 on normal/best-effort paths"
+      ],
+      "side_effects": [
+        "Writes dirty-now.nul and owned.nul.tmp.PID; replaces owned.nul; removes scratch files",
+        "May append changed formerly-owned paths to the protected list and reseal it"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "project_prefix",
+        "dirty_paths_nul",
+        "nul_list_has",
+        "path_fingerprint",
+        "pre_dirty_intact",
+        "pre_dirty_has",
+        "pre_dirty_seal"
+      ],
+      "invariants": [
+        "Only same-content, still-dirty, in-project, non-runtime claims survive",
+        "Never reseals an already-invalid protected list",
+        "after-cycle suppresses transferring changed ownership into operator protection"
+      ],
+      "failure_recovery": [
+        "No Git or no claims is a no-op; failed listing leaves claims unchanged; failed rename removes temporary file"
+      ],
+      "interfaces": [
+        "ownership-files",
+        "git-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1798,
+          "end_line": 1845
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "record_owned_paths",
+      "start_line": 1847,
+      "end_line": 1882,
+      "classification": "EXTRACTED",
+      "summary": "Remember uncommitted work for future runs without claiming protected or out-of-project paths.",
+      "inputs": [
+        "HOME_DIR",
+        "RUN_DIR",
+        "PRE_DIRTY_FILE/PRE_DIRTY_SEAL",
+        "Current Git-visible dirty paths"
+      ],
+      "outputs": [
+        "Sets OWNED_FILE; normal completion has success status"
+      ],
+      "side_effects": [
+        "Writes dirty.nul; appends fingerprint TAB path NUL records to owned.nul; removes scratch file"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "pre_dirty_intact",
+        "dbg",
+        "project_prefix",
+        "dirty_paths_nul",
+        "pre_dirty_has",
+        "owned_has",
+        "path_fingerprint"
+      ],
+      "invariants": [
+        "Invalid protection seal means claim nothing",
+        "Excludes project runtime state, sibling paths, pre-existing paths, and already-valid claims"
+      ],
+      "failure_recovery": [
+        "No repository, invalid seal, or failed capture returns without new claims; filesystem append errors are not individually recovered here"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1847,
+          "end_line": 1882
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "pre_dirty_count",
+      "start_line": 1884,
+      "end_line": 1889,
+      "classification": "EXTRACTED",
+      "summary": "Produce a display/checksum-component count for the protected list.",
+      "inputs": [
+        "PRE_DIRTY_FILE"
+      ],
+      "outputs": [
+        "stdout: nonnegative integer, default 0"
+      ],
+      "side_effects": [
+        "Reads list and translates NULs to newlines"
+      ],
+      "calls_or_callbacks": [
+        "is_int"
+      ],
+      "invariants": [
+        "Sanitizes noninteger count output"
+      ],
+      "failure_recovery": [
+        "Missing/nonregular file or failed count yields 0"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1884,
+          "end_line": 1889
+        }
+      ],
+      "notes": [
+        "INFERRED: A path containing embedded newlines can count as multiple lines. Exact membership still uses NUL records, and the seal also includes a full-byte checksum."
+      ]
+    },
+    {
+      "name": "use_branch",
+      "start_line": 1891,
+      "end_line": 1915,
+      "classification": "EXTRACTED",
+      "summary": "Optionally select or create the requested work branch and remember its base.",
+      "inputs": [
+        "$1 desired branch",
+        "PROJECT",
+        "Persisted base_branch"
+      ],
+      "outputs": [
+        "Sets RESTORE_BRANCH; 1 when checkout/create fails"
+      ],
+      "side_effects": [
+        "Reads/updates state base_branch; git checkout changes refs/index/worktree; records git/branch event"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "warn",
+        "state_get",
+        "git_branch",
+        "state_set",
+        "dbg",
+        "err",
+        "info",
+        "event"
+      ],
+      "invariants": [
+        "Empty requested branch is a no-op",
+        "Retains a recorded base when already working on the same requested branch"
+      ],
+      "failure_recovery": [
+        "Missing repository warns and returns 0; checkout failure reports and returns 1 without reset"
+      ],
+      "interfaces": [
+        "git-refs",
+        "git-execution-policy",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1891,
+          "end_line": 1915
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "warn_detached_head",
+      "start_line": 1917,
+      "end_line": 1928,
+      "classification": "EXTRACTED",
+      "summary": "Refuse a run on detached HEAD through status and nonblocking notification.",
+      "inputs": [
+        "PROJECT"
+      ],
+      "outputs": [
+        "0 for no repository or symbolic HEAD; 1 when detached"
+      ],
+      "side_effects": [
+        "Emits errors, git/detached event and human question"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "err",
+        "event",
+        "ask_human"
+      ],
+      "invariants": [
+        "Requires a branch for autonomous run commits"
+      ],
+      "failure_recovery": [
+        "Leaves history unchanged and asks for --branch or an operator checkout"
+      ],
+      "interfaces": [
+        "git-refs",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1917,
+          "end_line": 1928
+        }
+      ],
+      "notes": [
+        "INFERRED: The diagnostic describes detached commits as unreachable after checkout; reflog/object retention is not analyzed by this function."
+      ]
+    },
+    {
+      "name": "self_hash_record",
+      "start_line": 1931,
+      "end_line": 1931,
+      "classification": "EXTRACTED",
+      "summary": "Save the current script byte fingerprint in process memory.",
+      "inputs": [
+        "SELF"
+      ],
+      "outputs": [
+        "SELF_HASH"
+      ],
+      "side_effects": [
+        "Reads script file"
+      ],
+      "calls_or_callbacks": [
+        "sha_of"
+      ],
+      "invariants": [
+        "No product mutation"
+      ],
+      "failure_recovery": [
+        "Hash failure stores empty string, disabling later self comparison"
+      ],
+      "interfaces": [
+        "self-file"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1931,
+          "end_line": 1931
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "self_is_reviewed",
+      "start_line": 1933,
+      "end_line": 1948,
+      "classification": "EXTRACTED",
+      "summary": "Warn when the tracked in-project script differs from its index copy at startup.",
+      "inputs": [
+        "SELF",
+        "PROJECT",
+        "Git index"
+      ],
+      "outputs": [
+        "0 if inapplicable/unchanged; 1 after warning"
+      ],
+      "side_effects": [
+        "Reads tracking/diff; emits warning and self/uncommitted event"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "warn",
+        "dim",
+        "event"
+      ],
+      "invariants": [
+        "Literal pathspec protects unusual script names",
+        "Only applies when SELF is lexically within PROJECT and tracked"
+      ],
+      "failure_recovery": [
+        "No repository/untracked script is skipped; nonzero diff triggers warning; run_prepare deliberately ignores the return"
+      ],
+      "interfaces": [
+        "self-file",
+        "git-index",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1933,
+          "end_line": 1948
+        }
+      ],
+      "notes": [
+        "EXTRACTED: git diff --quiet has no HEAD argument (1943), so this compares worktree to index, despite the diagnostic saying committed copy."
+      ]
+    },
+    {
+      "name": "self_hash_check",
+      "start_line": 1950,
+      "end_line": 1966,
+      "classification": "EXTRACTED",
+      "summary": "Detect changed or unreadable script bytes after a cycle and notify the operator.",
+      "inputs": [
+        "SELF",
+        "SELF_HASH"
+      ],
+      "outputs": [
+        "0 if no baseline or unchanged; 1 on mismatch; stores new SELF_HASH"
+      ],
+      "side_effects": [
+        "Reads script; emits self/modified event and question"
+      ],
+      "calls_or_callbacks": [
+        "sha_of",
+        "err",
+        "dim",
+        "event",
+        "ask_human"
+      ],
+      "invariants": [
+        "A changed script is reported; it is not automatically reverted"
+      ],
+      "failure_recovery": [
+        "Missing/unreadable script becomes an empty new hash and reports mismatch once"
+      ],
+      "interfaces": [
+        "self-file",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1950,
+          "end_line": 1966
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "record_recovery_point",
+      "start_line": 1968,
+      "end_line": 1981,
+      "classification": "EXTRACTED",
+      "summary": "Persist a valid starting commit for later recovery instructions.",
+      "inputs": [
+        "PROJECT",
+        "HEAD"
+      ],
+      "outputs": [
+        "Updates state start_commit when hexadecimal HEAD is available"
+      ],
+      "side_effects": [
+        "Reads HEAD; emits git/recovery event"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "dbg",
+        "state_set",
+        "event"
+      ],
+      "invariants": [
+        "Uses --verify --quiet to avoid the literal HEAD artifact of an unborn repository",
+        "Does not execute a reset or create a backup ref"
+      ],
+      "failure_recovery": [
+        "Missing or nonhex head is a no-op"
+      ],
+      "interfaces": [
+        "git-refs",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1968,
+          "end_line": 1981
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "pre_dirty_seal",
+      "start_line": 1983,
+      "end_line": 1992,
+      "classification": "EXTRACTED",
+      "summary": "Seal the exact protection-file bytes plus the display count in memory.",
+      "inputs": [
+        "PRE_DIRTY_FILE"
+      ],
+      "outputs": [
+        "PRE_DIRTY_SEAL=count:checksum"
+      ],
+      "side_effects": [
+        "Reads protected list"
+      ],
+      "calls_or_callbacks": [
+        "pre_dirty_count",
+        "sha_of"
+      ],
+      "invariants": [
+        "Later custody checks compare against this process-memory value"
+      ],
+      "failure_recovery": [
+        "Hash failure uses the literal none suffix; this is not a security signature"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1983,
+          "end_line": 1992
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "pre_dirty_intact",
+      "start_line": 1994,
+      "end_line": 2001,
+      "classification": "EXTRACTED",
+      "summary": "Require the protection file and its current count/checksum to match the stored seal.",
+      "inputs": [
+        "PRE_DIRTY_FILE",
+        "PRE_DIRTY_SEAL"
+      ],
+      "outputs": [
+        "Boolean exit status"
+      ],
+      "side_effects": [
+        "Reads protected list"
+      ],
+      "calls_or_callbacks": [
+        "pre_dirty_count",
+        "sha_of"
+      ],
+      "invariants": [
+        "No seal or no regular protection file fails closed"
+      ],
+      "failure_recovery": [
+        "Any unmatched count/hash returns 1; no repair or reseal occurs here"
+      ],
+      "interfaces": [
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1994,
+          "end_line": 2001
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "snapshot_pre_dirty",
+      "start_line": 2012,
+      "end_line": 2063,
+      "classification": "EXTRACTED",
+      "summary": "Capture original staged paths and all initial non-owned dirty paths before engine work.",
+      "inputs": [
+        "PROJECT, RUN_DIR, HOME_DIR",
+        "Current Git index/working tree",
+        "Existing valid owned.nul claims",
+        "CMD default run"
+      ],
+      "outputs": [
+        "PRE_DIRTY_FILE, OWNED_FILE, OPERATOR_STAGED, PRE_DIRTY_N, PRE_DIRTY_SEAL"
+      ],
+      "side_effects": [
+        "Creates process-specific pre-dirty.PID.nul, operator-staged.nul and temporary raw list",
+        "May warn/event about protected paths and unborn baseline"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "git_top",
+        "project_prefix",
+        "dirty_paths_nul",
+        "owned_has",
+        "pre_dirty_count",
+        "pre_dirty_seal",
+        "warn",
+        "event"
+      ],
+      "invariants": [
+        "Protects all pre-existing changed paths except own runtime state and same-content owned work",
+        "Captures operator staged names separately; no explicit HEAD is required on an unborn index"
+      ],
+      "failure_recovery": [
+        "No repository skips snapshot; failed Git listings become empty lists; caller creates RUN_DIR before this function; no initial baseline commit is manufactured"
+      ],
+      "interfaces": [
+        "ownership-files",
+        "git-index",
+        "git-discovery",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2012,
+          "end_line": 2063
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "unstage_risky",
+      "start_line": 2072,
+      "end_line": 2146,
+      "classification": "EXTRACTED",
+      "summary": "Remove runtime, named secret, bulk, escaping-link and oversized paths from a private commit index.",
+      "inputs": [
+        "$1 private index path",
+        "RISKY_PATHS and BULK_PATHS regexes",
+        "RALPHIE_MAX_COMMIT_BYTES default 1048576",
+        "Working-tree file sizes/link targets"
+      ],
+      "outputs": [
+        "UNSTAGED_RISKY, UNSTAGED_BULK; explicit return 0"
+      ],
+      "side_effects": [
+        "Creates/removes staged.PID.nul; performs literal per-path resets under GIT_INDEX_FILE",
+        "Emits exclusion events and nonblocking question for risky/large paths"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "project_prefix",
+        "file_bytes",
+        "dim",
+        "event",
+        "warn",
+        "trim",
+        "ask_human"
+      ],
+      "invariants": [
+        "Filesystem-derived pathspecs are literal",
+        "Only the passed private index is intentionally changed",
+        "Product working-tree files remain on disk"
+      ],
+      "failure_recovery": [
+        "Failed staged listing becomes empty; reset errors are suppressed; returns success even when reset fails"
+      ],
+      "interfaces": [
+        "git-private-index",
+        "git-path-filter",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2072,
+          "end_line": 2146
+        }
+      ],
+      "notes": [
+        "EXTRACTED: Link filter here rejects /* and *../* (2120); committed-history filter additionally rejects exact .. and trailing /.. (2258).",
+        "INFERRED: Path regex/size checks are not a content secret scan; working-tree content may differ from Git-clean-filter output."
+      ]
+    },
+    {
+      "name": "git_top",
+      "start_line": 2155,
+      "end_line": 2175,
+      "classification": "EXTRACTED",
+      "summary": "Cache and return the repository root used for repository-relative path operations.",
+      "inputs": [
+        "PROJECT",
+        "GIT_TOP cache"
+      ],
+      "outputs": [
+        "stdout root; may set GIT_TOP"
+      ],
+      "side_effects": [
+        "Calls git rev-parse --show-toplevel"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Index/path inspection is anchored at repository root"
+      ],
+      "failure_recovery": [
+        "On failed discovery uses PROJECT; cache writes inside command substitutions do not persist into the parent shell"
+      ],
+      "interfaces": [
+        "git-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2155,
+          "end_line": 2175
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "project_prefix",
+      "start_line": 2177,
+      "end_line": 2196,
+      "classification": "EXTRACTED",
+      "summary": "Resolve physical project/root paths and cache the project-relative staging prefix.",
+      "inputs": [
+        "PROJECT",
+        "GIT_TOP",
+        "PROJECT_PREFIX cache"
+      ],
+      "outputs": [
+        "stdout prefix; may set PROJECT_PREFIX"
+      ],
+      "side_effects": [
+        "Reads physical directories through cd and pwd -P"
+      ],
+      "calls_or_callbacks": [
+        "git_top"
+      ],
+      "invariants": [
+        "Normalizes macOS /tmp versus /private/tmp aliases",
+        "Root project uses dot; contained subproject uses its relative path"
+      ],
+      "failure_recovery": [
+        "Failure or non-containment uses dot rather than reporting a separate error"
+      ],
+      "interfaces": [
+        "git-discovery",
+        "git-path-filter"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2177,
+          "end_line": 2196
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "commit_head",
+      "start_line": 2198,
+      "end_line": 2202,
+      "classification": "EXTRACTED",
+      "summary": "Read a full valid HEAD object name or the explicit unborn/missing sentinel.",
+      "inputs": [
+        "PROJECT"
+      ],
+      "outputs": [
+        "stdout commit hash or none"
+      ],
+      "side_effects": [
+        "Reads Git refs"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "--verify --quiet avoids false literal HEAD output"
+      ],
+      "failure_recovery": [
+        "Failed lookup yields none"
+      ],
+      "interfaces": [
+        "git-refs"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2198,
+          "end_line": 2202
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_history_is_safe",
+      "start_line": 2211,
+      "end_line": 2265,
+      "classification": "EXTRACTED",
+      "summary": "Inspect every new engine-created commit against captured branch/history and project ownership constraints.",
+      "inputs": [
+        "$1 proposed current head",
+        "CY_HEAD, CY_REF, CY_OLD_COMMITS, CY_HISTORY_CAPTURED",
+        "Protected path seal/list",
+        "Project prefix; risk/bulk regexes; RALPHIE_MAX_COMMIT_BYTES"
+      ],
+      "outputs": [
+        "0 if every inspected commit passes; 1 otherwise"
+      ],
+      "side_effects": [
+        "Reads Git refs, ancestry, commit parents, tree names, blob types/sizes/targets",
+        "Writes RUN_DIR/engine-commit-paths.PID.nul"
+      ],
+      "calls_or_callbacks": [
+        "pre_dirty_intact",
+        "project_prefix",
+        "ensure_own_file",
+        "git_top",
+        "pre_dirty_has"
+      ],
+      "invariants": [
+        "Requires same symbolic ref, captured history, valid protected-list seal and a new linear parent chain",
+        "Rejects old commits, rewrite/non-ancestor history, empty net work, empty individual commits, out-of-project/runtime/protected/risky/bulk paths",
+        "Added/modified committed objects must be small blobs; external/upward link targets are rejected"
+      ],
+      "failure_recovery": [
+        "Any failed prerequisite/read rejects; leaves invalid engine history untouched for review; does not reset or repair it"
+      ],
+      "interfaces": [
+        "git-history-validation",
+        "ownership-files",
+        "git-path-filter"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2211,
+          "end_line": 2265
+        }
+      ],
+      "notes": [
+        "EXTRACTED: The scratch list is retained, not deleted, by this function.",
+        "INFERRED: Validation occurs after engine execution; it cannot prevent an engine from creating a rejected commit or making external side effects."
+      ]
+    },
+    {
+      "name": "git_commit_cycle",
+      "start_line": 2267,
+      "end_line": 2296,
+      "classification": "EXTRACTED",
+      "summary": "Sequence commit authorization, private staging, commit execution, index resync and evidence.",
+      "inputs": [
+        "$1 commit message",
+        "RUN_DIR/index.PID",
+        "Current Git/project/ownership state"
+      ],
+      "outputs": [
+        "0 on many refusal paths as well as success; 1 if write_commit fails; uses COMMIT_* state for meaning"
+      ],
+      "side_effects": [
+        "May create Git objects/ref updates and update selected real-index paths; emits commit evidence"
+      ],
+      "calls_or_callbacks": [
+        "commit_is_permitted",
+        "git_identity",
+        "build_commit_index",
+        "index_holds_our_work_only",
+        "write_commit",
+        "resync_operator_index",
+        "good",
+        "event",
+        "warn_protected_unsaved"
+      ],
+      "invariants": [
+        "The commit itself uses an alternate index",
+        "record_outcome, outside this range, checks HEAD actually moved before declaring saved work"
+      ],
+      "failure_recovery": [
+        "Early refusals intentionally return 0; caller must inspect flags and HEAD postcondition"
+      ],
+      "interfaces": [
+        "git-private-index",
+        "git-commit",
+        "git-index",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2267,
+          "end_line": 2296
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "warn_protected_unsaved",
+      "start_line": 2298,
+      "end_line": 2313,
+      "classification": "EXTRACTED",
+      "summary": "Tell the operator when protected paths remain dirty after a partial commit.",
+      "inputs": [
+        "PRE_DIRTY_FILE",
+        "Git status of each literal protected path"
+      ],
+      "outputs": [
+        "Always returns 0; at most one warning pair"
+      ],
+      "side_effects": [
+        "Reads protected file and path-specific Git status"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "warn"
+      ],
+      "invariants": [
+        "Does not claim a partial save saved the whole working tree"
+      ],
+      "failure_recovery": [
+        "Missing/empty list or no remaining visible dirty path is silent; status failures are suppressed"
+      ],
+      "interfaces": [
+        "ownership-files",
+        "git-discovery",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2298,
+          "end_line": 2313
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "commit_is_permitted",
+      "start_line": 2315,
+      "end_line": 2363,
+      "classification": "EXTRACTED",
+      "summary": "Refuse automatic commit when a repository disappeared, work is absent, or an operator Git operation is active.",
+      "inputs": [
+        "PROJECT",
+        "GIT_MODE fixed at run start",
+        "MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge/rebase-apply"
+      ],
+      "outputs": [
+        "0 permits staging; 1 refuses; sets COMMIT_FAILED/COMMIT_BLOCKED_WHY or COMMIT_SKIPPED"
+      ],
+      "side_effects": [
+        "Reads Git status and operation metadata; appends refusal events/questions"
+      ],
+      "calls_or_callbacks": [
+        "git_ready",
+        "git_dirty",
+        "err",
+        "event",
+        "ask_human",
+        "warn"
+      ],
+      "invariants": [
+        "No-Git mode is distinguished from loss of an existing repository",
+        "Does not conclude an operator merge/rebase/cherry-pick/revert"
+      ],
+      "failure_recovery": [
+        "Leaves work and operator operation in place; reports actionable reason"
+      ],
+      "interfaces": [
+        "git-discovery",
+        "git-operation-markers",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2315,
+          "end_line": 2363
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "build_commit_index",
+      "start_line": 2365,
+      "end_line": 2427,
+      "classification": "EXTRACTED",
+      "summary": "Create a HEAD-seeded alternate index, stage only the project, and remove forbidden/protected paths.",
+      "inputs": [
+        "$1 alternate index path",
+        "HEAD and project prefix",
+        "Protected list/seal",
+        "Risk/bulk/size policy"
+      ],
+      "outputs": [
+        "0 when construction path finishes; 1 on explicit read-tree, add, or custody failure; COMMIT_FAILED and reason on refusal"
+      ],
+      "side_effects": [
+        "Removes old index, invokes private read-tree/add/reset, creates Git objects through add and filters; logs refusals"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "project_prefix",
+        "unstage_risky",
+        "pre_dirty_intact",
+        "err",
+        "event",
+        "dim",
+        "ask_human"
+      ],
+      "invariants": [
+        "Never seeds from the operator index",
+        "Literal scoped add prevents pathspec magic or sibling-project staging",
+        "Validates protected-list custody immediately before applying exclusions"
+      ],
+      "failure_recovery": [
+        "Deletes private index on read-tree/add/seal failure; preserves working tree; individual protected reset failures are suppressed"
+      ],
+      "interfaces": [
+        "git-private-index",
+        "git-execution-policy",
+        "ownership-files",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2365,
+          "end_line": 2427
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "index_holds_our_work_only",
+      "start_line": 2429,
+      "end_line": 2454,
+      "classification": "EXTRACTED",
+      "summary": "Require a nonempty private-index change or explain why no independently committable work remains.",
+      "inputs": [
+        "$1 index",
+        "CY_ENGINE_SAVED"
+      ],
+      "outputs": [
+        "0 for nonquiet cached diff; 1 for empty index; may set COMMIT_FAILED/reason"
+      ],
+      "side_effects": [
+        "Reads/removes alternate index; emits overlap warning/event/question"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "warn",
+        "event",
+        "ask_human"
+      ],
+      "invariants": [
+        "An already-validated engine commit prevents empty remaining index from creating a new commit failure"
+      ],
+      "failure_recovery": [
+        "Empty unsaved index blocks promotion; a nonzero diff command status, including an error, currently takes the nonempty branch"
+      ],
+      "interfaces": [
+        "git-private-index",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2429,
+          "end_line": 2454
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "write_commit",
+      "start_line": 2456,
+      "end_line": 2482,
+      "classification": "EXTRACTED",
+      "summary": "Run Git commit with the alternate index and a bounded child-process watchdog.",
+      "inputs": [
+        "$1 alternate index",
+        "$2 message",
+        "RUN_DIR",
+        "COMMIT_TIMEOUT default 120; invalid/nonpositive becomes 120",
+        "Inherited Git hooks/signing/identity configuration"
+      ],
+      "outputs": [
+        "0 on Git success; 1 on failure; sets COMMIT_FAILED"
+      ],
+      "side_effects": [
+        "Launches background git commit with stdin /dev/null and merged capture; updates Git objects/ref/reflog",
+        "Tracks child PID, may TERM/KILL tree; removes private index/error capture",
+        "On failure relays bounded error excerpts to output, events and question"
+      ],
+      "calls_or_callbacks": [
+        "is_int",
+        "git_top",
+        "track_pid",
+        "watchdog_wait",
+        "untrack_pid",
+        "err",
+        "dim",
+        "tail_of",
+        "event",
+        "ask_human"
+      ],
+      "invariants": [
+        "Repository hooks/signing policy remains active",
+        "Finite commit timeout is independent of engine-call timeout"
+      ],
+      "failure_recovery": [
+        "Timeout adds a diagnostic; any failure preserves worktree and reports not saved; no history rollback is attempted"
+      ],
+      "interfaces": [
+        "git-commit",
+        "git-execution-policy",
+        "process-supervision",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2456,
+          "end_line": 2482
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "resync_operator_index",
+      "start_line": 2484,
+      "end_line": 2502,
+      "classification": "EXTRACTED",
+      "summary": "Refresh committed real-index paths against new HEAD while preserving initially staged paths.",
+      "inputs": [
+        "OPERATOR_STAGED NUL list",
+        "New HEAD",
+        "RUN_DIR"
+      ],
+      "outputs": [
+        "Normally success; no status flag for a per-path reset failure"
+      ],
+      "side_effects": [
+        "Writes/removes committed.PID.nul; literal git reset updates the real index for nonprotected committed paths"
+      ],
+      "calls_or_callbacks": [
+        "git_top",
+        "nul_list_has"
+      ],
+      "invariants": [
+        "Never intentionally resets a path recorded as initially staged",
+        "--root and -m provide path enumeration for first/merge commits"
+      ],
+      "failure_recovery": [
+        "Failed enumeration becomes empty; individual reset errors are ignored; no worktree reset"
+      ],
+      "interfaces": [
+        "git-index",
+        "ownership-files"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2484,
+          "end_line": 2502
+        }
+      ],
+      "notes": [
+        "EXTRACTED: The real index is involved in this resynchronization, despite the broad private-index comment at 2273-2274."
+      ]
+    },
+    {
+      "name": "engine_names",
+      "start_line": 2539,
+      "end_line": 2539,
+      "classification": "EXTRACTED",
+      "summary": "Enumerate table engine names and configured custom engine.",
+      "inputs": [
+        "ENGINE_TABLE",
+        "RALPHIE_ENGINE_CMD"
+      ],
+      "outputs": [
+        "stdout one name per line"
+      ],
+      "side_effects": [
+        "Only pipeline/string output"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Custom appears only for a nonempty configured command"
+      ],
+      "failure_recovery": [
+        "Ends with success even when custom is absent"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2539,
+          "end_line": 2539
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_field",
+      "start_line": 2541,
+      "end_line": 2555,
+      "classification": "EXTRACTED",
+      "summary": "Resolve command, answer destination or capability field for an engine.",
+      "inputs": [
+        "$1 name",
+        "$2 field index 1/2/3",
+        "ENGINE_TABLE",
+        "RALPHIE_ENGINE_CMD/ANSWER/CAPS"
+      ],
+      "outputs": [
+        "stdout selected field; 1 for absent builtin row"
+      ],
+      "side_effects": [
+        "Reads environment/table; runs grep/head/cut/trim pipeline"
+      ],
+      "calls_or_callbacks": [
+        "trim"
+      ],
+      "invariants": [
+        "Custom command is verbatim; custom answer defaults stdout; custom caps default empty"
+      ],
+      "failure_recovery": [
+        "Unknown builtin row returns 1; unknown custom field prints nothing and returns 0"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2541,
+          "end_line": 2555
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_cmd",
+      "start_line": 2557,
+      "end_line": 2557,
+      "classification": "EXTRACTED",
+      "summary": "Return engine command field.",
+      "inputs": [
+        "$1 engine"
+      ],
+      "outputs": [
+        "stdout command/status from engine_field"
+      ],
+      "side_effects": [],
+      "calls_or_callbacks": [
+        "engine_field"
+      ],
+      "invariants": [
+        "Field index is 1"
+      ],
+      "failure_recovery": [
+        "Delegates failure unchanged"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2557,
+          "end_line": 2557
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_answer",
+      "start_line": 2558,
+      "end_line": 2558,
+      "classification": "EXTRACTED",
+      "summary": "Return engine answer destination field.",
+      "inputs": [
+        "$1 engine"
+      ],
+      "outputs": [
+        "stdout stdout or file (custom value is unconstrained here)"
+      ],
+      "side_effects": [],
+      "calls_or_callbacks": [
+        "engine_field"
+      ],
+      "invariants": [
+        "Field index is 2"
+      ],
+      "failure_recovery": [
+        "Delegates failure unchanged"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2558,
+          "end_line": 2558
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_caps",
+      "start_line": 2559,
+      "end_line": 2559,
+      "classification": "EXTRACTED",
+      "summary": "Return space-delimited declared engine capabilities.",
+      "inputs": [
+        "$1 engine"
+      ],
+      "outputs": [
+        "stdout capability string/status"
+      ],
+      "side_effects": [],
+      "calls_or_callbacks": [
+        "engine_field"
+      ],
+      "invariants": [
+        "Field index is 3"
+      ],
+      "failure_recovery": [
+        "Delegates failure unchanged"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2559,
+          "end_line": 2559
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_has",
+      "start_line": 2560,
+      "end_line": 2560,
+      "classification": "EXTRACTED",
+      "summary": "Test a capability as an exact space-bounded word.",
+      "inputs": [
+        "$1 engine",
+        "$2 capability"
+      ],
+      "outputs": [
+        "Boolean exit status"
+      ],
+      "side_effects": [],
+      "calls_or_callbacks": [
+        "engine_caps"
+      ],
+      "invariants": [
+        "Does not use substring-only capability matching"
+      ],
+      "failure_recovery": [
+        "Absent declaration returns 1"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2560,
+          "end_line": 2560
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_score",
+      "start_line": 2561,
+      "end_line": 2561,
+      "classification": "EXTRACTED",
+      "summary": "Count declared capability words for engine ranking.",
+      "inputs": [
+        "$1 engine"
+      ],
+      "outputs": [
+        "stdout integer word count"
+      ],
+      "side_effects": [],
+      "calls_or_callbacks": [
+        "engine_caps"
+      ],
+      "invariants": [
+        "Score is declaration count, not quality, cost or benchmark performance"
+      ],
+      "failure_recovery": [
+        "No separate external capability validation"
+      ],
+      "interfaces": [
+        "engine-table"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2561,
+          "end_line": 2561
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_exe",
+      "start_line": 2563,
+      "end_line": 2569,
+      "classification": "EXTRACTED",
+      "summary": "Resolve a literal executable path, including spaces, or the first space-delimited command token.",
+      "inputs": [
+        "$1 command string"
+      ],
+      "outputs": [
+        "stdout executable string"
+      ],
+      "side_effects": [
+        "Filesystem executable test"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "Whole executable pathname takes precedence over splitting"
+      ],
+      "failure_recovery": [
+        "No quote/escape parser; nonliteral strings fall back to text before the first space"
+      ],
+      "interfaces": [
+        "engine-discovery",
+        "custom-command"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2563,
+          "end_line": 2569
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_present",
+      "start_line": 2571,
+      "end_line": 2576,
+      "classification": "EXTRACTED",
+      "summary": "Check configured executable path or command availability without provider authentication.",
+      "inputs": [
+        "$1 engine",
+        "PATH/table/custom command"
+      ],
+      "outputs": [
+        "Boolean exit status"
+      ],
+      "side_effects": [
+        "Filesystem executable check; command -v lookup"
+      ],
+      "calls_or_callbacks": [
+        "engine_cmd",
+        "have",
+        "engine_exe"
+      ],
+      "invariants": [
+        "Does not spend provider tokens or check login/model access"
+      ],
+      "failure_recovery": [
+        "Missing command/config returns 1"
+      ],
+      "interfaces": [
+        "engine-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2571,
+          "end_line": 2576
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_live",
+      "start_line": 2579,
+      "end_line": 2589,
+      "classification": "EXTRACTED",
+      "summary": "Memoize successful and failed engine version probes within its shell process.",
+      "inputs": [
+        "$1 engine",
+        "ENGINE_LIVE_CACHE"
+      ],
+      "outputs": [
+        "Boolean status; appends ok:name or dead:name cache entry"
+      ],
+      "side_effects": [
+        "May execute version probe"
+      ],
+      "calls_or_callbacks": [
+        "engine_live_probe"
+      ],
+      "invariants": [
+        "Both success and failure are cached"
+      ],
+      "failure_recovery": [
+        "Cache contains only command responsiveness, not provider health; subshell-local updates do not escape"
+      ],
+      "interfaces": [
+        "engine-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2579,
+          "end_line": 2589
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_live_probe",
+      "start_line": 2591,
+      "end_line": 2599,
+      "classification": "EXTRACTED",
+      "summary": "Execute the selected engine binary with --version and suppress output.",
+      "inputs": [
+        "$1 engine",
+        "Available timeout/gtimeout",
+        "PATH/custom command"
+      ],
+      "outputs": [
+        "Exit status from executable/version wrapper"
+      ],
+      "side_effects": [
+        "Executes installed binary, optionally under timeout 15"
+      ],
+      "calls_or_callbacks": [
+        "engine_cmd",
+        "timeout_cmd",
+        "engine_present",
+        "engine_exe"
+      ],
+      "invariants": [
+        "No prompt or model call is deliberately requested",
+        "Only executable is used, not additional custom command arguments"
+      ],
+      "failure_recovery": [
+        "Absent executable returns 1; without timeout/gtimeout the version command has no watchdog here"
+      ],
+      "interfaces": [
+        "engine-discovery",
+        "process-supervision"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2591,
+          "end_line": 2599
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_check_model",
+      "start_line": 2601,
+      "end_line": 2609,
+      "classification": "EXTRACTED",
+      "summary": "Leave model selector resolution to the engine and optionally log the Prime selector.",
+      "inputs": [
+        "$1 engine",
+        "$2 model selector",
+        "VERBOSE"
+      ],
+      "outputs": [
+        "Always returns 0"
+      ],
+      "side_effects": [
+        "Optional debug output"
+      ],
+      "calls_or_callbacks": [
+        "dbg"
+      ],
+      "invariants": [
+        "No mutation/substitution of the requested selector",
+        "No model-catalog/provider request"
+      ],
+      "failure_recovery": [
+        "Invalid selector is deferred to engine invocation"
+      ],
+      "interfaces": [
+        "engine-argv"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2601,
+          "end_line": 2609
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_pick",
+      "start_line": 2611,
+      "end_line": 2647,
+      "classification": "EXTRACTED",
+      "summary": "Honor explicit engine/custom choice; otherwise prefer responsive Prime and rank alternatives.",
+      "inputs": [
+        "Optional $1 explicit name",
+        "RALPHIE_ENGINE_CMD",
+        "Installed engines, declared capabilities and responsiveness"
+      ],
+      "outputs": [
+        "stdout selected engine; 1 if explicit missing or no installed candidate"
+      ],
+      "side_effects": [
+        "May execute version probes; emits explicit-choice installation error"
+      ],
+      "calls_or_callbacks": [
+        "engine_present",
+        "err",
+        "engine_live",
+        "engine_score",
+        "engine_names"
+      ],
+      "invariants": [
+        "Explicit named engine wins without automatic substitution",
+        "Configured custom command beats builtin ranking",
+        "Responsive Prime is first default regardless of capability score"
+      ],
+      "failure_recovery": [
+        "If no engine responds but one is installed, chooses the highest-scoring installed candidate; provider auth is not verified"
+      ],
+      "interfaces": [
+        "engine-selection",
+        "engine-discovery"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2611,
+          "end_line": 2647
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_fallbacks",
+      "start_line": 2649,
+      "end_line": 2656,
+      "classification": "EXTRACTED",
+      "summary": "List other installed engines in descending declared-capability score.",
+      "inputs": [
+        "$1 active engine",
+        "Engine registry/environment"
+      ],
+      "outputs": [
+        "stdout ordered engine names"
+      ],
+      "side_effects": [
+        "Command availability checks; sort pipeline"
+      ],
+      "calls_or_callbacks": [
+        "engine_names",
+        "engine_present",
+        "engine_score"
+      ],
+      "invariants": [
+        "Active engine excluded; no liveness probe here"
+      ],
+      "failure_recovery": [
+        "Unavailable engines omitted; equal scores follow sort behavior"
+      ],
+      "interfaces": [
+        "engine-selection"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2649,
+          "end_line": 2656
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_build",
+      "start_line": 2665,
+      "end_line": 2751,
+      "classification": "EXTRACTED",
+      "summary": "Rebuild invocation argv/env for Prime, Claude, Codex or custom command.",
+      "inputs": [
+        "$1 engine",
+        "$2 requested mode",
+        "$3 output file",
+        "PROJECT, RUN_DIR, preferred ENGINE, MODEL, THINKING, YOLO",
+        "Native limits/session and deadline settings; gates_list"
+      ],
+      "outputs": [
+        "ENGINE_ARGV and ENGINE_ENV arrays; 0 success, 1 unknown engine"
+      ],
+      "side_effects": [
+        "Reads state run_id and gates; emits optional debug diagnostics; no engine is launched here"
+      ],
+      "calls_or_callbacks": [
+        "engine_cmd",
+        "is_true",
+        "dbg",
+        "state_get",
+        "budget_cap",
+        "is_int",
+        "gates_list",
+        "err"
+      ],
+      "invariants": [
+        "Model selector is cleared for a borrowed provider",
+        "Prime timeout/gate limits are positive, capped by host allowance; fully unbounded requested mode uses ordinary tool loop",
+        "Explicit return 0 prevents false failure from absent optional flags"
+      ],
+      "failure_recovery": [
+        "Unknown name returns 1; external CLI decides unsupported models/thinking/flags; custom command word splitting does not implement shell quoting"
+      ],
+      "interfaces": [
+        "engine-argv",
+        "prime-native",
+        "custom-command",
+        "engine-environment",
+        "engine-session"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2665,
+          "end_line": 2751
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "classify_failure",
+      "start_line": 2761,
+      "end_line": 2772,
+      "classification": "EXTRACTED",
+      "summary": "Map resource/deadline exits and bounded diagnostic text to retry classes.",
+      "inputs": [
+        "$1 exit code",
+        "$2 log",
+        "FAIL_PERMANENT and FAIL_TRANSIENT regexes"
+      ],
+      "outputs": [
+        "stdout resource-limit, transient, permanent or unknown; success return"
+      ],
+      "side_effects": [
+        "Reads final 20000 log bytes at most per regex pass"
+      ],
+      "calls_or_callbacks": [],
+      "invariants": [
+        "125 resource limit and 124/137/143 transient precede text matching",
+        "Permanent text wins before transient text"
+      ],
+      "failure_recovery": [
+        "Unknown is the default, not a successful attempt"
+      ],
+      "interfaces": [
+        "engine-failure"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2761,
+          "end_line": 2772
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "answer_is_usable",
+      "start_line": 2774,
+      "end_line": 2788,
+      "classification": "EXTRACTED",
+      "summary": "Require substantive answer bytes and reject obvious HTML/login output.",
+      "inputs": [
+        "$1 output file",
+        "MIN_ANSWER_BYTES default 2"
+      ],
+      "outputs": [
+        "Boolean status"
+      ],
+      "side_effects": [
+        "Reads file size, first nonspace byte and first 2000 bytes"
+      ],
+      "calls_or_callbacks": [
+        "file_bytes"
+      ],
+      "invariants": [
+        "Whitespace-only answers fail",
+        "Usability is not proof of solved work or gate success"
+      ],
+      "failure_recovery": [
+        "Missing/small/blank/login-page content returns 1"
+      ],
+      "interfaces": [
+        "engine-output"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2774,
+          "end_line": 2788
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_run",
+      "start_line": 2792,
+      "end_line": 2851,
+      "classification": "EXTRACTED",
+      "summary": "Execute bounded retry policy for one engine, retaining actionable final reason and capture path.",
+      "inputs": [
+        "$1 name",
+        "$2 mode",
+        "$3 prompt file",
+        "$4 log file",
+        "$5 answer file",
+        "ENGINE_RETRIES default 3, ENGINE_BACKOFF default 5, run deadline"
+      ],
+      "outputs": [
+        "0 answer; 1 attempts exhausted; 2 cannot start; 3 permanent; 4 out of time; 5 output resource limit",
+        "ENGINE_REASON and ENGINE_RESOURCE_LIMIT"
+      ],
+      "side_effects": [
+        "Invokes engine repeatedly; emits start/fail/limit events; trims captures; sleeps between attempts"
+      ],
+      "calls_or_callbacks": [
+        "engine_present",
+        "ensure_dirs",
+        "budget_expired",
+        "event",
+        "engine_build",
+        "now_epoch",
+        "engine_invoke",
+        "secs_since",
+        "engine_answered",
+        "classify_failure",
+        "warn",
+        "retain_engine_output"
+      ],
+      "invariants": [
+        "Checks budget before every attempt",
+        "Resource limit is never retried and flags no fallback",
+        "Permanent failure is not retried; unexplained nonzero failure remains failure"
+      ],
+      "failure_recovery": [
+        "Unknown/transient retry up to configured max; final/permanent reason includes attempt count and retained log path; resource reason has separate wording"
+      ],
+      "interfaces": [
+        "engine-retries",
+        "engine-failure",
+        "process-supervision",
+        "engine-output",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2792,
+          "end_line": 2851
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_invoke",
+      "start_line": 2853,
+      "end_line": 2928,
+      "classification": "EXTRACTED",
+      "summary": "Launch one engine attempt in PROJECT with prompt stdin and durable raw capture, then collect its answer.",
+      "inputs": [
+        "$1 name",
+        "$2 prompt",
+        "$3 cycle log",
+        "$4 answer path",
+        "ENGINE_ARGV/ENV",
+        "ENGINE_TIMEOUT default 2400, ENGINE_IDLE_TIMEOUT default 600, ENGINE_OUTPUT_MAX_BYTES default 16777216",
+        "TMPDIR default /tmp; remaining run budget"
+      ],
+      "outputs": [
+        "Engine or watchdog exit code; writes cycle log and answer"
+      ],
+      "side_effects": [
+        "Truncates log/answer, launches process group/direct exec, tracks PID, writes external raw temp",
+        "May terminate process tree; recreates runtime dirs; copies raw output, removes raw temp"
+      ],
+      "calls_or_callbacks": [
+        "is_int",
+        "ensure_dirs",
+        "warn",
+        "err",
+        "dbg",
+        "budget_cap",
+        "track_pid",
+        "engine_has",
+        "watchdog_wait",
+        "untrack_pid",
+        "retain_engine_output",
+        "ensure_own_file",
+        "engine_answer"
+      ],
+      "invariants": [
+        "Prompt is stdin; process cwd is PROJECT",
+        "stdout-answer engines receive merged stdout/stderr with leading blank lines removed",
+        "Only declared stream engines get idle timeout",
+        "Oversized capture clears answer and cannot promote partial output"
+      ],
+      "failure_recovery": [
+        "Unwritable log falls back locally to /dev/null; unwritable answer fails before launch; raw mktemp failure uses PID filename; capture copy errors are suppressed"
+      ],
+      "interfaces": [
+        "engine-execution",
+        "engine-output",
+        "process-supervision",
+        "engine-environment"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2853,
+          "end_line": 2928
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "engine_answered",
+      "start_line": 2930,
+      "end_line": 2953,
+      "classification": "EXTRACTED",
+      "summary": "Recognize a usable successful result or only Prime native bounded-stop diagnostics after exit 1.",
+      "inputs": [
+        "$1 engine",
+        "$2 mode",
+        "$3 exit",
+        "$4 log",
+        "$5 answer",
+        "$6 elapsed seconds"
+      ],
+      "outputs": [
+        "Boolean status; engine ok or stopped event"
+      ],
+      "side_effects": [
+        "Reads answer and final nonblank log line"
+      ],
+      "calls_or_callbacks": [
+        "answer_is_usable",
+        "event",
+        "human_secs",
+        "dbg"
+      ],
+      "invariants": [
+        "Exit 0 still requires usable answer",
+        "Nonzero exception is limited to Prime autonomous exit 1 with exact known terminal prefixes",
+        "Outer gates remain authoritative after a stopped attempt"
+      ],
+      "failure_recovery": [
+        "Other codes/text/modes return 1 for retry classification"
+      ],
+      "interfaces": [
+        "engine-failure",
+        "engine-output",
+        "prime-native",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2930,
+          "end_line": 2953
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "watchdog_wait",
+      "start_line": 2955,
+      "end_line": 3015,
+      "classification": "EXTRACTED",
+      "summary": "Wait for a tracked child with optional silence, elapsed-poll and combined-output ceilings.",
+      "inputs": [
+        "$1 PID",
+        "$2 raw log",
+        "$3 idle seconds default 0",
+        "$4 hard seconds default 0",
+        "$5 label default engine",
+        "$6 byte ceiling default 0",
+        "$7 answer default /dev/null"
+      ],
+      "outputs": [
+        "Child status; 124 for idle/hard timeout; 125 for output resource limit"
+      ],
+      "side_effects": [
+        "Polls process existence and file sizes; sleeps; sends TERM/KILL through terminate_tree; waits/reaps"
+      ],
+      "calls_or_callbacks": [
+        "is_int",
+        "file_bytes",
+        "warn",
+        "terminate_tree",
+        "human_secs"
+      ],
+      "invariants": [
+        "All disabled limits use plain wait",
+        "Output ceiling checks raw plus answer both during process and after exit",
+        "Buffered engines can use hard timeout without idle timeout"
+      ],
+      "failure_recovery": [
+        "Invalid numeric limits become 0 here; kill/reap is best effort; nominal timeout has polling and termination-grace overhead"
+      ],
+      "interfaces": [
+        "process-supervision",
+        "engine-output"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2955,
+          "end_line": 3015
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "retain_engine_output",
+      "start_line": 3017,
+      "end_line": 3029,
+      "classification": "EXTRACTED",
+      "summary": "Keep a marked bounded tail of consumed captures larger than 256 KiB.",
+      "inputs": [
+        "$1 capture file",
+        "TMPDIR default /tmp"
+      ],
+      "outputs": [
+        "Always returns 0; file becomes marker plus last 262080 bytes when trimming succeeds"
+      ],
+      "side_effects": [
+        "Creates external temp; overwrites original capture through existing path; removes temp"
+      ],
+      "calls_or_callbacks": [
+        "file_bytes",
+        "ensure_own_file",
+        "warn"
+      ],
+      "invariants": [
+        "Does not trim prompt or provider-session records",
+        "Keeps original inode/path semantics by writing through it"
+      ],
+      "failure_recovery": [
+        "Absent/small file, temp creation failure, or write failure is best effort; write failure warns"
+      ],
+      "interfaces": [
+        "engine-output"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3017,
+          "end_line": 3029
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "read_engine_usage",
+      "start_line": 3031,
+      "end_line": 3119,
+      "classification": "EXTRACTED",
+      "summary": "Replay current-run Prime session usage, replacing cumulative child attribution and adding separate summary/compaction calls.",
+      "inputs": [
+        "Preferred ENGINE usage capability",
+        "RUN_DIR/sessions/state.run_id",
+        "Optional python3",
+        "JSONL entry schema and previous run_tokens"
+      ],
+      "outputs": [
+        "Updates tokens_spent by nonnegative delta, run_tokens, run_cost; prints USAGE_NOTE"
+      ],
+      "side_effects": [
+        "Recursively reads JSONL sessions in embedded Python; updates persisted state and terminal output"
+      ],
+      "calls_or_callbacks": [
+        "engine_has",
+        "state_get",
+        "have",
+        "dbg",
+        "is_int",
+        "json_num",
+        "state_bump",
+        "state_set",
+        "dim"
+      ],
+      "invariants": [
+        "Does not estimate tokens from text size",
+        "Session IDs/attribution are local to each file; latest aggregate replaces target usage",
+        "Lifetime total receives only nonnegative increase since last run total"
+      ],
+      "failure_recovery": [
+        "No capability/directory/Python or parse-process failure leaves counters untouched; malformed JSON and OSError files are skipped; negative/noninteger aggregate token text is rejected"
+      ],
+      "interfaces": [
+        "engine-session",
+        "usage-python",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3031,
+          "end_line": 3119
+        }
+      ],
+      "notes": [
+        "EXTRACTED: This helper is called only after successful engine_run_with_fallback in cycle_act (3895-3922); an isolated failed attempt can leave usage unaccounted until a later successful read."
+      ]
+    },
+    {
+      "name": "engine_run_with_fallback",
+      "start_line": 3121,
+      "end_line": 3159,
+      "classification": "EXTRACTED",
+      "summary": "Borrow an installed alternate only for an implicitly selected engine and only for the current cycle.",
+      "inputs": [
+        "$1 mode",
+        "$2 prompt",
+        "$3 log",
+        "$4 answer",
+        "Preferred ENGINE and ENGINE_EXPLICIT",
+        "Deadline/resource failure status"
+      ],
+      "outputs": [
+        "0 if a primary/alternate attempt is usable; 1 otherwise",
+        "CYCLE_ENGINE names successful engine; preferred ENGINE is preserved; ENGINE_REASON kept/restored"
+      ],
+      "side_effects": [
+        "Runs engines; emits fallback/borrowed events; may overwrite shared cycle capture on later attempt"
+      ],
+      "calls_or_callbacks": [
+        "engine_run",
+        "budget_expired",
+        "is_true",
+        "dbg",
+        "warn",
+        "event",
+        "engine_has",
+        "engine_fallbacks"
+      ],
+      "invariants": [
+        "Explicit engine/custom choice prevents provider change",
+        "Output resource exhaustion and expired budget prevent fallback",
+        "Alternate lacking autonomy or gates is downgraded to oneshot",
+        "Successful alternate never becomes next cycle preferred provider"
+      ],
+      "failure_recovery": [
+        "After all alternatives fail restores the first failure reason; same log/output path may now hold a later attempt"
+      ],
+      "interfaces": [
+        "engine-selection",
+        "engine-retries",
+        "engine-output",
+        "ledger-human"
+      ],
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3121,
+          "end_line": 3159
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "git-discovery",
+      "kind": "external-process/read",
+      "classification": "EXTRACTED",
+      "summary": "Git repository, dirty-path and root discovery.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1697,
+          "end_line": 1730
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1783,
+          "end_line": 1796
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2155,
+          "end_line": 2196
+        }
+      ],
+      "contract": [
+        "git -C PROJECT rev-parse --git-dir/--show-toplevel; symbolic-ref --quiet [--short] HEAD; rev-parse --short HEAD",
+        "git status --porcelain is only an emptiness check, never parsed as filenames",
+        "Dirty names: git diff --name-only -z --no-renames HEAD, or unborn git ls-files --cached -z; append git ls-files --others --exclude-standard -z",
+        "All path lists are repository-relative NUL records; status/list diagnostics are frequently suppressed"
+      ],
+      "side_effects": [
+        "Invokes inherited Git configuration/environment; status may refresh index or invoke configured helpers"
+      ],
+      "unknowns": [
+        "Exact Git version, global config, fsmonitor and external-diff behavior are not established by this static range."
+      ]
+    },
+    {
+      "id": "git-init-config",
+      "kind": "external-process/write",
+      "classification": "EXTRACTED",
+      "summary": "Initialize local Git metadata and supply missing local identity.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1704,
+          "end_line": 1718
+        }
+      ],
+      "contract": [
+        "RALPHIE_GIT_INIT defaults 1; no repository plus false disables initialization",
+        "git init -q in PROJECT; git config user.email/name read inherited values and set local defaults only on failed lookup"
+      ],
+      "side_effects": [
+        "Creates Git metadata/config; event writes follow successful init"
+      ],
+      "unknowns": [
+        "Initial branch/template behavior is determined by installed Git and its configuration."
+      ]
+    },
+    {
+      "id": "git-refs",
+      "kind": "external-process/read-write",
+      "classification": "EXTRACTED",
+      "summary": "Branch selection and recovery identity.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1722,
+          "end_line": 1730
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1891,
+          "end_line": 1928
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1968,
+          "end_line": 1981
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2198,
+          "end_line": 2209
+        }
+      ],
+      "contract": [
+        "Existing refs/heads/name: git show-ref --verify --quiet then checkout -q name; otherwise checkout -q -b name",
+        "State base_branch and RESTORE_BRANCH remember source branch; start_commit stores verified hexadecimal HEAD",
+        "No push, fetch, reset-hard, checkout restoration, or backup ref is performed by these assigned helpers"
+      ],
+      "side_effects": [
+        "Checkout can change refs, index and working-tree files and invoke Git extension points"
+      ],
+      "unknowns": [
+        "A branch is not a separate worktree; concurrent edits remain shared."
+      ]
+    },
+    {
+      "id": "git-index",
+      "kind": "external-process/read-write",
+      "classification": "EXTRACTED",
+      "summary": "Operator staging capture and limited postcommit resynchronization.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2027,
+          "end_line": 2034
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2484,
+          "end_line": 2502
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1933,
+          "end_line": 1948
+        }
+      ],
+      "contract": [
+        "operator-staged.nul captures git diff --cached --name-only -z --no-renames without explicit HEAD",
+        "After commit enumerate git diff-tree -m --root --no-commit-id --name-only -r -z HEAD",
+        "Skip exact originally-staged names; literal git reset -q -- path refreshes other committed real-index paths",
+        "self_is_reviewed uses literal ls-files and unstaged git diff --quiet"
+      ],
+      "side_effects": [
+        "Real index is read at startup and intentionally updated for nonprotected committed paths after save"
+      ],
+      "unknowns": [
+        "Operator index changes during a cycle are not distinguishable from engine changes; the protected name list is not a byte-for-byte index backup."
+      ]
+    },
+    {
+      "id": "ownership-files",
+      "kind": "filesystem/read-write",
+      "classification": "EXTRACTED",
+      "summary": "NUL path custody and process-memory seals.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1732,
+          "end_line": 1889
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1983,
+          "end_line": 2063
+        }
+      ],
+      "contract": [
+        "HOME_DIR/owned.nul: checksum TAB repository-relative path NUL; duplicate records are searched completely",
+        "RUN_DIR/pre-dirty.PID.nul and operator-staged.nul: raw path NUL; runtime own-state paths excluded from pre-dirty capture",
+        "Scratch: dirty-now.nul, dirty.nul, pre-dirty.raw.PID, owned.nul.tmp.PID",
+        "PRE_DIRTY_SEAL stores display count plus sha_of bytes checksum; sha_of may fall back to cksum (168-177)",
+        "Fingerprint - means not readable regular-file bytes; ownership is checked against current content and dirtiness"
+      ],
+      "side_effects": [
+        "Appends/replaces ownership records; may append/reseal changed operator paths; removes scratch files"
+      ],
+      "unknowns": [
+        "No authorship oracle for simultaneous edits; no atomic filesystem snapshot; mode/target identity is outside byte fingerprint."
+      ]
+    },
+    {
+      "id": "self-file",
+      "kind": "filesystem/read",
+      "classification": "EXTRACTED",
+      "summary": "Running-source change detection.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1930,
+          "end_line": 1966
+        }
+      ],
+      "contract": [
+        "SELF_HASH is process-memory fingerprint from SELF stdin",
+        "Startup warning compares tracked in-project worktree file to index; cycle check compares bytes to saved fingerprint"
+      ],
+      "side_effects": [
+        "Mismatch writes event/question and updates hash; no source rollback"
+      ],
+      "unknowns": [
+        "Static code cannot guarantee protection from an engine with equivalent OS write/process privileges."
+      ]
+    },
+    {
+      "id": "git-private-index",
+      "kind": "external-process/write",
+      "classification": "EXTRACTED",
+      "summary": "Scoped alternate-index staging and filtering.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2072,
+          "end_line": 2146
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2267,
+          "end_line": 2296
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2365,
+          "end_line": 2454
+        }
+      ],
+      "contract": [
+        "RUN_DIR/index.PID is passed using GIT_INDEX_FILE to read-tree HEAD, literal add -A -- project_prefix, cached diff and literal per-path reset",
+        "Unborn index starts without read-tree HEAD",
+        "Protected/risky/bulk/runtime paths are removed from alternate index before git commit",
+        "Temporary path files: staged.PID.nul and private index"
+      ],
+      "side_effects": [
+        "Creates Git blobs/index entries; deletes temporary index after outcome"
+      ],
+      "unknowns": [
+        "Filters may change blob bytes from inspected working-tree bytes; ignored reset errors are not separately verified in this helper."
+      ]
+    },
+    {
+      "id": "git-path-filter",
+      "kind": "filesystem-and-pattern-policy",
+      "classification": "EXTRACTED",
+      "summary": "Literal path scope and automatic-commit exclusion rules.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2069,
+          "end_line": 2070
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2098,
+          "end_line": 2127
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2177,
+          "end_line": 2196
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2244,
+          "end_line": 2259
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2391,
+          "end_line": 2424
+        }
+      ],
+      "contract": [
+        "RISKY_PATHS and BULK_PATHS exact source declarations are preserved in globals below",
+        "Maximum automatic path size defaults 1048576 bytes",
+        "Working-tree link readlink filter rejects absolute target or text containing ../; committed-object link filter rejects absolute, exact .. and upward path segments",
+        "Physical project_prefix anchors root/subproject boundaries; --literal-pathspecs avoids wildcard/magic expansion"
+      ],
+      "side_effects": [
+        "Exclusion resets affect only staging, not file content; rejected paths remain on disk"
+      ],
+      "unknowns": [
+        "This is a filename/size/link heuristic, not content-based secret detection or an OS boundary."
+      ]
+    },
+    {
+      "id": "git-operation-markers",
+      "kind": "filesystem/read",
+      "classification": "EXTRACTED",
+      "summary": "Preserve an operator Git operation in progress.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2344,
+          "end_line": 2361
+        }
+      ],
+      "contract": [
+        "Resolve git-dir relative to PROJECT when necessary",
+        "Check MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge and rebase-apply before creating a commit"
+      ],
+      "side_effects": [
+        "Refusal flags/events/questions"
+      ],
+      "unknowns": [
+        "No claim is made to detect every possible Git extension/sequencer or concurrent operation."
+      ]
+    },
+    {
+      "id": "git-history-validation",
+      "kind": "external-process/read",
+      "classification": "EXTRACTED",
+      "summary": "Validate engine-created history from committed objects rather than mutable worktree.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2205,
+          "end_line": 2265
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3810,
+          "end_line": 3813
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4110,
+          "end_line": 4128
+        }
+      ],
+      "contract": [
+        "Cycle captures HEAD, symbolic ref, and rev-list --all before gate/engine work",
+        "Use merge-base --is-ancestor, rev-list --reverse old..new (or entire new root history), net diff, show -s --format=%P, diff-tree --root -z",
+        "For each added/modified object cat-file -e/-t/-s; require blob and size limit; literal ls-tree detects 120000 mode; cat-file blob reads symlink target",
+        "Every new commit must be linear, nonempty, previously unseen, project-local and free of excluded paths"
+      ],
+      "side_effects": [
+        "Writes engine-commit-paths.PID.nul; invalid history is left untouched"
+      ],
+      "unknowns": [
+        "Rejecting history after execution does not undo commits or other external actions."
+      ]
+    },
+    {
+      "id": "git-commit",
+      "kind": "external-process/write",
+      "classification": "EXTRACTED",
+      "summary": "Git save operation with alternate index and bounded failure evidence.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2456,
+          "end_line": 2482
+        }
+      ],
+      "contract": [
+        "Background subshell cd git_top; export GIT_INDEX_FILE; exec git commit -q -m message",
+        "stdin /dev/null; stdout and stderr merged into RUN_DIR/commit-error.PID",
+        "COMMIT_TIMEOUT default120, invalid/nonpositive reset120; watchdog idle0/hardsecs with no byte cap here",
+        "On success remove index/error capture; on failure bounded error tails go to dim/event/ask_human"
+      ],
+      "side_effects": [
+        "Writes Git objects/HEAD/reflogs; invokes configured commit hooks/signing; process tree may be terminated"
+      ],
+      "unknowns": [
+        "A hook can have arbitrary side effects before failure; no transaction rolls those back."
+      ]
+    },
+    {
+      "id": "git-execution-policy",
+      "kind": "arbitrary-command-boundary",
+      "classification": "INFERRED",
+      "summary": "Inherited Git hooks, filters and helpers execute within repository policy.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1904,
+          "end_line": 1908
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2273,
+          "end_line": 2277
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2394,
+          "end_line": 2402
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2460,
+          "end_line": 2478
+        }
+      ],
+      "contract": [
+        "Git is invoked directly; no hook/filter/signing disable flag is added",
+        "Add may execute clean/process filters; checkout may execute checkout/filter hooks; commit may execute hooks/signing helpers",
+        "GIT_INDEX_FILE isolates staging content, not the capabilities of Git subprocesses"
+      ],
+      "side_effects": [
+        "Git-launched commands run under inherited host permissions/environment"
+      ],
+      "unknowns": [
+        "Actual configured helper commands, time/resource behavior and network use remain external unknowns."
+      ]
+    },
+    {
+      "id": "engine-table",
+      "kind": "configuration/read",
+      "classification": "EXTRACTED",
+      "summary": "Declarative engine adapter registry and capability routing.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2505,
+          "end_line": 2561
+        }
+      ],
+      "contract": [
+        "prime-agent|prime-agent|stdout|autonomy gates memory subagents resume skills json usage",
+        "claude|claude|stdout|subagents resume skills json",
+        "codex|codex|file|resume json stream",
+        "custom comes from RALPHIE_ENGINE_CMD; answer defaults stdout; capabilities default empty",
+        "Capabilities control orchestration rather than proving runtime/model quality"
+      ],
+      "side_effects": [],
+      "unknowns": [
+        "Capability declarations can drift from installed engine releases; no runtime introspection verifies them."
+      ]
+    },
+    {
+      "id": "engine-discovery",
+      "kind": "external-process/read",
+      "classification": "EXTRACTED",
+      "summary": "Engine path and liveness checks.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2563,
+          "end_line": 2599
+        }
+      ],
+      "contract": [
+        "Literal executable path wins; otherwise executable token is first text before a space",
+        "command -v uses inherited PATH",
+        "--version is invoked with no prompt; timeout/gtimeout15 when available, plain command otherwise",
+        "ENGINE_LIVE_CACHE stores ok/dead by engine in the current shell process"
+      ],
+      "side_effects": [
+        "Executes arbitrary configured executable even during discovery"
+      ],
+      "unknowns": [
+        "A custom --version implementation could have side effects or hang without timeout utility; responsiveness is not authentication."
+      ]
+    },
+    {
+      "id": "engine-selection",
+      "kind": "control-policy",
+      "classification": "EXTRACTED",
+      "summary": "Prime default priority, explicit choice and cycle-local fallback.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2611,
+          "end_line": 2656
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3121,
+          "end_line": 3159
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 5086,
+          "end_line": 5089
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 5160,
+          "end_line": 5160
+        }
+      ],
+      "contract": [
+        "Priority: explicit name; configured custom; responsive Prime; most-capable responsive installed; most-capable installed",
+        "Fallback enumerates other installed adapters by capability count without liveness probes",
+        "ENGINE_EXPLICIT, expired budget and output resource limit prohibit fallback",
+        "Borrowed provider receives no preferred-provider model ID; mode drops to oneshot without both autonomy and gates",
+        "CYCLE_ENGINE changes only for successful borrowed attempt; ENGINE remains preferred"
+      ],
+      "side_effects": [
+        "May invoke another provider only on implicit selection"
+      ],
+      "unknowns": [
+        "Equal-score sort ties are incidental, not a declared quality ranking; engine cost/privacy behavior is external."
+      ]
+    },
+    {
+      "id": "engine-argv",
+      "kind": "process-argv",
+      "classification": "EXTRACTED",
+      "summary": "Adapter command-line construction.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2662,
+          "end_line": 2751
+        }
+      ],
+      "contract": [
+        "Prime: prime-agent -p --mode text --cwd PROJECT --offline; optional --model MODEL --thinking THINKING; session and native limits below",
+        "Claude: claude -p [--model MODEL]; default YOLO adds --dangerously-skip-permissions and IS_SANDBOX=1",
+        "Codex: codex exec [--model MODEL] [-c model_reasoning_effort=\"THINKING\"] [--dangerously-bypass-approvals-and-sandbox] - --output-last-message OUT",
+        "Custom: literal executable or shell word-split/glob-expanded command string; no eval",
+        "MODEL cleared only for borrowed engine; THINKING is forwarded for Prime/Codex; Claude ignores THINKING"
+      ],
+      "side_effects": [],
+      "unknowns": [
+        "External engine validates flags, model namespace, credentials, tool/sandbox/approval behavior and outputs."
+      ]
+    },
+    {
+      "id": "prime-native",
+      "kind": "external-engine-contract",
+      "classification": "EXTRACTED",
+      "summary": "Prime ordinary/autonomous native orchestration and bounded-stop recognition.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2675,
+          "end_line": 2716
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2940,
+          "end_line": 2950
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3960,
+          "end_line": 3964
+        }
+      ],
+      "contract": [
+        "--offline suppresses startup release-manifest fetch according to adapter comment; it is not local/offline inference",
+        "Session default --session-dir RUN_DIR/sessions/run_id; RALPHIE_ENGINE_SESSION false uses --no-session",
+        "Autonomous requires requested mode autonomous and positive budget_cap(ENGINE_TIMEOUT default2400)",
+        "Pass every gates_list line separately via --autonomous-gate; max-turns24, max-continuations6; optional max-tokens",
+        "Gate timeout defaults900s, invalid/zero or larger than call clamps to call; both timeout flags passed as positive milliseconds",
+        "With engine timeout0 and no run deadline omit native autonomous flags; Ralphie supplies continuation",
+        "Exit1 only accepted for usable answer plus final nonblank line matching known Autonomous quality gate/terminal-limit prefixes",
+        "Gate command text is passed unchanged as one argv value per gate; the selected Prime executable owns its command-execution semantics. Ralphie also verifies through its separate gate runner."
+      ],
+      "side_effects": [],
+      "unknowns": [
+        "Current assigned code does not inspect Prime source at runtime or negotiate versions. Exact stop text remains a versioned external contract.",
+        "Prime has no adapter permission-bypass flag; --no-yolo produces only a debug explanation and does not constrain Prime tool permissions."
+      ]
+    },
+    {
+      "id": "custom-command",
+      "kind": "arbitrary-command-boundary",
+      "classification": "EXTRACTED",
+      "summary": "Operator-specified executable adapter.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2544,
+          "end_line": 2549
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2563,
+          "end_line": 2575
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2735,
+          "end_line": 2742
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2891,
+          "end_line": 2896
+        }
+      ],
+      "contract": [
+        "RALPHIE_ENGINE_CMD literal executable is one argv element even with spaces",
+        "Otherwise unquoted array assignment performs shell field splitting and pathname expansion, not shell grammar/quote parsing",
+        "Direct exec argv with prompt stdin in PROJECT; operators needing complex syntax must provide a real executable wrapper",
+        "RALPHIE_ENGINE_ANSWER defaults stdout; file mode has no generic output-filename argument added by this branch"
+      ],
+      "side_effects": [
+        "Executes arbitrary operator-designated command with host rights and inherited environment"
+      ],
+      "unknowns": [
+        "External wrapper must implement intended completion and file-output contract; same-user safety cannot be inferred from capability labels."
+      ]
+    },
+    {
+      "id": "engine-environment",
+      "kind": "process-environment",
+      "classification": "EXTRACTED",
+      "summary": "Inherited context and bounded adapter defaults.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2544,
+          "end_line": 2549
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2665,
+          "end_line": 2751
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2801,
+          "end_line": 2805
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2843,
+          "end_line": 2846
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2858,
+          "end_line": 2907
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2955,
+          "end_line": 2971
+        }
+      ],
+      "contract": [
+        "Inherited environment/PATH/HOME/provider config remains available to child; ENGINE_ENV adds only IS_SANDBOX=1 for Claude YOLO",
+        "PROJECT cwd; prompt/log/out arguments supplied by cycle caller; root canonical RALPHIE_PROJECT binding is outside assigned range",
+        "Defaults: YOLO1; session1; call2400s; gate900s; turns24; continuations6; retries3; backoff5s; idle600s; output16777216 bytes; answer minimum2 bytes; TMPDIR /tmp",
+        "ENGINE_MAX_TOKENS only passed when nonempty; no default dollar budget; COMMIT_TIMEOUT120 separate",
+        "Positive byte ceiling and commit timeout are validated; watchdog integer checks convert invalid idle/hard to0; retry/backoff/answer-min/native-turn settings are trusted or deferred"
+      ],
+      "side_effects": [],
+      "unknowns": [
+        "Provider credentials are inherited, never explicitly opened by this range. A selected engine/helper may read them."
+      ]
+    },
+    {
+      "id": "engine-session",
+      "kind": "filesystem/engine-output",
+      "classification": "EXTRACTED",
+      "summary": "Per-run Prime sessions and usage schema source.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2685,
+          "end_line": 2692
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3031,
+          "end_line": 3050
+        }
+      ],
+      "contract": [
+        "Prime writes JSONL under RUN_DIR/sessions/state.run_id; default fallback run_id is run",
+        "No --resume or --continue flag is passed in this adapter even though resume is declared capability",
+        "No-session suppresses new session record creation; usage parser requires an existing current-run directory",
+        "Session retention/pruning is handled outside this range"
+      ],
+      "side_effects": [
+        "Engine-owned session files contain prompts/tool output/model usage; parser reads them"
+      ],
+      "unknowns": [
+        "Engine session naming, retention, permissions, schema migration and subagent persistence are external versioned behavior."
+      ]
+    },
+    {
+      "id": "engine-execution",
+      "kind": "arbitrary-command-boundary",
+      "classification": "EXTRACTED",
+      "summary": "Direct engine child process with prompt input and combined output capture.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2853,
+          "end_line": 2928
+        }
+      ],
+      "contract": [
+        "ENGINE_ARGV guarded array expansion preserves argv under Bash3.2 set -u; ENGINE_ENV passed through env when nonempty",
+        "exec selected argv < prompt in PROJECT; stdout and stderr share raw temp outside project",
+        "Try job-control process group; track child PID for cleanup; answer-file engine writes known out path itself",
+        "No eval and no terminal read in this range"
+      ],
+      "side_effects": [
+        "Selected engine can read/write project and host resources allowed by OS/provider policy; paid inference occurs in external engine, not shell accounting"
+      ],
+      "unknowns": [
+        "No universal sandbox, provider billing guarantee, or complete detached-child containment is established by this code."
+      ]
+    },
+    {
+      "id": "engine-output",
+      "kind": "filesystem/read-write",
+      "classification": "EXTRACTED",
+      "summary": "Prompt, raw logs, answer files and bounded retention.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2774,
+          "end_line": 2788
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2858,
+          "end_line": 2881
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2904,
+          "end_line": 2927
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2944,
+          "end_line": 2947
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2985,
+          "end_line": 3012
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3017,
+          "end_line": 3029
+        }
+      ],
+      "contract": [
+        "Prompt input must be regular file; answer file must be writable before launch; cycle log is optional",
+        "Raw temp is TMPDIR/ralphie.raw.XXXXXX, fallback ralphie.raw.PID; merged stdout/stderr copied to log",
+        "stdout engine answer strips leading blank lines; file engine keeps its own out contents",
+        "Finite default output ceiling sums raw log plus answer bytes during/after invocation; limit returns125 and clears answer",
+        "Usability: min bytes2, non-whitespace, no obvious HTML/login strings in first2000; no solved-work claim",
+        "Consumed captures above262144 bytes become marker plus262080-byte tail through TMPDIR/ralphie.tail.XXXXXX",
+        "Retries and alternates reuse the same cycle log/answer pathname, overwriting earlier complete captures"
+      ],
+      "side_effects": [
+        "Writes/truncates/copies/removes temp/capture files; terminal debug can show argv; raw log text is not echoed by engine failure reason"
+      ],
+      "unknowns": [
+        "Session files and engine filesystem output are not capped by capture ceiling; a custom executable can print sensitive content into retained logs."
+      ]
+    },
+    {
+      "id": "engine-failure",
+      "kind": "exit-and-text-protocol",
+      "classification": "EXTRACTED",
+      "summary": "Failure classification and narrow Prime exit1 exception.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2758,
+          "end_line": 2788
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2824,
+          "end_line": 2850
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2930,
+          "end_line": 2953
+        }
+      ],
+      "contract": [
+        "125 resource-limit; 124/137/143 transient; then permanent regex before transient regex over last20000 log bytes; unknown otherwise",
+        "Only rc0+usable answer or exact Prime autonomous rc1 terminal prefix is accepted",
+        "Permanent reason keeps class/exit, not-retrying, attempts and retained log path; exhaustion keeps final reason plus max attempts and path",
+        "Resource failure sets ENGINE_RESOURCE_LIMIT=1 and stops retries/fallback"
+      ],
+      "side_effects": [
+        "Emits bounded reason events; no arbitrary nonzero output promotes success"
+      ],
+      "unknowns": [
+        "Classification is text heuristic; a matching substring does not prove external failure cause. Native diagnostics are version-sensitive."
+      ]
+    },
+    {
+      "id": "engine-retries",
+      "kind": "control-policy",
+      "classification": "EXTRACTED",
+      "summary": "Bounded attempts, increasing sleep and operator-provider custody.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2792,
+          "end_line": 2851
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3121,
+          "end_line": 3159
+        }
+      ],
+      "contract": [
+        "Default3 attempts; retries rebuild argv and reread remaining deadline each time",
+        "After failed attempt N, next sleep N*ENGINE_BACKOFF(default5) if another attempt and budget not already expired",
+        "Permanent/resource/cannot-start/time-limit paths return distinct engine_run statuses",
+        "Outer fallback uses same prompt/files, honors explicit choice and maintains preferred engine across cycles"
+      ],
+      "side_effects": [
+        "May incur multiple provider calls and shared output replacement"
+      ],
+      "unknowns": [
+        "Backoff sleep is not clamped to the remaining deadline; budget is checked again before launching the next attempt."
+      ]
+    },
+    {
+      "id": "process-supervision",
+      "kind": "process-control",
+      "classification": "EXTRACTED",
+      "summary": "Portable polling watchdog plus cross-layer descendant termination.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2456,
+          "end_line": 2468
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2591,
+          "end_line": 2599
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2887,
+          "end_line": 2908
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2955,
+          "end_line": 3015
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 831,
+          "end_line": 847
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 247,
+          "end_line": 279
+        }
+      ],
+      "contract": [
+        "budget_cap clamps positive/zero local allowance to run deadline; floor1 avoids accidental unlimited expired timeout",
+        "Watchdog polls kill -0 and file sizes; first tick0.05+0.95s, later1s; elapsed counter is polling iterations",
+        "Idle depends on growth of raw log only, not file-engine answer growth; combined byte cap counts both",
+        "On timeout/limit terminate_tree snapshots descendants, sends group/PID TERM, waits2s then KILL; watcher waits child",
+        "watchdog returns124 deadline/idle,125 oversize, otherwise exact child status"
+      ],
+      "side_effects": [
+        "Signals/reaps descendants; process-group creation is best effort"
+      ],
+      "unknowns": [
+        "Polling overhead/grace can exceed nominal deadlines; detached descendants created outside captured lineage/group are not proven contained; liveness probe is unbounded when timeout utility is absent."
+      ]
+    },
+    {
+      "id": "usage-python",
+      "kind": "embedded-language/filesystem-read",
+      "classification": "EXTRACTED",
+      "summary": "Embedded Python JSONL replay and shell-state accounting.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3050,
+          "end_line": 3119
+        }
+      ],
+      "contract": [
+        "Python receives current-run directory as argv1, code through stdin heredoc; stderr suppressed",
+        "os.walk recursively scans filenames ending .jsonl; UTF-8 errors replaced; blank/non-JSON/nondict rows ignored; OSError skips file",
+        "Load records for one whole file; map assistant message entries by string id",
+        "Replay child_usage_attributed rows in file order, assigning aggregateUsage to matching targetId assistant; last attribution wins",
+        "Sum usage.totalTokens and usage.cost.total for message-containing rows, plus entry-level usage for compaction/branch_summary",
+        "Only exact numeric int/float accepted, bool excluded; output integer token total and six-decimal cost separated by space",
+        "Shell validates unsigned integer token result, adds only positive/nonnegative delta to lifetime tokens, always stores current run totals"
+      ],
+      "side_effects": [
+        "Reads potentially large session records into memory; persists tokens_spent/run_tokens/run_cost"
+      ],
+      "unknowns": [
+        "No Python means no usage update, not estimated usage. Missing/partial/unsupported records can make totals incomplete.",
+        "Engine-reported cost is metadata, not an independently reconciled invoice; numerical NaN/infinity or malformed aggregates can make the Python process fail and be silently skipped.",
+        "No global deduplication across different session files is performed. Child attribution does not add its own standalone total."
+      ]
+    },
+    {
+      "id": "ledger-human",
+      "kind": "cross-layer/filesystem-and-output",
+      "classification": "EXTRACTED",
+      "summary": "State, append-only event and nonblocking human-channel side effects.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1707,
+          "end_line": 1709
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1899,
+          "end_line": 1914
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1917,
+          "end_line": 1928
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1959,
+          "end_line": 1965
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1979,
+          "end_line": 1980
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2134,
+          "end_line": 2142
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2331,
+          "end_line": 2359
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2475,
+          "end_line": 2478
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2813,
+          "end_line": 2850
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3113,
+          "end_line": 3118
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3140,
+          "end_line": 3150
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 296,
+          "end_line": 381
+        }
+      ],
+      "contract": [
+        "state_get reads state; state_set/state_bump write allowed keys under HOME_DIR with temporary rename/mutex",
+        "event appends JSONL including in-memory cycle/run identity and updates state timestamp",
+        "ask_human queues a question; no terminal response is read in this range",
+        "info/good/dim honor quiet conventions; warn/err/debug use output streams per core helpers"
+      ],
+      "side_effects": [
+        "Writes own runtime state/events/questions; prints human-facing outcomes"
+      ],
+      "unknowns": [
+        "Cross-layer state/event recovery semantics are not reimplemented here; engine tool writes may damage these paths."
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "from": "run_prepare",
+      "to": "Git boundary and ownership snapshot",
+      "kind": "ordering",
+      "classification": "EXTRACTED",
+      "summary": "Resolve/cache Git root and physical project prefix; initialize or select fixed no-Git mode; release old claims, snapshot protection, choose branch, then refuse detached HEAD.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 5258,
+          "end_line": 5283
+        }
+      ]
+    },
+    {
+      "from": "path_fingerprint",
+      "to": "owned_has/release_owned_paths/record_owned_paths",
+      "kind": "dataflow",
+      "classification": "EXTRACTED",
+      "summary": "Current file bytes bind persistent ownership to exact repository-relative path; changed bytes revoke a claim and may transfer path to protected list.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1745,
+          "end_line": 1758
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1760,
+          "end_line": 1780
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1798,
+          "end_line": 1845
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1847,
+          "end_line": 1882
+        }
+      ]
+    },
+    {
+      "from": "pre_dirty_seal",
+      "to": "pre_dirty_intact",
+      "kind": "custody",
+      "classification": "EXTRACTED",
+      "summary": "Count/checksum captured in process memory is checked before new claims, before commit exclusions and when validating engine history.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1852,
+          "end_line": 1865
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1983,
+          "end_line": 2001
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2220,
+          "end_line": 2220
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2411,
+          "end_line": 2418
+        }
+      ]
+    },
+    {
+      "from": "project_prefix",
+      "to": "ownership and private index",
+      "kind": "scope",
+      "classification": "EXTRACTED",
+      "summary": "Physical containment controls ownership and engine history; literal add/reset operations constrain private staging to the selected project.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1811,
+          "end_line": 1821
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1868,
+          "end_line": 1877
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2177,
+          "end_line": 2196
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2244,
+          "end_line": 2248
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2391,
+          "end_line": 2394
+        }
+      ]
+    },
+    {
+      "from": "snapshot_pre_dirty",
+      "to": "resync_operator_index",
+      "kind": "staging-preservation",
+      "classification": "EXTRACTED",
+      "summary": "Snapshot of originally staged exact pathnames makes postcommit real-index refresh skip those paths.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2027,
+          "end_line": 2034
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2484,
+          "end_line": 2502
+        }
+      ]
+    },
+    {
+      "from": "dirty_paths_nul",
+      "to": "snapshot/ownership lists",
+      "kind": "serialization",
+      "classification": "EXTRACTED",
+      "summary": "Git -z and disabled rename collapsing preserve unusual path bytes and both rename endpoints; lists travel via files instead of command substitution.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1733,
+          "end_line": 1744
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1783,
+          "end_line": 1796
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2037,
+          "end_line": 2053
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2079,
+          "end_line": 2087
+        }
+      ]
+    },
+    {
+      "from": "git_commit_cycle",
+      "to": "record_outcome",
+      "kind": "postcondition",
+      "classification": "EXTRACTED",
+      "summary": "Commit helpers may return0 after refusal, so record_outcome checks COMMIT flags and actual HEAD movement before pass_count increments.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2281,
+          "end_line": 2290
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4108,
+          "end_line": 4155
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4157,
+          "end_line": 4180
+        }
+      ]
+    },
+    {
+      "from": "cycle_begin",
+      "to": "engine_history_is_safe",
+      "kind": "pre-execution-evidence",
+      "classification": "EXTRACTED",
+      "summary": "Captures HEAD/ref/all reachable commit IDs before engine/gate effects; later validation requires exact branch and new linear project-only history.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3808,
+          "end_line": 3813
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2205,
+          "end_line": 2265
+        }
+      ]
+    },
+    {
+      "from": "engine_history_is_safe",
+      "to": "record_outcome",
+      "kind": "history-acceptance",
+      "classification": "EXTRACTED",
+      "summary": "HEAD movement caused by engine is inspected commit by commit; invalid history blocks without reset, valid history sets CY_ENGINE_SAVED.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2211,
+          "end_line": 2265
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4114,
+          "end_line": 4130
+        }
+      ]
+    },
+    {
+      "from": "build_commit_index",
+      "to": "Git filters",
+      "kind": "arbitrary-execution",
+      "classification": "INFERRED",
+      "summary": "Even with a private index, git add can execute configured clean/process filters before exclusions; filtering controls saved paths, not command authority.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2374,
+          "end_line": 2404
+        }
+      ]
+    },
+    {
+      "from": "write_commit",
+      "to": "watchdog_wait/terminate_tree",
+      "kind": "bounded-callbacks",
+      "classification": "EXTRACTED",
+      "summary": "Git hooks/signing are child execution, bounded by COMMIT_TIMEOUT and the same process-tree watchdog used by engines.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2456,
+          "end_line": 2480
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2955,
+          "end_line": 3015
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 831,
+          "end_line": 847
+        }
+      ]
+    },
+    {
+      "from": "ENGINE_TABLE",
+      "to": "engine_has/engine_score",
+      "kind": "declarative-routing",
+      "classification": "EXTRACTED",
+      "summary": "Table capabilities select native complement, liveness ranking, idle monitoring and usage parsing; capability count is only ranking metadata.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2516,
+          "end_line": 2561
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2628,
+          "end_line": 2646
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2904,
+          "end_line": 2907
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3040,
+          "end_line": 3049
+        }
+      ]
+    },
+    {
+      "from": "engine_pick",
+      "to": "engine_run_with_fallback",
+      "kind": "operator-custody",
+      "classification": "EXTRACTED",
+      "summary": "Explicit name/custom wins initial selection; ENGINE_EXPLICIT forbids alternate provider execution if that choice later fails.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2615,
+          "end_line": 2627
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3131,
+          "end_line": 3136
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 5086,
+          "end_line": 5089
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 5160,
+          "end_line": 5160
+        }
+      ]
+    },
+    {
+      "from": "cycle_act",
+      "to": "engine_build",
+      "kind": "native-complement",
+      "classification": "EXTRACTED",
+      "summary": "Mode is autonomous only for engine declaring both autonomy and gates and a nonempty gate set; Prime then receives those gate commands.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3882,
+          "end_line": 3885
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2693,
+          "end_line": 2715
+        }
+      ]
+    },
+    {
+      "from": "RUN_DEADLINE/budget_cap",
+      "to": "Prime native flags and host watchdog",
+      "kind": "deadline",
+      "classification": "EXTRACTED",
+      "summary": "Remaining run allowance caps both native call/gate timeout construction and host child supervision; zero-unbounded uses ordinary Prime loop.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 247,
+          "end_line": 279
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2693,
+          "end_line": 2715
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2884,
+          "end_line": 2907
+        }
+      ]
+    },
+    {
+      "from": "engine_build",
+      "to": "engine_invoke",
+      "kind": "argv-dataflow",
+      "classification": "EXTRACTED",
+      "summary": "Rebuilt guarded Bash arrays become direct exec argv/environment in PROJECT; prompt is stdin and output is external temp capture.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2662,
+          "end_line": 2668
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2675,
+          "end_line": 2744
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2881,
+          "end_line": 2898
+        }
+      ]
+    },
+    {
+      "from": "engine_has(stream)",
+      "to": "watchdog_wait idle",
+      "kind": "capability-boundary",
+      "classification": "EXTRACTED",
+      "summary": "Only stream-declared engine receives idle timeout; buffered Prime/Claude are supervised by wall-clock/output bounds.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2534,
+          "end_line": 2536
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2900,
+          "end_line": 2907
+        }
+      ]
+    },
+    {
+      "from": "engine_invoke",
+      "to": "engine_answered/classify_failure",
+      "kind": "exit-and-output",
+      "classification": "EXTRACTED",
+      "summary": "Host exit and collected files feed strict usable-answer acceptance before retry classification; output limit clears answer and stops retries.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2913,
+          "end_line": 2927
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2824,
+          "end_line": 2841
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2930,
+          "end_line": 2953
+        }
+      ]
+    },
+    {
+      "from": "Prime native exit1",
+      "to": "independent outer verification",
+      "kind": "trust-boundary",
+      "classification": "EXTRACTED",
+      "summary": "Recognized native boundary can finish an attempt but never proves gate success; cycle_act then parses report and cycle_verify independently runs checks.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2940,
+          "end_line": 2950
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3922,
+          "end_line": 3929
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3960,
+          "end_line": 3964
+        }
+      ]
+    },
+    {
+      "from": "engine_run",
+      "to": "retained engine reason",
+      "kind": "diagnostics",
+      "classification": "EXTRACTED",
+      "summary": "Final attempt exit/class and log path survive exhaustion or permanent failure without copying raw provider output into terminal reason.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2826,
+          "end_line": 2850
+        }
+      ]
+    },
+    {
+      "from": "engine_run_with_fallback",
+      "to": "ENGINE vs CYCLE_ENGINE",
+      "kind": "ephemeral-borrowing",
+      "classification": "EXTRACTED",
+      "summary": "Alternate success changes only CYCLE_ENGINE; preferred MODEL is cleared in alternate argv, preferred ENGINE remains for next cycle.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2672,
+          "end_line": 2673
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3124,
+          "end_line": 3158
+        }
+      ]
+    },
+    {
+      "from": "fallback shared log path",
+      "to": "first_reason restoration",
+      "kind": "evidence-limitation",
+      "classification": "INFERRED",
+      "summary": "All attempts/alternates reuse one log path; after all fallbacks fail the restored first reason may name a path whose current bytes came from a later attempt.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2867,
+          "end_line": 2869
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2921,
+          "end_line": 2924
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3123,
+          "end_line": 3126
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3145,
+          "end_line": 3157
+        }
+      ]
+    },
+    {
+      "from": "Prime JSONL child attribution",
+      "to": "usage totals",
+      "kind": "replay",
+      "classification": "EXTRACTED",
+      "summary": "Latest aggregateUsage replaces corresponding assistant usage rather than adding attribution records as new charges; compaction/branch_summary usage is separate.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3070,
+          "end_line": 3103
+        }
+      ]
+    },
+    {
+      "from": "read_engine_usage",
+      "to": "state lifetime/run totals",
+      "kind": "accounting",
+      "classification": "EXTRACTED",
+      "summary": "Current-run session sum minus prior run_tokens is the only lifetime increment; current sum/cost replaces run counters.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3047,
+          "end_line": 3050
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3107,
+          "end_line": 3118
+        }
+      ]
+    },
+    {
+      "from": "successful cycle_act",
+      "to": "usage visibility",
+      "kind": "accounting-limitation",
+      "classification": "INFERRED",
+      "summary": "Usage is reread only after engine_run_with_fallback succeeds; final blocked attempts can have unrecorded session usage until a later successful read.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3895,
+          "end_line": 3922
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3031,
+          "end_line": 3119
+        }
+      ]
+    },
+    {
+      "from": "SELF_HASH",
+      "to": "cycle trust",
+      "kind": "source-custody",
+      "classification": "INFERRED",
+      "summary": "A byte mismatch returns1 and queues a review question; caller records self-edit state rather than allowing a silent next-run verifier change.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1950,
+          "end_line": 1966
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3903,
+          "end_line": 3903
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3990,
+          "end_line": 4005
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    {
+      "id": "static-only",
+      "classification": "EXTRACTED",
+      "summary": "This review read every assigned source line and selected cross-layer references. It did not execute engines, tests, Git mutations or provider calls. It describes this frozen source, not a runtime production certification.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1697,
+          "end_line": 3161
+        }
+      ]
+    },
+    {
+      "id": "trusted-execution",
+      "classification": "INFERRED",
+      "summary": "Git policy helpers and engine tools can execute arbitrary commands with inherited host authority. Private index, path filters, gates, and process cleanup do not form an OS sandbox. --no-yolo changes only supported adapter flags.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2394,
+          "end_line": 2402
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2461,
+          "end_line": 2461
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2682,
+          "end_line": 2682
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2723,
+          "end_line": 2742
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2891,
+          "end_line": 2896
+        }
+      ]
+    },
+    {
+      "id": "ownership-granularity",
+      "classification": "INFERRED",
+      "summary": "Custody is per path and readable file content, not per hunk, actor, mode, or unique symlink identity. During-cycle concurrent operator edits cannot be distinguished from engine edits. NUL membership is exact, while display counts can overcount embedded newlines.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1733,
+          "end_line": 1758
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1760,
+          "end_line": 1780
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 1884,
+          "end_line": 1889
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2012,
+          "end_line": 2063
+        }
+      ]
+    },
+    {
+      "id": "best-effort-git-errors",
+      "classification": "EXTRACTED",
+      "summary": "Dirty/staged listing errors may become empty lists; individual exclusion/resync resets ignore errors; cached-diff errors take the nonempty branch. Downstream Git/HEAD postconditions catch some failures, but these helpers do not prove every exclusion succeeded.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1793,
+          "end_line": 1796
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2033,
+          "end_line": 2033
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2087,
+          "end_line": 2087
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2099,
+          "end_line": 2126
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2423,
+          "end_line": 2423
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2434,
+          "end_line": 2434
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2495,
+          "end_line": 2499
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4148,
+          "end_line": 4155
+        }
+      ]
+    },
+    {
+      "id": "startup-self-claim",
+      "classification": "EXTRACTED",
+      "summary": "self_is_reviewed checks unstaged differences against the index, despite wording about the committed copy; a staged-only script change is outside that check.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1939,
+          "end_line": 1946
+        }
+      ]
+    },
+    {
+      "id": "link-filter-difference",
+      "classification": "EXTRACTED",
+      "summary": "Working-tree exclusion uses /*|*../*, while committed-history validation also checks exact .. and trailing /..; neither is a full symlink-chain resolver.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2117,
+          "end_line": 2122
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2255,
+          "end_line": 2258
+        }
+      ]
+    },
+    {
+      "id": "deadlines",
+      "classification": "INFERRED",
+      "summary": "Host watchdog is polling-based with TERM grace; backoff is not clamped to remaining seconds; version probe has no watchdog if timeout/gtimeout is missing. Deadline limits are not a strict end-to-end wall-clock bound.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2597,
+          "end_line": 2598
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2843,
+          "end_line": 2846
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2955,
+          "end_line": 3015
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 831,
+          "end_line": 847
+        }
+      ]
+    },
+    {
+      "id": "provider-version",
+      "classification": "EXTRACTED",
+      "summary": "Table declarations, CLI flags and terminal text assume compatible installed engines. This code does not negotiate versions or verify credentials/capabilities; model selectors are delegated unchanged. README pins prior Prime/Codex source studies, not all future binaries.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2533,
+          "end_line": 2537
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2591,
+          "end_line": 2609
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2665,
+          "end_line": 2751
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2944,
+          "end_line": 2947
+        }
+      ]
+    },
+    {
+      "id": "usage-completeness",
+      "classification": "INFERRED",
+      "summary": "Usage needs Python and supported current-run session files, is reread after successful attempts only, and trusts engine-provided totals/cost. It is not an independently reconciled billing ledger or universal provider budget control.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 3031,
+          "end_line": 3050
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3051,
+          "end_line": 3119
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3895,
+          "end_line": 3922
+        }
+      ]
+    },
+    {
+      "id": "session-resources",
+      "classification": "EXTRACTED",
+      "summary": "Capture byte caps cover raw/output files only; sessions, other engine files and per-file Python JSONL memory are not bounded here. Prompt and provider session records are deliberately excluded from capture tail trimming.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2985,
+          "end_line": 2986
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3010,
+          "end_line": 3010
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3017,
+          "end_line": 3024
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3053,
+          "end_line": 3069
+        }
+      ]
+    },
+    {
+      "id": "custom-argv",
+      "classification": "EXTRACTED",
+      "summary": "A nonliteral custom command undergoes shell word splitting/pathname expansion, not quoted command-line parsing. File-answer mode does not receive a generic output-path argument from custom engine_build.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2544,
+          "end_line": 2549
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2735,
+          "end_line": 2742
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2920,
+          "end_line": 2924
+        }
+      ]
+    },
+    {
+      "id": "diagnostic-custody",
+      "classification": "INFERRED",
+      "summary": "Retry/fallback captures are reused; restored first failure reason may point to later output. Generic engine errors avoid echoing raw text, but verbose argv and commit diagnostic tails can still expose values supplied by external programs.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 2475,
+          "end_line": 2478
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2840,
+          "end_line": 2849
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2867,
+          "end_line": 2869
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2882,
+          "end_line": 2882
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2921,
+          "end_line": 2921
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 3157,
+          "end_line": 3157
+        }
+      ]
+    },
+    {
+      "id": "no-history-undo",
+      "classification": "EXTRACTED",
+      "summary": "Engine-created unsafe history is rejected after the fact and left in place. Starting HEAD is recorded for recovery, but this range does not create a backup reference, undo changes, or publish anything.",
+      "evidence": [
+        {
+          "file": "ralphie.sh",
+          "start_line": 1968,
+          "end_line": 1981
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 2211,
+          "end_line": 2215
+        },
+        {
+          "file": "ralphie.sh",
+          "start_line": 4114,
+          "end_line": 4122
+        }
+      ]
+    }
+  ],
+  "review_actions": {
+    "product_edits": false,
+    "test_edits": false,
+    "readme_edits": false,
+    "commits": false,
+    "pushes": false,
+    "live_engines": false,
+    "provider_calls": false,
+    "writes": [
+      "graphify-out/git_engine.review.json",
+      "graphify-out/git_engine.review.md"
+    ]
+  }
+}

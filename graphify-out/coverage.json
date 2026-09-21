@@ -1,0 +1,76 @@
+{
+  "source_sha256": "c21744b635e3b640aa6d65b6c36daa7dc0d8e1e90b7bf45fb09f8937055aa905",
+  "source_lines": 5478,
+  "function_definitions": 234,
+  "unique_function_names": 232,
+  "reviewed_definitions": 234,
+  "missing_reviews": [],
+  "parse_errors": [],
+  "parser_normalizations": [
+    {
+      "line": 2467,
+      "raw": "\"$rc\" -ne 124 ]",
+      "correction": "test operand, not dynamic dispatch"
+    },
+    {
+      "line": 2468,
+      "raw": "then",
+      "correction": "closing syntax, not execution"
+    },
+    {
+      "line": 2471,
+      "raw": "fi",
+      "correction": "closing syntax, not execution"
+    },
+    {
+      "line": 2867,
+      "raw": "{ :",
+      "correction": "group/keyword prefix, not command name"
+    },
+    {
+      "line": 2867,
+      "raw": "}",
+      "correction": "closing syntax, not execution"
+    },
+    {
+      "line": 2871,
+      "raw": "{ :",
+      "correction": "group/keyword prefix, not command name"
+    },
+    {
+      "line": 2871,
+      "raw": "}",
+      "correction": "closing syntax, not execution"
+    },
+    {
+      "line": 3144,
+      "raw": "{ engine_has \"$alt\" autonomy",
+      "correction": "group/keyword prefix, not command name"
+    },
+    {
+      "line": 3144,
+      "raw": "}",
+      "correction": "closing syntax, not execution"
+    }
+  ],
+  "reviewed_line_ranges": [
+    [
+      1,
+      1696
+    ],
+    [
+      1697,
+      3161
+    ],
+    [
+      3162,
+      5478
+    ]
+  ],
+  "static_command_sites": 2724,
+  "shell_redirects": 442,
+  "heredocs": 16,
+  "graph_nodes": 864,
+  "graph_edges": 2904,
+  "communities": 44
+}

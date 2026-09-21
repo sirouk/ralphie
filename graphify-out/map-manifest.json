@@ -1,0 +1,29 @@
+{
+  "source_file": "ralphie.sh",
+  "sha256": "c21744b635e3b640aa6d65b6c36daa7dc0d8e1e90b7bf45fb09f8937055aa905",
+  "graph_sha256": "2281c90c1a11c82a2c28949f6b94c43e6d698358faf1be9cdfe42ef4dc531592",
+  "html_sha256": "d3cc39a097f24f1c90b4128095d693d945eaa862984322c1d3a1b7dc1aea38db",
+  "graphify_version": "0.9.50",
+  "tree_sitter_bash_version": "0.25.1",
+  "generated_at": "2026-09-20T22:50:27.076861+00:00",
+  "rebuild": "Run build_map.py with .graphify_python; source changes require fresh reviewed annotations.",
+  "artifact_sha256": {
+    "COMPREHENSION.md": "2f45b6ee18775d2fc59f6c4912bd4e92af50e99fcfdcf452af061b4abe4bf341",
+    "INPUTS_OUTPUTS.md": "079ba067698258862e1ea54d151a3cd55d5524b1af84063da71092c700445db3",
+    "FUNCTIONS.md": "b402a2e681de4ee40a03b38ba4f8e069f6fad6f914704620144746916720fe5c",
+    "source-index.json": "5cd74273ff206690dc4b5be04477b58a34e163568f4ed203e53d67fe8c0a18de",
+    "function-inventory.json": "aa7dbdc8265b8ba1e904d038c6e324ea5d2519ecd6213039afe36f397e105e3e",
+    "interfaces.json": "622bebc666bd3e1ccbe164008a52e3fb66454336798fc21b941658bf3df9ac69",
+    "trace-proof.json": "fcfe492dacf10b96c928a395b7b7ada90ea6b9d0ac653a756efe4a238b431764",
+    "source.html": "d013d05019ce1c4de051368d7ae0968372897630c325d79b516b2507ba207de3",
+    "build_map.py": "0daf69e2b877da1551aceb4e724cea7e10dff6820cd054efc200d679b3fae639",
+    "render_map.py": "e41d2bea15bf18a4c9d07b8b4d79bc71dfe41879100ea794dc6fc1a84df9982d",
+    "verify_map.py": "e7075c1eb0ae5ad129adf8b79490f17a18988032078cc61e36e50abc7c7a09b2",
+    "core_ledger_gates.review.json": "c273b4bd4de01a55e480f4062792381ed72ab2613c4bcda2596b1d0af224f27e",
+    "git_engine.review.json": "76254d4b3778bed6dee02f3d4de94b48a0c545a08e4ac74d221a615696390a7a",
+    "loop_human_interface.review.json": "78973d8d766986c3ce224390892d0bbf373bcbeb5803152336f54d66f00b3340"
+  },
+  "structural_validation": "verify_map.py",
+  "static_analysis_only": true,
+  "semantic_reviews_bound_to_source": true
+}

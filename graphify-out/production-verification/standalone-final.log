@@ -1,0 +1,59 @@
++ set -eu
+++ mktemp -d
++ proof_root=/tmp/tmp.a00MoUha3Z
++ mkdir -p /tmp/tmp.a00MoUha3Z/installed '/tmp/tmp.a00MoUha3Z/empty project' /tmp/tmp.a00MoUha3Z/caller /tmp/tmp.a00MoUha3Z/tools
++ cp /source/ralphie.sh /tmp/tmp.a00MoUha3Z/installed/ralphie.sh
++ chmod +x /tmp/tmp.a00MoUha3Z/installed/ralphie.sh
++ script=/tmp/tmp.a00MoUha3Z/installed/ralphie.sh
++ project='/tmp/tmp.a00MoUha3Z/empty project'
++ cd /tmp/tmp.a00MoUha3Z/caller
++ for optional_tool in python3 node jq curl wget
++ command -v python3
++ for optional_tool in python3 node jq curl wget
++ command -v node
++ for optional_tool in python3 node jq curl wget
++ command -v jq
++ for optional_tool in python3 node jq curl wget
++ command -v curl
++ for optional_tool in python3 node jq curl wget
++ command -v wget
++ /tmp/tmp.a00MoUha3Z/installed/ralphie.sh --project '/tmp/tmp.a00MoUha3Z/empty project' discover
++ test '!' -e '/tmp/tmp.a00MoUha3Z/empty project/.ralphie'
++ test '!' -e '/tmp/tmp.a00MoUha3Z/empty project/.git'
++ cat
++ chmod +x '/tmp/tmp.a00MoUha3Z/tools/file engine'
++ export 'RALPHIE_ENGINE_CMD=/tmp/tmp.a00MoUha3Z/tools/file engine'
++ RALPHIE_ENGINE_CMD='/tmp/tmp.a00MoUha3Z/tools/file engine'
++ export RALPHIE_ENGINE_ANSWER=file
++ RALPHIE_ENGINE_ANSWER=file
++ export RALPHIE_ENGINE_CAPS=
++ RALPHIE_ENGINE_CAPS=
++ export FIXTURE_PROMPT=/tmp/tmp.a00MoUha3Z/prompt
++ FIXTURE_PROMPT=/tmp/tmp.a00MoUha3Z/prompt
++ export RALPHIE_OUTPUT=/tmp/tmp.a00MoUha3Z/unrelated
++ RALPHIE_OUTPUT=/tmp/tmp.a00MoUha3Z/unrelated
++ printf 'preserve me\n'
++ /tmp/tmp.a00MoUha3Z/installed/ralphie.sh --project '/tmp/tmp.a00MoUha3Z/empty project' run --once --no-update --gate 'test -f verify.sh && bash verify.sh' --accept 'test "$(bash calc.sh -8 3)" = -5' 'Implement tested integer addition'
++ test -s '/tmp/tmp.a00MoUha3Z/empty project/.ralphie/OBJECTIVE.md'
+++ cat '/tmp/tmp.a00MoUha3Z/empty project/.ralphie/OBJECTIVE.md'
++ test 'Implement tested integer addition' = 'Implement tested integer addition'
+++ cat /tmp/tmp.a00MoUha3Z/unrelated
++ test 'preserve me' = 'preserve me'
++ cd '/tmp/tmp.a00MoUha3Z/empty project'
++ bash verify.sh
++ git -C '/tmp/tmp.a00MoUha3Z/empty project' rev-parse --verify HEAD
+5952c7bcaf59042b544e356459561713f489f8da
+++ git -C '/tmp/tmp.a00MoUha3Z/empty project' status --porcelain
++ test -z ''
++ test '!' -d '/tmp/tmp.a00MoUha3Z/empty project/.ralphie/lock'
++ test '!' -e '/tmp/tmp.a00MoUha3Z/empty project/ralphie.sh'
+++ find /tmp/tmp.a00MoUha3Z/installed -type f
+++ wc -l
+++ tr -d ' '
++ test 1 = 1
++ test '!' -e /tmp/tmp.a00MoUha3Z/installed/.ralphie
++ test '!' -e /tmp/tmp.a00MoUha3Z/caller/.ralphie
++ /tmp/tmp.a00MoUha3Z/installed/ralphie.sh --project '/tmp/tmp.a00MoUha3Z/empty project' status --json
+{"version":"3.1.0","project":"/tmp/tmp.a00MoUha3Z/empty project","status":"done","cycle":1,"pass":1,"fail":0,"engine":"custom","model":"default","branch":"master","gates":1,"lessons":1,"questions_open":1,"blocked":0,"untrusted":0,"unverified":0,"tokens":0,"run_tokens":0,"run_cost":0,"seconds":1,"start_commit":"","reason":"","run":"20260921T025506Z-c751db"}
++ printf 'STANDALONE PASS: one installed script, blank target, file-output engine, gates, acceptance, git commit, no optional tools\n'
+STANDALONE PASS: one installed script, blank target, file-output engine, gates, acceptance, git commit, no optional tools

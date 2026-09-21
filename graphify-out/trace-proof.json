@@ -1,0 +1,577 @@
+{
+  "source_sha256": "c21744b635e3b640aa6d65b6c36daa7dc0d8e1e90b7bf45fb09f8937055aa905",
+  "semantics": "Possible static call paths, not observed runtime order; callbacks and data edges excluded.",
+  "traces": [
+    {
+      "from": "main",
+      "to": "engine_invoke",
+      "path": [
+        {
+          "id": "ralphie_main",
+          "label": "main()",
+          "source_location": "L5447"
+        },
+        {
+          "id": "ralphie_loop",
+          "label": "loop()",
+          "source_location": "L4276"
+        },
+        {
+          "id": "ralphie_cycle_once",
+          "label": "cycle_once()",
+          "source_location": "L3738"
+        },
+        {
+          "id": "ralphie_cycle_act",
+          "label": "cycle_act()",
+          "source_location": "L3878"
+        },
+        {
+          "id": "ralphie_engine_run_with_fallback",
+          "label": "engine_run_with_fallback()",
+          "source_location": "L3121"
+        },
+        {
+          "id": "ralphie_engine_run",
+          "label": "engine_run()",
+          "source_location": "L2792"
+        },
+        {
+          "id": "ralphie_engine_invoke",
+          "label": "engine_invoke()",
+          "source_location": "L2853"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 5472,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "loop",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L5472",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4303,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "cycle_once",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4303",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3754,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "cycle_act",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3754",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3895,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "engine_run_with_fallback \"$mode\" \"$CY_PROMPT\" \"$CY_LOG\" \"$CY_OUT\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3895",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3125,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "engine_run \"$ENGINE\" \"$mode\" \"$prompt\" \"$log\" \"$out\"",
+              "substitutions": [],
+              "resolution": "internal"
+            },
+            {
+              "line": 3145,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "engine_run \"$alt\" \"$m\" \"$prompt\" \"$log\" \"$out\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3125",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 2821,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "engine_invoke \"$name\" \"$prompt\" \"$log\" \"$out\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L2821",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "main",
+      "to": "record_outcome",
+      "path": [
+        {
+          "id": "ralphie_main",
+          "label": "main()",
+          "source_location": "L5447"
+        },
+        {
+          "id": "ralphie_loop",
+          "label": "loop()",
+          "source_location": "L4276"
+        },
+        {
+          "id": "ralphie_cycle_once",
+          "label": "cycle_once()",
+          "source_location": "L3738"
+        },
+        {
+          "id": "ralphie_cycle_record",
+          "label": "cycle_record()",
+          "source_location": "L4013"
+        },
+        {
+          "id": "ralphie_record_outcome",
+          "label": "record_outcome()",
+          "source_location": "L4054"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 5472,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "loop",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L5472",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4303,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "cycle_once",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4303",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3756,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "cycle_record",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3756",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4016,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "record_outcome",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4016",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "record_outcome",
+      "to": "write_commit",
+      "path": [
+        {
+          "id": "ralphie_record_outcome",
+          "label": "record_outcome()",
+          "source_location": "L4054"
+        },
+        {
+          "id": "ralphie_git_commit_cycle",
+          "label": "git_commit_cycle()",
+          "source_location": "L2267"
+        },
+        {
+          "id": "ralphie_write_commit",
+          "label": "write_commit()",
+          "source_location": "L2456"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4125,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "git_commit_cycle \"$(commit_message \"$CY_N\")\"",
+              "substitutions": [],
+              "resolution": "internal"
+            },
+            {
+              "line": 4130,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "git_commit_cycle \"$(commit_message \"$CY_N\")\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4125",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 2290,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "write_commit \"$idx\" \"$msg\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L2290",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "cycle_learn",
+      "to": "acceptance_intact",
+      "path": [
+        {
+          "id": "ralphie_cycle_learn",
+          "label": "cycle_learn()",
+          "source_location": "L4204"
+        },
+        {
+          "id": "ralphie_completion_ready",
+          "label": "completion_ready()",
+          "source_location": "L3367"
+        },
+        {
+          "id": "ralphie_acceptance_done",
+          "label": "acceptance_done()",
+          "source_location": "L3351"
+        },
+        {
+          "id": "ralphie_acceptance_intact",
+          "label": "acceptance_intact()",
+          "source_location": "L3209"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4233,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "completion_ready",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4233",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3375,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "acceptance_done",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3375",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3356,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "acceptance_intact",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3356",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "completion_ready",
+      "to": "request_pending",
+      "path": [
+        {
+          "id": "ralphie_completion_ready",
+          "label": "completion_ready()",
+          "source_location": "L3367"
+        },
+        {
+          "id": "ralphie_request_pending",
+          "label": "request_pending()",
+          "source_location": "L4362"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3375,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "request_pending",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3375",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "cycle_begin",
+      "to": "request_boundary",
+      "path": [
+        {
+          "id": "ralphie_cycle_begin",
+          "label": "cycle_begin()",
+          "source_location": "L3763"
+        },
+        {
+          "id": "ralphie_request_boundary",
+          "label": "request_boundary()",
+          "source_location": "L4368"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 3803,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "request_boundary",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L3803",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "from": "main",
+      "to": "request_archive_locked__L4438",
+      "path": [
+        {
+          "id": "ralphie_main",
+          "label": "main()",
+          "source_location": "L5447"
+        },
+        {
+          "id": "ralphie_request_command",
+          "label": "request_command()",
+          "source_location": "L4458"
+        },
+        {
+          "id": "ralphie_request_archive",
+          "label": "request_archive()",
+          "source_location": "L4433"
+        },
+        {
+          "id": "ralphie_request_archive_locked__L4438",
+          "label": "request_archive_locked() [L4438]",
+          "source_location": "L4438"
+        }
+      ],
+      "edges": [
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 5461,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "request_command \"${REST[@]+\"${REST[@]}\"}\"",
+              "substitutions": [],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L5461",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4460,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "request_archive",
+              "substitutions": [
+                "subshell"
+              ],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4460",
+          "weight": 1.0
+        },
+        {
+          "relation": "calls",
+          "confidence": "EXTRACTED",
+          "confidence_score": 1.0,
+          "evidence": [
+            {
+              "line": 4455,
+              "relation": "calls",
+              "confidence": "EXTRACTED",
+              "source": "request_archive_locked",
+              "substitutions": [
+                "subshell"
+              ],
+              "resolution": "internal"
+            }
+          ],
+          "source_file": "ralphie.sh",
+          "source_location": "L4455",
+          "weight": 1.0
+        }
+      ]
+    }
+  ]
+}
