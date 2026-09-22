@@ -110,7 +110,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.0.1"
+VERSION="4.1.0"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -7812,7 +7812,10 @@ chat_session_unlock() {
         [ -f "$path/owner" ] && [ -r "$path/owner" ] &&
         [ "$(file_bytes "$path/owner")" -le 128 ] &&
         [ "$(cat "$path/owner")" = "$token" ] || return 1
-    rm -f "$path/owner" && rmdir "$path"
+    # The pid file (4.0.1) must go with the owner, or rmdir fails on the
+    # non-empty lock and every later chat in this project refuses: the pid
+    # recorded is the live shell itself, so the "live lock" check wins.
+    rm -f "$path/owner" "$path/pid" && rmdir "$path"
 }
 
 chat_sessions() {
@@ -8779,12 +8782,22 @@ rail_compose() {
         rail_say "Proposal $RAIL_PROP_ID is stale. Settings or the worker generation changed"
         rail_say 'after it was drafted, so the approval no longer binds what you read.'
         rail_note 'Nothing was enacted.'
-        case "$RAIL_PROP_ACTION" in
-            start|request|stop) rail_arm 'redraft the same action against the current state' "/$RAIL_PROP_ACTION $RAIL_PROP_PAYLOAD" safe;;
-            *)                  rail_arm 'read what it said' '/proposal' safe;;
-        esac
+        # A stale proposal is never a yes/Enter default. Slot 1 is always the
+        # harmless facts view; reading the stale text (when it still exists) is
+        # a numbered key; redrafting is a typed command, never an armed key.
         rail_arm 'show me the current facts' '/status' safe
-        rail_arm_no 'discard it' '/cancel'
+        if [ -s "$CHAT_DIR/proposal" ] && [ -s "$CHAT_DIR/proposal-id" ]; then
+            rail_arm 'read the stale proposal (reading enacts nothing)' '/proposal' safe
+        else
+            rail_note 'The proposal record itself is gone (invalidated by the run state).'
+        fi
+        case "$RAIL_PROP_ACTION" in
+            start|request|stop)
+                rail_warn 'Approval is never taken for a stale proposal. Type the command yourself:'
+                rail_note "/$RAIL_PROP_ACTION $RAIL_PROP_PAYLOAD"
+                ;;
+        esac
+        rail_arm_no 'discard the stale proposal' '/cancel'
         ;;
     S2)
         rail_say "$(rail_home "$PROJECT") is not a git repository."
@@ -9369,6 +9382,11 @@ chat_command_main() {
     [ "${1:-}" != -- ] || shift
     CHAT_DIR=""; CHAT_SESSION_ID=""; CHAT_LOCK_PATH=""; CHAT_LOCK_TOKEN=""; CHAT_SCREEN=0; CHAT_VIEWPORT=0; CHAT_PROGRESS=0; CHAT_INFER_PID=""
     CHAT_ONESHOT=0; [ "$#" -eq 0 ] || CHAT_ONESHOT=1
+    # `chat --stop` ends the engine chat session itself (a separate, resident
+    # prime-agent conversation), not the project work.
+    if [ "${1:-}" = --stop ]; then
+        shift; engine_chat_stop; return 0
+    fi
     [ "$#" -gt 0 ] || { [ -t 0 ] && [ -t 1 ]; } || { err 'ralphie: interactive chat needs a terminal; use chat "MESSAGE" or run "OBJECTIVE".'; return 2; }
     chat_safe_dir "$HOME_DIR" || { err 'ralphie: unsafe chat path; no files repaired.'; return 1; }
     chat_safe_dir "$HOME_DIR/chat" || return 1
@@ -9410,6 +9428,15 @@ chat_command_main() {
         # One MESSAGE is still a turn, so it still ends on the one next action.
         rail_render
         return "$rc"
+    fi
+    # The default interactive chat is the ENGINE ITSELF: a resident, per-project
+    # prime-agent session with its own tools and memory. The kernel is only an
+    # execution wrapper: boot once, attach the real TUI, and catch control back
+    # here on detach. No engine output is parsed on this path.
+    if rails_on && [ "$#" -eq 0 ] && [ "${RALPHIE_CHAT_ENGINE:-engine}" != ralphie ] &&
+       have tmux && engine_present prime-agent 2>/dev/null; then
+        engine_chat_attach
+        # Back in the harness console: fall through into the rails prompt below.
     fi
     chat_screen_start
     if rails_on; then
@@ -9906,6 +9933,127 @@ steerer_forget() {
     return 0
 }
 
+
+# --- chat engine session ----------------------------------------------------
+# The operator-facing chat is the engine itself, not a parsed sidecar. A
+# dedicated, per-project prime-agent session holds the conversation; ralphie's
+# kernel only wraps the socket: it boots the session once, attaches its real
+# TUI, and catches control back on detach. Nothing in the session is parsed.
+
+engine_chat_home() { printf '%s/chat/sessions' "$HOME_DIR"; }
+engine_chat_session_name_file() { printf '%s/chat/session-name' "$HOME_DIR"; }
+
+engine_chat_session_name() {
+    # One name per project, persisted, fresh on first use. A stale name from a
+    # finished session is retired here rather than colliding later.
+    local f n; f="$(engine_chat_session_name_file)"
+    if [ -f "$f" ]; then
+        n="$(head -c 128 < "$f" 2>/dev/null | tr -d '\r\n' || true)"
+        [ -n "$n" ] && { printf '%s' "$n"; return 0; }
+    fi
+    n="ralphie-chat-$(stamp)-$(rand_token | cut -c1-4)"
+    mkdir -p "$(engine_chat_home)" 2>/dev/null || true
+    ensure_own_file "$f" "chat session" 2>/dev/null || true
+    printf '%s\n' "$n" > "$f" 2>/dev/null || true
+    printf '%s' "$n"
+}
+
+engine_chat_session_name_valid() {
+    # The same charset rules as any session name: safe for tmux and argv.
+    case "${1:-}" in ''|*[!a-zA-Z0-9_-]*|-*|_*) return 1;; esac
+    [ "${#1}" -le 64 ]
+}
+
+engine_chat_role() {
+    printf 'You are the resident project agent for %s.\n' "$(basename "$PROJECT")"
+    printf 'The ralphie loop runs the project work in the background. You share the\n'
+    printf 'same working directory, so you can read files and run read-only commands.\n'
+    printf 'You cannot start or stop the ralphie loop yourself. If the operator asks,\n'
+    printf 'give the exact command to run instead of claiming you did it.\n'
+    printf 'Current run state lives in .ralphie/state and .ralphie/events.jsonl;\n'
+    printf 'read those before asserting anything about the run.\n'
+}
+
+engine_chat_kickoff() {
+    printf 'You are now the chat session for %s. Introduce yourself in one line and say you are ready.\n' "$(basename "$PROJECT")"
+}
+
+engine_chat_live() { steerer_pa_id "$1" >/dev/null 2>&1; }
+
+engine_chat_boot() {
+    local name="$1" bin cmdline before id tries=0
+    bin="$(steerer_bin prime-agent)" || { err "prime-agent is not installed"; return 1; }
+    have tmux || { err "the chat session needs tmux once, to give the agent its first terminal"; return 1; }
+    # Every live id BEFORE the boot, so the new agent is identified by delta.
+    before=" $(steerer_pa_live_ids | tr '\n' ' ' || true) "
+    cmdline="$(steerer_quote "$bin") --cwd $(steerer_quote "$PROJECT")"
+    [ -n "$(steerer_model)" ] && cmdline="$cmdline --model $(steerer_quote "$(steerer_model)")"
+    cmdline="$cmdline --session-dir $(steerer_quote "$(engine_chat_home)")"
+    cmdline="$cmdline --append-system-prompt $(steerer_quote "$(engine_chat_role)")"
+    cmdline="$cmdline $(steerer_quote "$(engine_chat_kickoff)")"
+    tmux new-session -d -s "$name" -x 200 -y 50 "$cmdline" 2>/dev/null ||
+        { err "tmux could not start a terminal for the chat session"; return 1; }
+    while [ "$tries" -lt "${STEERER_BOOT_SECONDS:-60}" ]; do
+        # Sessions land in a scratch file first; the awk reader must never be
+        # an early-exit reader on a pipe (EPIPE breaks `set -o pipefail`).
+        steerer_pa_sessions > "$(steerer_scratch)" 2>/dev/null
+        id="$(awk -F'\t' -v b="$before" '$1 ~ /^[0-9a-f]/ && (b !~ (" " $1 " ")) { print $1; exit }' < "$(steerer_scratch)" 2>/dev/null)"
+        [ -n "$id" ] && break
+        sleep 1; tries=$((tries+1))
+    done
+    [ -n "$id" ] || { err "the chat agent never registered with the daemon"; steerer_tmux_kill "$name"; return 1; }
+    tries=0
+    while [ "$tries" -lt 20 ]; do
+        if steerer_bounded "$bin" rename "$id" "$name" --json >/dev/null 2>&1 &&
+           [ "$(steerer_pa_id "$name" 2>/dev/null || printf '')" = "$id" ]; then
+            return 0
+        fi
+        sleep 1; tries=$((tries+1))
+    done
+    steerer_bounded "$bin" stop "$id" --json >/dev/null 2>&1 || true
+    steerer_tmux_kill "$name"
+    err "could not name the chat agent"
+    return 1
+}
+
+engine_chat_attach() {
+    # The FULL engine TUI. Nothing here is parsed or abbreviated. The kernel
+    # only wraps the boundary: boot once, attach, catch control on detach.
+    local name impl
+    impl="$(steerer_impl 2>/dev/null || printf 'prime-agent')"
+    [ "$impl" = prime-agent ] || {
+        err "the chat session is prime-agent only today (RALPHIE_STEERER_ENGINE=$impl)."
+        err "  use: RALPHIE_STEERER_ENGINE=prime-agent $ME chat"
+        return 1
+    }
+    name="$(engine_chat_session_name)"
+    engine_chat_live "$name" || engine_chat_boot "$name" || return 1
+    good "attached to the chat engine session. Everything you see is the engine itself."
+    dim  "  detach (session keeps running): Ctrl-C or /quit"
+    dim  "  end it entirely:                $ME chat --stop"
+    steerer_pa_attach_tui "$name"
+    good "back at the ralphie console."
+    dim  "  resume: $ME chat     end: $ME chat --stop"
+    return 0
+}
+
+engine_chat_stop() {
+    # A pure read: `chat --stop` with no session must create NO state. The name
+    # generator is a different function for exactly this reason.
+    local f name=""
+    f="$(engine_chat_session_name_file)"
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+        name="$(head -c 128 < "$f" 2>/dev/null | tr -d '\r\n' || true)"
+        engine_chat_session_name_valid "$name" || name=''
+    fi
+    if [ -n "$name" ] && steerer_pa_id "$name" >/dev/null 2>&1; then
+        steerer_api stop "$name" >/dev/null 2>&1 || true
+    fi
+    rm -f "$(engine_chat_session_name_file)" 2>/dev/null || true
+    good "chat engine session stopped."
+}
+
+
 steerer_name_valid() {
     # This name reaches a tmux command line and an engine's argv. Nothing but
     # this charset ever does, so neither can be talked into running something
@@ -10166,6 +10314,34 @@ steerer_pa_attach() {
     local bin; bin="$(steerer_bin prime-agent)" || return 1
     steerer_pa_id "$1" >/dev/null 2>&1 || { err "no live steerer named $1"; return 1; }
     exec "$bin" attach "$1"
+}
+
+steerer_pa_attach_tui() {
+    # The interactive variant: the engine TUI runs as a CHILD, not an exec, so
+    # an operator Ctrl-C / TUI-exit returns control to the caller and then to
+    # the ralphie harness (the user's explicit contract for watch and chat:
+    # "exiting gets caught back in the ralphie.sh harness"). Closing the view
+    # never stops the engine session.
+    #
+    # Two boundary details the contract depends on:
+    #   INT  A TUI normally reads Ctrl-C as a key (raw mode), but if it does
+    #        not, the signal reaches THIS shell too -- whose standing trap is
+    #        `exit 130`, which would throw the operator out of ralphie instead
+    #        of returning to the console. So INT is made a no-op here and the
+    #        previous trap is restored afterwards. A trapped-not-ignored signal
+    #        is reset to default in the child, so the TUI still gets its Ctrl-C.
+    #   tty  A TUI that dies mid-draw can leave the terminal in raw mode. The
+    #        line discipline is saved before the attach and restored after.
+    local bin rc=0 prev_int tty_state=""
+    bin="$(steerer_bin prime-agent)" || return 1
+    steerer_pa_id "$1" >/dev/null 2>&1 || { err "no live steerer named $1"; return 1; }
+    prev_int="$(trap -p INT 2>/dev/null || printf '')"
+    [ -t 0 ] && tty_state="$(stty -g < /dev/tty 2>/dev/null)" || tty_state=""
+    trap ':' INT
+    "$bin" attach "$1"; rc=$?
+    if [ -n "$prev_int" ]; then eval "$prev_int" 2>/dev/null || trap - INT; else trap - INT; fi
+    [ -z "$tty_state" ] || stty "$tty_state" < /dev/tty 2>/dev/null || true
+    return "$rc"
 }
 
 steerer_pa_logs() {
@@ -12406,11 +12582,19 @@ USAGE
   ./ralphie.sh <command> [args]
 
 COMMANDS
-  chat [MESSAGE] Open/resume supervisor chat; MESSAGE gives one turn and exits.
-                 No arguments opens chat. Interactive chat requires a terminal.
+  chat [MESSAGE] Open/resume this project's chat; MESSAGE gives one turn and
+                 exits. With no arguments on a terminal it attaches the
+                 resident engine chat session (the full TUI, nothing parsed);
+                 leaving it lands you on the rails console underneath.
+  chat --stop    End that resident chat session. The run is untouched.
   run            Run the foreground loop. Use this explicitly in cron/CI.
   start          Start a background worker with normal run options.
-  watch [ID]     Read a background worker receipt and bounded log snapshot.
+  watch [ID]     On a terminal: attach to the live steerer, unfettered, until
+                 Ctrl-C. It starts nothing itself; with none live it shows the
+                 live dialog. Piped or in CI: the bounded log snapshot.
+  watch --follow Live humane tail of the engine's dialog, tail -f style (-f).
+  watch --attach Attach, starting a steerer first if none is live (-a). This
+                 is the only watch that may spend anything, and it says so.
   status         What has happened: cycles, gates, time, open questions.
   status --json  The same as one line of JSON, for CI and monitoring.
   discover       Read-only orientation. No checks, engines or writes. No args.
@@ -12827,6 +13011,22 @@ ENVIRONMENT
                          turn, the bare-verb and yes/n/1-4 shortcuts, and the
                          footer, restoring the older prefixed chat exactly.
                          Rails cost no tokens: they are local string matching.
+  RALPHIE_CHAT_ENGINE    engine (the default) makes interactive chat on a
+                         terminal attach this project's resident prime-agent
+                         chat session: the full engine TUI, nothing parsed,
+                         whose exit returns you to the rails console below it.
+                         `chat --stop` ends that session. Set it to ralphie to
+                         keep chat as the rails console only. One-shot
+                         `chat "MESSAGE"` and non-terminal use stay rails.
+  RALPHIE_WATCH_VIEW     engine (the default) makes `ralphie.sh watch` on a
+                         terminal ATTACH to the live steerer, unfettered, so
+                         what you see is exactly what the engine shows. Ctrl-C
+                         detaches and the session keeps running. It never
+                         starts an agent on its own: with no steerer live it
+                         names the command and shows the free live dialog.
+                         Only `watch --attach` may start one, and it says so.
+                         ralphie keeps the older bounded snapshot; --follow,
+                         --attach and --engine override on the command line.
   RALPHIE_GIT_INIT       0 to refuse to create a git repository.
   RALPHIE_CONFIG         0 to ignore .ralphie/config.env entirely. Environment
                          only, for the obvious reason.
@@ -13802,6 +14002,56 @@ watch_follow_cli() {
     done
 }
 
+watch_attach_now() {
+    # The socket itself: everything on screen from here is the engine.
+    good "attached to the steerer ($1) unfettered. Detach anytime: Ctrl-C."
+    steerer_pa_attach_tui "$1"
+    good "detached. The steerer keeps running (logs: $ME steerer logs; stop: $ME steerer stop)."
+    return 0
+}
+
+watch_attach_live_name() {
+    # The recorded steerer name, but only when that session is really live.
+    local name
+    name="$(steerer_read name 2>/dev/null || printf '')"
+    [ -n "$name" ] || return 1
+    steerer_pa_id "$name" >/dev/null 2>&1 || return 1
+    printf '%s' "$name"
+}
+
+watch_attach_cli() {
+    # `ralphie.sh watch` on a terminal, and `watch --attach [ID]`: attach to the
+    # live steerer, unfettered. The full engine TUI replaces the console until
+    # the operator detaches with Ctrl-C or the TUI's own exit; the kernel is
+    # only the execution wrapper around that socket.
+    #
+    # $1 is may_boot, and it is the whole ethics of this command. Starting a
+    # resident agent SPENDS TOKENS, so only the explicit `--attach` may do it.
+    # A bare `watch` with no steerer live never starts one behind your back: it
+    # names the command that would, and shows the free live dialog instead (or
+    # the bounded snapshot when there is no terminal to draw on).
+    local may_boot="${1:-0}" name
+    [ "$#" -eq 0 ] || shift
+    if name="$(watch_attach_live_name)"; then watch_attach_now "$name"; return 0; fi
+    if [ "$may_boot" = 1 ]; then
+        warn 'no steerer is running here. Starting one spends tokens.'
+        cmd_steerer start || return 1
+        name="$(watch_attach_live_name)" || { err 'the steerer is not reachable'; return 1; }
+        watch_attach_now "$name"
+        return 0
+    fi
+    warn 'no resident steerer is running, so there is no engine session to attach to.'
+    dim  "  start one (it spends tokens):  $ME steerer start"
+    dim  "  attach and start in one step:  $ME watch --attach"
+    if [ -t 1 ]; then
+        dim  '  showing the live engine dialog instead (free, read-only):'
+        watch_follow_cli "$@"
+        return $?
+    fi
+    worker_watch "$@"
+    return $?
+}
+
 watch_follow_newest_transcript() {
     # Newest top-level transcript ANY run in this project produced; the
     # newest run's newest file wins. Follows are always read-only.
@@ -14699,13 +14949,33 @@ main() {
     if [ "$CMD" = watch ]; then
         case "${REST[0]:-}" in
             --follow|-f)
-                # Newer arguments may follow; hand the remainder to the follow.
                 REST=( "${REST[@]:1}" )
                 watch_follow_cli "${REST[@]+"${REST[@]}"}"
                 exit $?;;
+            --attach|-a)
+                # Explicit attach: this one MAY start a resident agent, and it
+                # says so before it spends anything.
+                REST=( "${REST[@]:1}" )
+                watch_attach_cli 1 "${REST[@]+"${REST[@]}"}"
+                exit $?;;
+            --engine)
+                # Force the engine view even when RALPHIE_WATCH_VIEW=ralphie.
+                # It starts nothing: no steerer live means the free live dialog.
+                REST=( "${REST[@]:1}" )
+                watch_attach_cli 0 "${REST[@]+"${REST[@]}"}"
+                exit $?;;
+            *)
+                # On a terminal, watch = attach to the live steerer, unfiltered.
+                # Everything the engine shows is the engine itself. Detach with
+                # Ctrl-C: the steerer keeps running, you are back at the console.
+                # It never starts an agent on its own; see watch_attach_cli.
+                if [ -t 0 ] && [ -t 1 ] && [ "${RALPHIE_WATCH_VIEW:-engine}" = engine ]; then
+                    watch_attach_cli 0 "${REST[@]+"${REST[@]}"}"
+                    exit $?
+                fi
+                worker_watch "${REST[@]+"${REST[@]}"}"
+                exit $?;;
         esac
-        worker_watch "${REST[@]+"${REST[@]}"}"
-        exit $?
     fi
     if [ "$CMD" = stop ] && { [ "${#REST[@]}" -gt 0 ] || worker_regular "$LOCK_FILE/launch"; }; then
         worker_stop "${REST[@]+"${REST[@]}"}"; exit $?

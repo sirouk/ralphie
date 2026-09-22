@@ -10416,7 +10416,15 @@ if want chat-conversations; then
     check_ok 'one-shot selects retained history without reading terminal' "$?"
     check_contains 'one-shot selected history' 'user: alpha' "$(cat "$session_project/selected-output")"
     check 'one-shot releases global lock' no "$([ -d "$session_project/.ralphie/chat/lock" ] && echo yes || echo no)"
-    mkdir "$session_project/.ralphie/chat/lock"
+    # A lock whose OWNER is alive must block a second supervisor. An empty or
+    # dead-pid lock is a STALE lock by the 4.0.1 contract and is recovered
+    # (that is the whole point of the stale-lock feature), so the block probe
+    # has to hold a live pid for the check to mean anything.
+    mkdir "$session_project/.ralphie/chat/lock" 2>/dev/null || true
+    printf '%s
+' "$$" > "$session_project/.ralphie/chat/lock/owner"
+    printf '%s
+' "$$" > "$session_project/.ralphie/chat/lock/pid"
     "$RALPHIE" --project "$session_project" chat --session alpha /history >/dev/null 2>&1
     check 'global lock blocks another named supervisor' 1 "$?"
 fi
@@ -10452,6 +10460,98 @@ if want "steerer-cli"; then
     done
     out="$( cd "$d" && ./ralphie.sh steere 2>&1 )"
     check_contains "a typo'd steerer is refused, not run as an objective" "unknown command" "$out"
+fi
+
+if want "engine-chat-units"; then
+    # 4.1.0 turned chat and watch into execution sockets: on a terminal they
+    # attach the engine's own TUI and parse nothing. What a hermetic suite can
+    # prove is the BOUNDARY around that socket -- the naming, the no-spend
+    # rule, and that a read creates no state -- so that is what this measures.
+    d="$(new_project)"; ( load_lib "$d"
+      # --- one chat session name per project, namespaced and persisted
+      n="$(engine_chat_session_name)"
+      case "$n" in ralphie-chat-*) ok "the chat session name is namespaced";; *) no "the chat session name is namespaced" "$n";; esac
+      engine_chat_session_name_valid "$n"; check_ok "a generated chat session name is valid" "$?"
+      check "the chat session name persists" "$n" "$(engine_chat_session_name)"
+      check "the name file holds exactly that name" "$n" "$(cat "$HOME_DIR/chat/session-name" 2>/dev/null)"
+      # This name reaches a tmux command line and an engine argv, like the
+      # steerer's, so it is refused on the same charset rules.
+      for bad in "" "a b" "a;rm -rf /" "../escape" "name'quote" "-lead" "_lead" "$(printf '%065d' 0)"; do
+          label="$(printf '%s' "$bad" | head -c 12)"
+          engine_chat_session_name_valid "$bad"; rc=$?
+          check_fails "a dangerous chat session name is refused: [$label]" "$rc"
+      done
+      # --- the role never claims a power the session does not have
+      r="$(engine_chat_role)"
+      check_contains "the chat role names this project" "$(basename "$d")" "$r"
+      check_contains "the chat role denies starting or stopping the loop" "cannot start or stop" "$r"
+      check_contains "the chat role points at the real run state" ".ralphie/state" "$r"
+      check_contains "the chat kickoff names this project" "$(basename "$d")" "$(engine_chat_kickoff)"
+      # --- stop is a pure read: with no session it must create nothing
+      rm -f "$HOME_DIR/chat/session-name"
+      out="$(engine_chat_stop 2>&1)"; rc=$?
+      check_ok "stopping with no session exits 0" "$rc"
+      check_contains "stopping says what it did" "chat engine session stopped" "$out"
+      check "stopping with no session writes no name file" no "$([ -e "$HOME_DIR/chat/session-name" ] && echo yes || echo no)"
+      # --- attaching is prime-agent only, and says so instead of guessing
+      out="$( RALPHIE_STEERER_ENGINE=claude; engine_chat_attach 2>&1 )"; rc=$?
+      check_fails "attach refuses a non prime-agent steerer engine" "$rc"
+      check_contains "attach names the engine it needs" "prime-agent" "$out"
+      true ) || no 'engine chat unit group completed'
+fi
+
+if want "watch-attach-units"; then
+    # The whole ethics of the new default watch: it may NEVER start a resident
+    # agent by itself, because starting one spends tokens. Only the explicit
+    # --attach may, and it names the consequence first.
+    d="$(new_project)"; ( load_lib "$d"
+      steerer_forget
+      watch_attach_live_name >/dev/null 2>&1; check_fails "no recorded steerer means nothing to attach to" "$?"
+      steerer_write name ralphie-steerer-test-0002 >/dev/null
+      steerer_pa_id() { return 1; }
+      watch_attach_live_name >/dev/null 2>&1; check_fails "a recorded but dead steerer is not attachable" "$?"
+      # A dead steerer must not be resurrected by a bare watch: no boot, and
+      # the operator is told the exact command that would spend.
+      cmd_steerer() { printf 'BOOTED\n'; return 0; }
+      out="$(watch_attach_cli 0 2>&1)" || true
+      check_lacks "a bare watch never starts a steerer" "BOOTED" "$out"
+      check_contains "a bare watch names the command that would" "steerer start" "$out"
+      check_contains "a bare watch says starting one spends" "spends tokens" "$out"
+      steerer_pa_id() { printf 'abc123\n'; return 0; }
+      check "a live steerer is attachable by name" ralphie-steerer-test-0002 "$(watch_attach_live_name)"
+      unset -f steerer_pa_id cmd_steerer
+      true ) || no 'watch attach unit group completed'
+fi
+
+if want "engine-attach-cli"; then
+    # Nothing in the suite has a terminal, so nothing here can attach. The
+    # point is that the rewritten dispatch still lands on the old bounded
+    # snapshot off a terminal, and that no path starts an agent to do it.
+    d="$(new_project)"
+    out="$( cd "$d" && ./ralphie.sh watch 2>&1 )" || true
+    check_contains "a piped watch is still the bounded snapshot" "supply a launch id" "$out"
+    check_lacks "a piped watch never attaches" "attached to the steerer" "$out"
+    check "a piped watch starts no steerer" no "$([ -e "$d/.ralphie/steerer" ] && echo yes || echo no)"
+    out="$( cd "$d" && ./ralphie.sh watch --engine 2>&1 )" || true
+    check_contains "--engine off a terminal says there is nothing live" "no resident steerer is running" "$out"
+    check_contains "--engine off a terminal falls back to the snapshot" "supply a launch id" "$out"
+    check_lacks "--engine off a terminal never attaches" "attached to the steerer" "$out"
+    check "--engine starts no steerer either" no "$([ -e "$d/.ralphie/steerer" ] && echo yes || echo no)"
+    out="$( cd "$d" && RALPHIE_WATCH_VIEW=ralphie ./ralphie.sh watch 2>&1 )" || true
+    check_contains "the opt-out keeps the old snapshot" "supply a launch id" "$out"
+    # `chat --stop` is a pure read of a project that may never have chatted.
+    out="$( cd "$d" && ./ralphie.sh chat --stop 2>&1 )"; rc=$?
+    check_ok "chat --stop exits 0 with no session" "$rc"
+    check_contains "chat --stop says what it did" "chat engine session stopped" "$out"
+    check "chat --stop takes no chat lock" no "$([ -e "$d/.ralphie/chat/lock" ] && echo yes || echo no)"
+    check "chat --stop writes no session name" no "$([ -e "$d/.ralphie/chat/session-name" ] && echo yes || echo no)"
+    out="$( cd "$d" && ./ralphie.sh --help 2>&1 )"
+    check_contains "--help documents RALPHIE_CHAT_ENGINE" "RALPHIE_CHAT_ENGINE" "$out"
+    check_contains "--help documents RALPHIE_WATCH_VIEW" "RALPHIE_WATCH_VIEW" "$out"
+    check_contains "--help documents watch --attach" "watch --attach" "$out"
+    check_contains "--help documents watch --follow" "watch --follow" "$out"
+    check_contains "--help documents chat --stop" "chat --stop" "$out"
+    check_contains "--help says a bare watch starts nothing" "starts nothing itself" "$out"
 fi
 
 if want "steerer-units"; then

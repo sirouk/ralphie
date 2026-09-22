@@ -281,6 +281,24 @@ A final process state or exit code is not proof that the goal passed its gates.
 Follow requires interactive chat with a terminal. It does not provide an engine
 shell or engine input. Worker engine logs and ledger evidence are separate.
 
+**Since 4.1.0, `watch` and `chat` on a terminal are sockets, not views.**
+`./ralphie.sh watch` attaches to the live steerer and shows its full engine TUI,
+unfettered: nothing is parsed, filtered or abbreviated. Ctrl-C (or the TUI's own
+exit) detaches and returns you to the ralphie console, and the session keeps
+running. A bare `watch` never starts an agent for you -- starting one spends
+tokens -- so with no steerer live it names the command that would and shows the
+free live dialog instead; `watch --attach` is the one that may start one, and it
+says so first. Piped or in CI, `watch` is still the bounded snapshot, and
+`RALPHIE_WATCH_VIEW=ralphie` restores that as the default everywhere.
+Interactive `./ralphie.sh chat` likewise attaches this project's **resident
+engine chat session**: a dedicated per-project prime-agent conversation with its
+own tools and memory, booted once and kept alive between attaches. Leaving that
+TUI is caught by the harness and lands you on the rails console underneath it.
+`chat --stop` ends the session; the run is untouched. One-shot `chat "MESSAGE"`,
+a non-terminal chat and `RALPHIE_CHAT_ENGINE=ralphie` all stay on the rails
+console. Both attach paths need `tmux` and `prime-agent`; without them the
+4.0.x behaviour is used unchanged.
+
 There is room for **32 retained launch entries**, including old or refused
 launches. Admission refuses at capacity before making another launch spec copy;
 nothing is automatically deleted. To free space, stop all launchers and workers,
@@ -544,9 +562,12 @@ engine's own word; `CONSENSUS_LIMIT=1` acts on a single report.
 ./ralphie.sh                        Open default interactive conversation
 ./ralphie.sh chat "MESSAGE"         One supervisor turn, then exit
 ./ralphie.sh chat --session NAME    Reconnect a named conversation
+./ralphie.sh chat --stop            End the resident engine chat session
 ./ralphie.sh "what you want done"   Run the loop
 ./ralphie.sh start --once "..."     Launch a background worker
-./ralphie.sh watch [LAUNCH-ID]      Worker receipt and retained log snapshot
+./ralphie.sh watch [LAUNCH-ID]      Terminal: attach the live steerer; piped: log snapshot
+./ralphie.sh watch --follow [ID]    Live humane tail of the engine's dialog (-f)
+./ralphie.sh watch --attach [ID]    Attach, starting a steerer first if none is live (-a)
 ./ralphie.sh run --once "..."       Explicit run; options precede objective text
 ./ralphie.sh discover               Read-only orientation; no checks, engines or writes
 ./ralphie.sh status                 Cycles, gates, budget, open questions

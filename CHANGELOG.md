@@ -3,6 +3,42 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.1.0 — 2026-09-22
+
+`watch` and `chat` became execution sockets to the engine, not parsed views.
+
+- **`ralphie.sh watch` on a terminal attaches to the live steerer, unfettered**
+  (`RALPHIE_WATCH_VIEW=engine`, the default). What you see is the engine's own
+  TUI, nothing filtered or summarized. Ctrl-C (or the TUI's own exit) detaches
+  and returns you to the ralphie console; the steerer keeps running. If no
+  steerer is live, one is started first. `--attach`/`-a` forces it, `--follow`/
+  `-f` keeps the humane parsed tail from 4.0.1, a non-terminal (pipe, CI) keeps
+  the bounded snapshot, and `RALPHIE_WATCH_VIEW=ralphie` restores the old default.
+- **Interactive `ralphie.sh chat` attaches the project's resident chat session**
+  (`RALPHIE_CHAT_ENGINE=engine`, the default): a dedicated, per-project
+  prime-agent conversation with its own tools and memory, booted once and kept
+  alive between attaches. The full engine TUI runs; nothing is parsed. Exiting
+  the TUI is caught by the harness and lands you back on the rails console.
+  `chat --stop` ends that session. One-shot `chat "MESSAGE"`, a non-terminal
+  chat, and `RALPHIE_CHAT_ENGINE=ralphie` all keep the 4.0.x rails chat.
+- **The attach boundary is signal- and terminal-safe**: the standing `exit 130`
+  INT trap is neutralized only while the TUI child runs, so Ctrl-C detaches
+  instead of killing ralphie, and the terminal line discipline is saved before
+  the attach and restored after it.
+- **Fixed (4.0.1 regression): a chat lock was never released**, so every later
+  chat in that project refused with "a chat is already open". 4.0.1 added a pid
+  file inside the lock directory, and the release path still removed only
+  `owner`, leaving `rmdir` to fail on a non-empty directory. The pid it left
+  behind was the live shell's own, so the stale-lock recovery could not clear it
+  either. Release now removes `owner` and `pid` together.
+- **A stale proposal can no longer be approved by reflex**: slot 1 is always
+  `/status`, reading the stale text is a separate numbered key (and is announced
+  as gone when the record itself was invalidated), and redrafting `start`,
+  `request` or `stop` is typed by hand under a warning — never an armed key.
+
+
+---
+
 ## 4.0.1 — 2026-09-22
 
 Chat works anytime. `watch --follow` is a live, humane tail of the engine dialog.
