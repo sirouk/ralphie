@@ -12,7 +12,7 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -36,3 +36,11 @@ jobs:
 
       - name: Test suite (system bash, including child scripts)
         run: PATH="/bin:/usr/bin:$PATH" /bin/bash ./test.sh
+
+      - name: Install (curl | bash) round trip
+        run: |
+          cd /tmp && rm -rf install-test && mkdir install-test && cd install-test
+          curl -fsSLo ralphie.sh "file://$(pwd)/../../ralphie.sh" 2>/dev/null || cp "$GITHUB_WORKSPACE/ralphie.sh" ralphie.sh
+          /bin/bash ralphie.sh version
+          /bin/bash -n ralphie.sh
+        if: runner.os == 'Linux'

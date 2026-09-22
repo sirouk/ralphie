@@ -2,8 +2,14 @@
 
 **An autonomy kernel for any project, on any machine, with any AI engine.**
 
-One file. No dependencies beyond `bash`, coreutils and `git`. Plant it in a
-project, tell it what you want, and walk away.
+One file. The loop needs nothing beyond `bash` 3.2, coreutils, `git` and `ps`.
+Plant it in a project, tell it what you want, and walk away.
+
+Three things are optional and each one says so rather than failing: live
+`/follow` of the engine's dialog needs `python3`, the resident `steerer` needs
+`prime-agent` or `claude` (and `tmux` once, for `prime-agent`), and token and
+cost figures are read from the engine's own records when it keeps them. Without
+any of them Ralphie still observes, decides, acts, verifies, commits and learns.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh | bash -s -- "make the tests pass"
@@ -136,9 +142,25 @@ not a model token stream or proof of remote progress.
 ### Discuss, propose, apply
 
 **Discussion is not authorization.** Ordinary messages may produce a proposal,
-but only your explicit `/apply ID` authorizes the displayed action. Saying “yes”
-or receiving a model-generated command does not authorize anything. Model output
-is parsed as data, never evaluated as shell code.
+but nothing runs until you approve the displayed action. Model output is parsed
+as data, never evaluated as shell code, and a command the model writes in its
+reply authorizes nothing.
+
+**`yes` is an approval when a `[Next]` block is on screen.** Every chat turn
+ends with one `[Next]` block, composed locally from project facts. When option 1
+of that block is `/apply ID`, typing `yes` (or `y`, `ok`, `go`, `proceed`,
+`sure`, `continue`, `do it`, or `1`) does exactly what typing `/apply ID` does.
+`n` (or `no`, `nope`, `skip`, `later`, `not yet`) declines.
+
+A bare **Enter** takes the default only when that default is safe. An option
+that spends tokens or stops a worker names its consequence and refuses a bare
+Enter: it asks you to type `yes`. Force termination (`/kill`, `/nuke`) is never
+offered as a key at all and always requires the typed `/apply ID`.
+
+These shortcuts are local string matching on the whole line, after trimming and
+lowercasing. `yes` is a shortcut; `yes but change the gate first` is a
+conversation. They cost no tokens. `RALPHIE_RAILS=0` turns off the `[Next]`
+block, the shortcuts and the footer, restoring the older prefixed chat exactly.
 
 Control commands below are local and make no model call. The `/paste` composer
 is also local, but `/send` submits its message for normal processing and may call
@@ -160,12 +182,21 @@ the supervisor model:
 | `/resume NAME` or `/switch NAME` | Select an existing conversation; no engine resumes. |
 | `/jobs` | List retained launches and their observed states; not all are running. |
 | `/select LAUNCH-ID` | Remember a job selection in this conversation; no execution change. |
-| `/follow [LAUNCH-ID]`, `/attach [LAUNCH-ID]` or `/watch --follow [LAUNCH-ID]` | Follow bounded snapshots in interactive chat; an explicit ID also selects it. |
+| `/follow [LAUNCH-ID]`, `/attach [LAUNCH-ID]` or `/watch --follow [LAUNCH-ID]` | Live follow of the engine's dialog in interactive chat, falling back to bounded console snapshots; an explicit ID also selects it. |
 | `/watch [LAUNCH-ID]` | Print a bounded worker/receipt/log snapshot, then return; defaults to selection, otherwise the current worker. |
 | `/history` | Show retained conversation in normal scrollback. |
 | `/paste` | Begin multiline input; `/send` submits and `/cancel` discards. |
+| `/answer N TEXT` | Answer question N: closes it in `ASK.md` and steers the next cycle. No approval needed; it touches no project file. |
+| `/answer` | List open questions and the exact form to answer them. |
+| `/gates` | Show the checks that decide whether work is saved. Read-only. |
+| `/draft` | Draft an objective for you to approve. One chat call; starts no worker. |
 | `/help` | Show the grouped command guide. |
 | `/quit` or `/exit` | Leave chat without stopping the worker. |
+
+`answer`, `status`, `jobs`, `watch`, `follow`, `gates`, `proposal`, `cancel`,
+`help` and `quit` also work **without** the leading slash. `start`, `stop`,
+`run` and `request` deliberately do not: English prose begins with those words,
+and two of them spend money.
 
 For example, discuss the goal, enter `/start Fix the failing tests`, review the
 launch settings, then enter `/apply` followed by the displayed proposal ID.
@@ -232,9 +263,18 @@ or survival across a reboot.
 
 Each launch retains the **first 1 MiB** of console output in
 `.ralphie/workers/LAUNCH-ID/output.log`, then drains and discards excess output.
-This is not a rolling log or live tail. `/watch` is a snapshot in both interactive
-and one-turn chat. `/follow` (also `/attach` or `/watch --follow`) refreshes
-bounded snapshots; it cannot recover console output discarded after the cap.
+`/watch` is a snapshot of that console in both interactive and one-turn chat.
+`/follow` (also `/attach` or `/watch --follow`) is live, and what it follows is
+the **engine's own dialog** -- read from the session transcript Ralphie already
+asks prime-agent to keep, rendered as clean text, and advanced by byte offset so
+the view never replays and never freezes at the console cap. Reasoning is elided
+to one `[thinking ...]` line unless `RALPHIE_DIALOG_THINKING=1`; tool arguments
+and results are capped by `RALPHIE_DIALOG_ARG_CHARS` and
+`RALPHIE_DIALOG_RESULT_CHARS`; the first attach backfills
+`RALPHIE_DIALOG_TAIL_BYTES` of context. With no transcript -- another engine,
+`RALPHIE_ENGINE_SESSION=0`, or no `python3` to parse it -- `/follow` says so once
+and refreshes bounded console snapshots instead, which cannot recover console
+output discarded after the cap.
 Press `q`, Esc or Ctrl-C to detach without stopping work; `?` shows follow help.
 Final, interrupted or unknown jobs show a snapshot and return automatically.
 A final process state or exit code is not proof that the goal passed its gates.
@@ -434,6 +474,15 @@ Ralphie does not care what the command is, only whether it exits 0.
 changes nothing. Ralphie re-runs the gates after every cycle and believes only
 those.
 
+**A project with no gate can now finish, and it is never called done.** If the
+engine reports the work finished and there is nothing that could check it,
+Ralphie stops after `CONSENSUS_LIMIT` (2) consecutive such reports. It records
+`status=unverified`, prints `stopped, NOT VERIFIED`, writes the reason to
+`ASK.md`, and exits `2`. It does not write the word `done`, does not count a
+green cycle, and does not exit `0`. Before, it could not stop at all and spent
+the whole budget committing work nothing checked. One real command in
+`.ralphie/gates` converts that into a verified result.
+
 Ralphie protects the agreed command list and runs it independently. This detects
 command removal and weakening; it does not make the underlying test files
 immutable or sandbox an engine running as your OS user. The checks themselves
@@ -479,6 +528,14 @@ optionally fires `$RALPHIE_NOTIFY_CMD`, and **goes and does other work**.
 
 An answer also becomes a durable lesson, so it is never asked twice.
 
+**It stops rather than ask the same thing forever.** If the engine reports
+`blocked` **and names a question** on `CONSENSUS_LIMIT` (default 2) consecutive
+cycles, Ralphie stops instead of buying a third identical cycle: `status=blocked`,
+the question is written to `ASK.md`, exit `2`. A `blocked` report that names no
+question stops nothing — an engine that cannot say what a human should decide
+has not met the contract it was given. `CONSENSUS_LIMIT=0` never stops on the
+engine's own word; `CONSENSUS_LIMIT=1` acts on a single report.
+
 ---
 
 ## Commands
@@ -486,22 +543,35 @@ An answer also becomes a durable lesson, so it is never asked twice.
 ```
 ./ralphie.sh                        Open default interactive conversation
 ./ralphie.sh chat "MESSAGE"         One supervisor turn, then exit
+./ralphie.sh chat --session NAME    Reconnect a named conversation
 ./ralphie.sh "what you want done"   Run the loop
 ./ralphie.sh start --once "..."     Launch a background worker
 ./ralphie.sh watch [LAUNCH-ID]      Worker receipt and retained log snapshot
-./ralphie.sh run --once "..."      Explicit run; options precede objective text
+./ralphie.sh run --once "..."       Explicit run; options precede objective text
+./ralphie.sh discover               Read-only orientation; no checks, engines or writes
 ./ralphie.sh status                 Cycles, gates, budget, open questions
+./ralphie.sh status --json          One line of JSON, for CI and monitoring
 ./ralphie.sh doctor                 Engines, capabilities, gates, git
+./ralphie.sh engine-doctor          Assert an engine really takes the flags we pass it
+./ralphie.sh steerer CMD            start|status|attach|logs|tell|stop a resident agent
 ./ralphie.sh gates [--redetect]     The checks that define "working"
 ./ralphie.sh ask                    Open questions
 ./ralphie.sh answer N "..."         Answer one
+./ralphie.sh request TEXT           Queue an unsolicited request for the next cycle
+./ralphie.sh request [list]         List queued/applied requests
+./ralphie.sh request archive        Retain and reset the active batch
 ./ralphie.sh memory                 Durable lessons
 ./ralphie.sh forget                 Clear the stored objective
-./ralphie.sh status --json          One line of JSON, for CI and monitoring
 ./ralphie.sh log [n]                Recent ledger events
-./ralphie.sh stop                   Stop after the current cycle
+./ralphie.sh stop [LAUNCH-ID]       Stop after the current cycle
 ./ralphie.sh update                 Install from the configured trusted source
+./ralphie.sh version                Print the version
+./ralphie.sh help                   The full help screen
 ```
+
+`./ralphie.sh --help` is the authority for every command, option and environment
+knob. This list is a summary; that screen is generated from the same file that
+implements them.
 
 After `run`, command-looking words such as `status` are objective text. Use
 `run -- "..."` when the objective starts with a dash.
@@ -523,6 +593,9 @@ Useful options:
                         finish afterward (not a hard whole-run deadline)
     --once              A single cycle
     --gate "CMD"        Add a verification command (repeatable)
+    --spec FILE         Use a local plain-text spec as the stored objective
+                        (max 1 MiB; cannot combine with objective text)
+    --accept CMD        One-line command required for objective completion
     --no-commit         Never commit
     --done-when-green   Stop as soon as everything passes and nothing remains
     --no-yolo           Do not grant the engine autonomous tool permission
@@ -531,6 +604,7 @@ Useful options:
 -v, --verbose           Show the machinery
 -q, --quiet             Print less: no progress commentary
 -h, --help              The full option list
+    --version           Print the bare version and exit
     --                  Everything after this is the objective
 ```
 
@@ -578,6 +652,21 @@ automatically selected engine fails. An explicit selection never changes provide
 A permanent failure (bad key, no quota, unknown model) is never
 retried; a transient one (rate limit, 503, reset connection) always is.
 
+An engine that declares both `autonomy` and `gates` is asked to drive itself.
+That decision is made from the engine's declared capabilities **alone** — the
+number of configured gates no longer enters into it. A greenfield project with
+no gate therefore gets the same self-driving mode as an established one. It used
+to silently drop to one-shot mode, which is also the mode that ends the engine
+process the moment it stops writing, killing any subagents with it.
+
+**A paused turn is resumed, not banked.** A harness engine ends its *turn* to
+wait for its children; process exit is not the end of the work. When the answer
+is a pause with no report block ("I'll wait for the workers"), Ralphie continues
+the **same** session with a short continuation prompt, bounded by
+`ENGINE_CONTINUE_MAX` (default 1, `0` disables). Both halves are recorded as
+`engine paused` and `engine continued`. Budget it: one cycle can make two engine
+calls.
+
 Prime supplies its native tool loop, recursive subagents, skills, context
 compaction, and autonomous gate loop. Ralphie supplies the durable outer loop
 and independently verifies each result. Native gates receive Ralphie's gate
@@ -615,6 +704,94 @@ or engine limits disable those call limits.
 
 Engine version probes use the same watchdog with a fixed 15-second allowance
 and closed stdin. `discover` only checks command presence and never probes.
+
+---
+
+## The steerer: an agent that drives the run
+
+Optional. With no steerer running, nothing below happens and the loop behaves
+exactly as it always has: the hook inside `event` is two shell tests and a
+return.
+
+```bash
+./ralphie.sh steerer start            # boot a resident agent for this project
+./ralphie.sh steerer status           # name, engine, handle, live yes/no, mailbox size
+./ralphie.sh steerer attach           # talk to it in its own terminal
+./ralphie.sh steerer logs [N]         # read the last N lines without attaching
+./ralphie.sh steerer tell "..."       # send it a message from any shell
+./ralphie.sh steerer stop             # end it
+```
+
+A steerer is a **resident agent session**, not a subprocess of the loop. It
+survives the client that started it, it is addressable by name from any shell,
+and an idle one costs nothing until an event or a person arrives. That is the
+point: Ralphie never spends a cycle polling for a human, and the human never has
+to be present.
+
+Ralphie forwards selected ledger events to it — outcomes, failures, questions
+and exits, not every line. Change the selection with `RALPHIE_STEERER_EVENTS`
+(`all`, `none`, or space-separated `kind:status` globs). Every forwarded event
+is also appended to `.ralphie/steerer/mailbox.jsonl`, bounded by
+`RALPHIE_STEERER_MAILBOX_MAX` (500), so "what was Ralphie telling it" stays
+answerable afterwards.
+
+Two hosts are supported. `prime-agent` is told events directly and needs `tmux`
+once, to give the agent its first terminal. `claude` has no send verb, so a
+`claude` steerer **pulls** its events from the mailbox file instead. Choose with
+`RALPHIE_STEERER_ENGINE`; the default is the first one installed.
+
+Delivery is bounded by `RALPHIE_STEERER_WAIT` (5 seconds) and can never hold a
+cycle open. A steerer that is wedged, stopped, or that the engine can no longer
+see is reported as not live — never as running.
+
+---
+
+## When it gets stuck, it changes its approach
+
+Doing the same thing harder is not persistence. When the **same failure** repeats
+for `STAGNATION_LIMIT` (2) cycles, Ralphie steps back one rung on a three-rung
+ladder and says so in the prompt, under a `## CHANGE OF APPROACH` heading:
+
+| Rung | What the engine is asked to do |
+|---|---|
+| `attack` | fix the thing directly (the normal state) |
+| `plan` | stop fixing. Establish what is true and decompose the work |
+| `reframe` | question the approach and name the decision a human must make |
+
+`RETREAT_LIMIT` sets how far it may step back: `2` (default, both rungs), `1`
+(`plan` only), `0` (off). A cycle that produces something returns to `attack`.
+
+The failure is identified by content, not by whether the tree changed. An engine
+that writes a scratch file every cycle while the same gate fails the same way
+still trips this — which the no-change stall, counting bytes, never could.
+
+Two guards keep it from becoming a ping-pong machine. Retreat never stops a run
+and never prevents one from stopping: `NOCHANGE_LIMIT`, `CONSENSUS_LIMIT` and
+`done` are all decided first. And when Ralphie has crossed the same pair of
+approaches `OSCILLATION_LIMIT` (6, three full laps) times against a failure that
+never changed, it stops instead of circling: `stalled`, exit `3`. The count
+restarts whenever the failure itself changes.
+
+---
+
+## engine-doctor: an engine's docs are not evidence
+
+```bash
+./ralphie.sh engine-doctor
+```
+
+It asserts that the flags Ralphie actually passes are accepted by the binary
+actually installed. Run it after upgrading an engine.
+
+This exists because engine documentation lies. Measured on `prime-agent` 0.9.5:
+`prime-agent help send` advertises `--steer` and `--follow-up`, and the binary
+rejects both with "Unknown option for send". Scope matters as much as spelling:
+`prime-agent`'s `--json` lives in `help send` and `help list`, not in `--help`,
+and every `codex` flag Ralphie passes lives in `codex exec --help`. Checking
+against the wrong help text reports a present flag as missing.
+
+Finding a renamed flag here costs seconds. Finding it on cycle nine costs the
+budget.
 
 ## Updating an installed copy
 
@@ -742,8 +919,8 @@ So cron and CI can react without parsing text:
 |---|---|
 | `0` | Ran to a clean stop: objective met, limit reached, or stopped on request |
 | `1` | Could not start, or a command was refused or could not persist its result |
-| `2` | Blocked: no engine could complete a cycle |
-| `3` | Stalled: several cycles in a row changed nothing |
+| `2` | Stopped early and needs you: no engine could complete a cycle, or the engine repeated that it cannot proceed, or it repeated that the work is finished on a project with no gate. Never verified, never a pass |
+| `3` | Stalled: several cycles in a row changed nothing, or Ralphie kept circling between two ways of approaching the same unchanged failure |
 | `10`, `11` | Never returned: "objective met" and "out of time" are clean stops, so they exit `0` |
 | `130` | Interrupted |
 | `141` | Output was closed early (for example `ralphie.sh \| head`) |
@@ -764,9 +941,18 @@ So cron and CI can react without parsing text:
 7. **Handled failures and signals record a reason.** An untrappable kill can
    leave a stale lock; `status` detects the missing worker and reports interruption.
 
-Ralphie stops itself when it stops being useful: three cycles with no change to
-the tree ends the run and asks you a question, instead of spending the budget
-proving it is stuck.
+Ralphie stops itself when it stops being useful. Four separate stops, decided in
+this order:
+
+| # | Stop | Trigger | Result |
+|---|---|---|---|
+| 1 | no change | `NOCHANGE_LIMIT` (3) cycles that moved no bytes | `stalled`, exit `3` |
+| 2 | finished | gates green, nothing outstanding, nothing refused | `done`, exit `0` |
+| 3 | the engine's own word | `CONSENSUS_LIMIT` (2) identical `blocked`-with-a-question reports, or (2) identical `done` reports on a project with **no gate** | `blocked` or `unverified`, exit `2` |
+| 4 | circling | `OSCILLATION_LIMIT` (6) crossings of the same pair of approaches against an unchanging failure | `stalled`, exit `3` |
+
+None of these spends the budget proving it is stuck, and none of them is ever
+recorded as verified except `done`, which requires real gates to pass.
 
 ---
 
@@ -775,6 +961,23 @@ proving it is stuck.
 `bash` 3.2 or newer (macOS ships 3.2; Ralphie is tested against it), `git`, and
 one AI engine on `PATH`. The built-in watchdog bounds engine calls, gates, and
 commits; neither `timeout` nor `gtimeout` is required.
+
+Optional, each with an honest fallback:
+
+| Want | Needs | Without it |
+|---|---|---|
+| live `/follow` of engine dialog | `python3`, and a session transcript (`prime-agent` with `RALPHIE_ENGINE_SESSION` left on) | says so once, then bounded console snapshots |
+| `steerer` | `prime-agent` or `claude`; `prime-agent` also needs `tmux` once | `steerer start` refuses and explains; the loop is unaffected |
+| token and cost figures | `python3`, and an engine that records usage | reported as unavailable, never estimated |
+
+One thing is assumed rather than optional: **`ps`** (from `procps`, not
+coreutils). It is how Ralphie finds a process's descendants when it has to clean
+up after a timed-out gate or engine, and unlike everything else on this page it
+has **no fallback**. Without it a TERM-ignoring orphan can survive a forced
+termination. Every normal Unix has `ps`, including macOS and every full Linux
+install; some stripped-down container images do not, so check before running
+Ralphie inside one. `pgrep`, `timeout`, `sha256sum`, `node` and `jq` are **not**
+assumed — Ralphie has its own fallback for each.
 
 ## License
 

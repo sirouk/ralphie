@@ -42,12 +42,23 @@ were paid for the hard way.
 
 Before adding a feature, ask whether a capable engine already provides it. If it
 does, add the capability name to that engine's row in `ENGINE_TABLE` and let
-Ralphie skip the work. Reimplementing something the engine already does well is
-how the previous version reached 9,547 lines.
+Ralphie skip the work.
+
+Line count is not the measure; duplication is. The previous generation reached
+~10,000 lines by reimplementing what engines already did. This one is larger
+than that and still correct, because every line pays for something no engine
+supplies: durability, evidence, the gate contract, the human channel, and the
+stops. When you add code, name which of those it serves. If the answer is "the
+engine already does this", delete it and add a capability instead.
 
 ## Invariants you may not break
 
-1. **One file.** `bash` 3.2, coreutils and `git`. No new runtime dependency.
+1. **One file.** `bash` 3.2, coreutils and `git`. **The loop** may never gain a
+   runtime dependency. An *optional* feature may use an optional tool — live
+   `/follow` uses `python3`, `steerer` uses `prime-agent`/`claude` and `tmux` —
+   on one condition: without that tool the feature says exactly why, once, and
+   everything else keeps working. A feature that breaks the loop when a tool is
+   missing is not optional, it is a dependency.
 2. **Gates are truth.** Never let an engine's self-report promote work, and
    never let the engine shrink the gate set. `guard_gates` restores anything
    removed during a cycle. Without it, a mock engine replaced the only gate with
@@ -89,6 +100,13 @@ macOS still ships **bash 3.2**, and it is the version this is tested against.
   assign after.
 - Do not assume `timeout`, `sha256sum`, `pgrep`, `python3`, `node` or `jq` exist.
   Layer 1 has a fallback for each thing that is genuinely needed.
+- `ps` IS assumed, and it is the one exception. `descendants_of` (L833) is
+  `ps -A -o pid= -o ppid=` piped into awk, and it is the only way Ralphie finds
+  what a timed-out gate or engine left behind. There is **no fallback**, in a
+  program whose Layer 1 has a fallback for everything else. `ps` is in `procps`,
+  not coreutils, so "bash + coreutils + git" was never the whole truth. If you
+  ever add a second process-discovery path, that is the site. Until then say so
+  in `README.md` rather than pretending coreutils is enough.
 - Never parse `git status --porcelain` for paths. It quotes and escapes anything
   containing a space or a non-ASCII byte, the quoted form never matches the real
   file, and the operator's uncommitted work gets committed. Use `-z` forms.
@@ -105,8 +123,16 @@ macOS still ships **bash 3.2**, and it is the version this is tested against.
 ```bash
 ./test.sh              # full offline suite, no network, no tokens
 ./test.sh -v           # trace every command
-./test.sh loop         # only tests whose name contains "loop"
+./test.sh loop         # only tests whose group name contains "loop"
 ```
+
+Run it from a **frozen copy**, never from a tree you are still editing: the
+suite copies `ralphie.sh` into every fixture, so an edit landing mid-run gives
+a result for a file that never existed.
+
+The suite shadows `prime-agent`, `claude` and `codex` with free mocks on its own
+`PATH` before anything runs, so no real engine is ever invoked and no machine
+needs one installed. Never bypass that shadow.
 
 The suite drives the entire loop against a **mock engine**, so the full
 observe → act → verify → commit → learn cycle is proven without a single API
@@ -189,8 +215,16 @@ conversation and selected target as well as existing settings/generation inputs.
 Keep next-cycle requests project-wide and refuse conflicting historical targets.
 
 `/jobs` lists retained launches, not just live processes. `/select ID` stores an
-advisory target. `/follow`, `/attach` and `/watch --follow` share a fixed-target
-bounded snapshot loop; explicit IDs also select the job. Missing saved selections
+advisory target. `/follow`, `/attach` and `/watch --follow` share one fixed-target
+follow. What it follows is the **engine's own dialog**, read from the session
+transcript Ralphie already asks `prime-agent` to keep and advanced by byte
+offset, so it never replays and never freezes at the console cap. With no
+transcript (another engine, `RALPHIE_ENGINE_SESSION=0`, or no `python3`) it says
+so once and falls back to bounded `output.log` snapshots. Never move the follow
+onto the money path: `engine_build`, `engine_invoke`, `engine_answered`,
+`watchdog_wait`, `worker_capture` and the `ENGINE_OUTPUT_MAX_BYTES` ceiling must
+stay byte-for-byte unaffected by anything a viewer does. Explicit IDs also select
+the job. Missing saved selections
 never fall back to the current worker. With no selection, observation and `/stop`
 may use the current worker, but the stop proposal displays the exact target.
 q, Esc and Ctrl-C detach without stopping work; final/interrupted/unknown jobs
@@ -208,8 +242,9 @@ and check-to-signal PID races. Retain interruption evidence for recovery.
 
 Preserve original launch options and all gate/acceptance/ownership checks.
 `--spec FILE chat` keeps the full exact spec authoritative, not the proposal title.
-Keep worker console retention honest: first 1 MiB, then drain excess; watch is a
-bounded snapshot, not a rolling/live tail. Refuse at 32 retained launch entries
+Keep worker console retention honest: first 1 MiB, then drain excess. `/watch`
+without `--follow` is a bounded snapshot of that console, not a rolling tail, and
+that cap is why `/follow` reads the transcript instead. Refuse at 32 retained launch entries
 before another launch spec copy. Never prune receipts automatically; manual
 archiving requires all launchers/workers stopped and preserves whole launch dirs.
 
@@ -235,6 +270,97 @@ offline mocks and terminal tests. Record current verification separately from
 historical `graphify-out/` receipts; do not rebuild or relabel those receipts as
 evidence for new chat behavior.
 
+## The stops, and why they are ordered
+
+v3 could work. It could not finish or give up. Four stops now exist and their
+ORDER is load-bearing; `cycle_learn` decides them in this sequence and a new
+decision goes LAST, never in front:
+
+1. `NOCHANGE_LIMIT` — the tree stopped moving. `stalled`, return 3.
+2. `done` — `completion_ready()`. Real gates green. return 10. **Byte-identical
+   to v3.1.0 and it must stay that way.** Relaxing it by one clause is how a
+   project with nothing to check starts reporting green.
+3. `consensus_stop` — the engine's own word, believed only when it survives being
+   asked again. Two claims only: `blocked` **with** a question in `ask:`, and
+   `done` on a project with no gate (`unverifiable_done`). Neither is ever
+   verified and neither exits 0. return 2.
+4. `retreat_check` — change of approach, and the oscillation stop. return 3.
+
+`unverifiable_done()` is deliberately NOT `completion_ready()` and must never be
+folded into it. It says something strictly weaker and says so in its name.
+Nothing that consults it may write `done`, count a green cycle, or exit 0.
+
+An unchanging failure is not proof of futility. A stop keyed on "the signature
+did not change" was written once and the suite rejected it: an engine can be
+making real progress against a failure that reports identically. Count the
+CROSSINGS, not the sameness.
+
+## The steerer
+
+One optional line inside `event`. With no steerer it is two shell tests and a
+return, and that is the contract: the loop may never wait on it, and a wedged
+agent may never hold a cycle open (`RALPHIE_STEERER_WAIT`, 5s, unconditional).
+
+The engine interface is six verbs — `start id attach logs tell stop` — with a
+`prime-agent` and a `claude` implementation. Adding a third host means
+implementing six functions, not touching the loop. `claude` has no send verb, so
+its events are PULLED from `.ralphie/steerer/mailbox.jsonl`; the mailbox is
+written for both hosts so "what was Ralphie telling it" is answerable either way.
+
+Everything that crosses into another agent is flattened, redacted and bounded
+(`steerer_message`): a credential in gate output must not travel, and a
+multi-line detail must not be able to forge a second event line.
+
+Never trust a banner. A session id printed at boot is re-proved against the live
+list every time, so a dead steerer is never reported as running.
+
+## engine-doctor, and why it exists
+
+An engine's own documentation is not evidence. Measured on `prime-agent` 0.9.5:
+`help send` advertises `--steer` and `--follow-up` and the binary rejects both;
+the shipped docs say daemon protocol v4 while the live daemon reports v7. When
+you add or change a flag in `engine_build`, add it to the matching
+`ENGINE_FLAGS_*` list in the same commit. Scope matters as much as spelling:
+`prime-agent`'s `--json` lives in `help send`, not `--help`, and every `codex`
+flag lives in `codex exec --help`. Checking the wrong help text reports a present
+flag as missing.
+
+## Chat rails
+
+The `[Next]` block is composed LOCALLY from project facts (`rail_probe`), never
+from model text, and matched by local string comparison on the whole trimmed
+lowercased line. That is the whole safety argument, and it is also why rails cost
+no tokens.
+
+Two rules you may not relax:
+
+- An option that spends or stops is marked `spends` and names its consequence.
+  A bare Enter never enacts one; it asks for a typed `yes`. Force termination is
+  never offered as a key at all.
+- `start`, `stop`, `run` and `request` never work as bare verbs. English prose
+  begins with those words, and two of them cost money.
+
+`RALPHIE_RAILS=0` must restore the older prefixed chat exactly. Keep that path
+tested.
+
+## Test-suite rules that are not obvious
+
+- **Never hard-code the version in an assertion.** Five assertions spelled
+  `"ralphie 3."` in full and a version bump failed nine of them for no reason but
+  arithmetic. Use the derived `$RALPHIE_VERSION`.
+- **Never assert an instant that the code does not guarantee.** One assertion
+  read `[ ! -e .ralphie/lock ]` the moment the `final` receipt appeared, but
+  `on_exit` writes `final` FIRST and releases the lock after it. It passed only
+  because the gap is normally microseconds; inserting a one-second sleep between
+  those two lines fails it every time, and so does a loaded CI runner. Poll with
+  a bounded budget, and prove the fix still fails when the lock is never released.
+- **`MIN_EXPECTED_ASSERTIONS` is a floor for the MINIMAL-tool run**, not for
+  yours. Measure the minimal run before raising it; a floor set from a
+  full-tool machine turns a legitimately smaller Linux run into a false BROKEN.
+- `test.sh` is not, and cannot be, `shellcheck -S error` clean: it overrides the
+  `[` builtin as a shell function to fake a terminal. Do not add it to the
+  ShellCheck step.
+
 ## Changing the engine table
 
 Adding an engine is one row and one `case` branch in `engine_build`:
@@ -251,7 +377,22 @@ answer, so neither streams.
 
 ## Documentation
 
-`README.md` is the operator contract. Keep the install URL working: the script
-self-updates from the GitHub raw URL derived from `origin`, the current branch
-and its own filename, so `ralphie.sh` must stay at the repository root under
-that exact name.
+`README.md` is the operator contract. `--help` is the machine-readable one and
+the suite enforces it: `documented-knobs` derives every environment variable the
+script reads and never assigns, and requires each to appear in the `ENVIRONMENT`
+section. Its prefix list is `RALPHIE|ENGINE|GATE|NOCHANGE|CONSENSUS|RETREAT|STAGNATION|OSCILLATION|MEMORY|MIN|NO` —
+add yours to that list when you invent a new one, or the test that exists to
+catch an undocumented knob will not see it. (`COMMIT_TIMEOUT` is documented but
+outside the list today.)
+
+`CHANGELOG.md` records BEHAVIOUR CHANGES a stranger could be surprised by, not
+just features. Exit codes and `status --json` are a compatibility contract:
+`--help` promises them "so cron and CI can react without parsing text". Widening
+the meaning of an exit code, or adding a `status` value, is a MAJOR version.
+
+Keep the install URL working: the script self-updates from the GitHub raw URL
+derived from `origin`, the current branch and its own filename, so `ralphie.sh`
+must stay at the repository root under that exact name. `VERSION="major.minor.patch"`
+must remain exactly one literal line — `self_update` parses it with
+`sed -n 's/^VERSION="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p'` and
+refuses any candidate that produces zero or two matches.
