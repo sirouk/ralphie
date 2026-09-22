@@ -3,6 +3,19 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.0.1 — 2026-09-22
+
+Chat works anytime. `watch --follow` is a live, humane tail of the engine dialog.
+
+- **Chat opens even after a closed terminal** (.ralphie/chat/lock): a stale lock is
+  detected by pid liveness and recovered with a warning; a genuinely live chat still
+  refuses, naming the live pid.
+- **`ralphie.sh watch --follow [ID]`** (and `-f`): a live, humane tail of the engine's
+  dialog, tail -f style until Ctrl-C. Thinking is abbreviated (`[thinking ...]`,
+  full text with RALPHIE_DIALOG_THINKING=1), tool calls shown as one line, tool
+  results truncated. The full transcript always remains in .ralphie/run/sessions.
+
+
 ---
 
 ## 4.0.0 — unreleased

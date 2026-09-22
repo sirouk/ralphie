@@ -110,7 +110,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.0.0"
+VERSION="4.0.1"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -9372,10 +9372,30 @@ chat_command_main() {
     [ "$#" -gt 0 ] || { [ -t 0 ] && [ -t 1 ]; } || { err 'ralphie: interactive chat needs a terminal; use chat "MESSAGE" or run "OBJECTIVE".'; return 2; }
     chat_safe_dir "$HOME_DIR" || { err 'ralphie: unsafe chat path; no files repaired.'; return 1; }
     chat_safe_dir "$HOME_DIR/chat" || return 1
-    # One project-wide supervisor lock, even when history is named.
-    ( umask 077; mkdir "$HOME_DIR/chat/lock" ) 2>/dev/null || { err 'ralphie: chat is locked; inspect stale locks manually.'; return 1; }
+    # One project-wide supervisor lock, even when history is named. A lock
+    # left by a CLOSED terminal must not block a new chat for ever -- that is
+    # exactly what happened to the operator, once, for a whole day. Older
+    # locks wrote only an `owner` token and no pid, so "no pid file" also
+    # means an older dead lock, not a live one.
+    ( umask 077; mkdir "$HOME_DIR/chat/lock" ) 2>/dev/null || {
+        local stale_pid
+        stale_pid="$(cat "$HOME_DIR/chat/lock/pid" 2>/dev/null || true)"
+        if [ -z "$stale_pid" ] || ! is_int "$stale_pid" \
+           || ! { kill -0 "$stale_pid" 2>/dev/null || ps -p "$stale_pid" >/dev/null 2>&1; }; then
+            rm -rf "$HOME_DIR/chat/lock" 2>/dev/null || true
+            ( umask 077; mkdir "$HOME_DIR/chat/lock" ) 2>/dev/null \
+                && warn 'ralphie: recovered a stale chat lock left by a closed terminal.' \
+                || { err 'ralphie: chat is locked; a chat is already open in this project.'; return 1; }
+        else
+            err "ralphie: chat is locked -- a chat is already open in this project (pid $stale_pid)."
+            err '  close that terminal first; if it is gone, remove .ralphie/chat/lock.'
+            return 1
+        fi
+    }
     CHAT_LOCK_PATH="$HOME_DIR/chat/lock"; CHAT_LOCK_TOKEN="$(rand_token)"
     ( set -C; umask 077; printf '%s\n' "$CHAT_LOCK_TOKEN" > "$CHAT_LOCK_PATH/owner" ) || return 1
+    # The pid rides with the token, so a closed terminal cannot wedge chat again.
+    printf '%s\n' "$$" > "$CHAT_LOCK_PATH/pid" 2>/dev/null || true
     trap chat_session_cleanup EXIT
     chat_session_select "$session" initial || return 1
     CHAT_TTY_STATE=""
@@ -13723,6 +13743,85 @@ if out:
 RALPHIE_DIALOG_PY
 }
 
+watch_follow_cli() {
+    # `ralphie.sh watch --follow [ID]` - a live humane tail of the engine's
+    # dialog, the same contract as `tail -f`: it keeps printing until Ctrl-C.
+    # Content comes from dialog_render, so it is already the humane view the
+    # operator asked for: agent text in full, thinking abbreviated, tool calls
+    # one line, tool results truncated. The full transcript always remains
+    # where it always was (.ralphie/run/sessions/<run>/*.jsonl).
+    #
+    # Knobs are the same ones the chat follow uses, so one set tunes both:
+    #   RALPHIE_DIALOG_ARG_CHARS    one-line tool-call argument (default 160)
+    #   RALPHIE_DIALOG_RESULT_CHARS one-line tool result      (default 400)
+    #   RALPHIE_DIALOG_THINKING     1 shows full reasoning    (default 0)
+    #   RALPHIE_DIALOG_TAIL_BYTES   backfill on first attach  (default 65536)
+    have python3 || { err 'python3 is required to render the dialog; showing the console log is the fallback for now.'; return 1; }
+    [ -d "$RUN_DIR/sessions" ] || { err 'no engine session transcripts for this project yet.'; return 1; }
+    local f out off rendered size off_line stop idle f2
+    stop="${RALPHIE_DIALOG_TAIL_BYTES:-65536}"
+    f="$(watch_follow_newest_transcript)" || { err 'no engine session transcripts found yet for this project.'; return 1; }
+    off=0; idle=0; rendered=''
+    chat_say "Following the engine's live dialog. Ctrl-C to exit."
+    chat_say "  transcript: ${f#$RUN_DIR/sessions/}"
+    # First paint: a bounded backfill, so the viewer lands in context.
+    out="$(dialog_render "$f" 0 "$stop")" || out=''
+    if [ -n "$out" ]; then
+        off_line="${out%%$RALPHIE_NL*}"
+        if is_int "$off_line"; then
+            off="$off_line"
+            rendered="${out#*$RALPHIE_NL}"
+            [ "$rendered" = "$off_line" ] && rendered=''
+        else
+            rendered="$out"
+        fi
+        [ -n "$rendered" ] || rendered="  (transcript has no displayable records yet)"
+        printf '%s\n' "$rendered"
+    fi
+    while :; do
+        f2="$(watch_follow_newest_transcript)" || f2=''
+        if [ -n "$f2" ] && [ "$f2" != "$f" ]; then
+            f="$f2"; off=0
+            chat_say "  transcript: ${f#$RUN_DIR/sessions/} (new session)"
+        fi
+        size="$(file_bytes "$f" 2>/dev/null)" || { sleep 1; continue; }
+        # Handled gracefully: the file is still being filled, or was rotated.
+        [ "$size" -le "$off" ] && { sleep 1; continue; }
+        out="$(dialog_render "$f" "$off" 1048576)" || { sleep 1; continue; }
+        off_line="${out%%$RALPHIE_NL*}"
+        if is_int "$off_line"; then
+            off="$off_line"
+            rendered="${out#*$RALPHIE_NL}"
+            [ "$rendered" = "$off_line" ] && rendered=''
+        else
+            rendered="$out"
+        fi
+        [ -n "$rendered" ] && printf '%s\n' "$rendered"
+        idle=$((idle+1)); [ "$idle" -lt 3600 ] || { dim '  (idle for one hour; exiting follow)'; break; }
+        sleep 1
+    done
+}
+
+watch_follow_newest_transcript() {
+    # Newest top-level transcript ANY run in this project produced; the
+    # newest run's newest file wins. Follows are always read-only.
+    local run dir='' f newest='' d
+    for dir in "$RUN_DIR/sessions"/*/; do
+        [ -d "$dir" ] || continue
+        # Only real transcripts at the top level of a run directory count;
+        # session-artifacts/ is a sub-agent tree, not the main thread.
+        case "${dir%/}" in */session-artifacts) continue;; esac
+        for f in "$dir"*.jsonl; do
+            [ -f "$f" ] || continue
+            [ -L "$f" ] && continue
+            [ -z "$newest" ] || [ "$f" -nt "$newest" ] || continue
+            newest="$f"
+        done
+    done
+    [ -n "$newest" ] || return 1
+    printf '%s' "$newest"
+}
+
 chat_dialog_follow() {
     # One tick of the live dialog follow. It runs inside chat_attach's loop, so
     # it inherits that loop's one-turn refusal, TTY requirement, INT trap and
@@ -14597,7 +14696,17 @@ main() {
     project_bind "$PROJECT"
     if [ "$CMD" = chat ]; then chat_command_main "${REST[@]+"${REST[@]}"}"; exit $?; fi
     if [ "$CMD" = discover ]; then cmd_discover; exit $?; fi
-    if [ "$CMD" = watch ]; then worker_watch "${REST[@]+"${REST[@]}"}"; exit $?; fi
+    if [ "$CMD" = watch ]; then
+        case "${REST[0]:-}" in
+            --follow|-f)
+                # Newer arguments may follow; hand the remainder to the follow.
+                REST=( "${REST[@]:1}" )
+                watch_follow_cli "${REST[@]+"${REST[@]}"}"
+                exit $?;;
+        esac
+        worker_watch "${REST[@]+"${REST[@]}"}"
+        exit $?
+    fi
     if [ "$CMD" = stop ] && { [ "${#REST[@]}" -gt 0 ] || worker_regular "$LOCK_FILE/launch"; }; then
         worker_stop "${REST[@]+"${REST[@]}"}"; exit $?
     fi
