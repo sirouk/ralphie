@@ -599,7 +599,9 @@ After `run`, command-looking words such as `status` are objective text. Use
 
 `status --json` normalizes leading zeroes and incomplete decimal notation
 without rounding large counters. Malformed numeric state is reported as zero.
-Since 4.1.1 it also carries `commits`: how many commits this run actually made.
+Since 4.1.1 it also carries `commits`: how many commits this run actually made
+(run-scoped, like `run_tokens` beside it; a run started by an older build
+reports 0 until it commits).
 `{"status":"done","commits":0}` is a run that finished and saved nothing --
 `--no-commit`, or no git repository -- which used to be indistinguishable from
 a run that saved everything.
@@ -943,7 +945,7 @@ So cron and CI can react without parsing text:
 | Code | Meaning |
 |---|---|
 | `0` | Ran to a clean stop: objective met, limit reached, or stopped on request |
-| `1` | Could not start, or a command was refused or could not persist its result |
+| `1` | Could not start, or a command was refused or could not persist its result. Usage errors (an unknown option, `watch --attach` with no terminal) are refused with `1`, never `2`, since 4.1.3 |
 | `2` | Stopped early and needs you: no engine could complete a cycle, or the engine repeated that it cannot proceed, or it repeated that the work is finished on a project with no gate. Never verified, never a pass |
 | `3` | Stalled: several cycles in a row changed nothing, or Ralphie kept circling between two ways of approaching the same unchanged failure |
 | `10`, `11` | Never returned: "objective met" and "out of time" are clean stops, so they exit `0` |

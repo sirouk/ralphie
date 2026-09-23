@@ -3,6 +3,67 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.1.3 — 2026-09-23
+
+A second adversarial retrace, this time aimed at 4.1.1's own fix pass. Seven
+reviews, one surface each; every claim reproduced before it was believed. Four
+of the defects below were introduced by that pass, and two of those were worse
+than what they replaced.
+
+- **A report block is now identified by a per-cycle token, not by position.**
+  4.1.1 refused any reply carrying more than one `<<<RALPHIE ... RALPHIE>>>`
+  block. That also refuses an HONEST engine that restates the format once:
+  measured, the same work cost three times as much and `done` became
+  unreachable, because the warning went to the operator's console and the
+  engine was never told. Each cycle now carries a random token, printed in the
+  prompt; a block carrying it is provably the engine's answer to that prompt,
+  because nothing inside the project can know it. One block is trusted exactly
+  as before. Many blocks with no token take no VERDICT, tell the engine so in
+  the next prompt, and after three such cycles the run stops and hands the
+  operator something to act on, rather than spending the budget in silence.
+- **An unattributable reply no longer swallows the engine's question.** 4.1.1
+  blanked `ask:` along with the verdict, and `consensus_stop` needs blocked AND
+  a question — so it re-broke the hand-over to a human that the same patch had
+  just restored. A question can only help; it can never end a run.
+- **The placeholder refusal covers every template and matches whole lines.** It
+  knew only about `RALPHIE_CONTRACT`, so the continuation prompt's template
+  still wrote its placeholder lesson into MEMORY.md; and matching the wording
+  as a substring made the contract's own prose ("status: done means the
+  objective is fully met") reset a legitimate `done` to progress.
+- **`watch` no longer says it attached to something it never attached to.**
+  4.1.1's `|| true` swallowed a refusal, so a missing session printed "attached
+  to the steerer ... unfettered" and "detached. The steerer keeps running" and
+  exited 0. The attempt and the outcome are now separate lines, and only the
+  code that observed the outcome reports it. An ordinary Ctrl-C detach is no
+  longer announced as a status.
+- **Usage errors are exit 1, not exit 2.** The documented table gives 2 to a run
+  that "stopped early and needs you" — what a cron wrapper pages a human on —
+  and 4.1.1 gave the same code to a mistyped flag. Every documented exit code
+  now has an assertion. Unknown `watch` options are refused wherever they
+  appear, not only in first position.
+- **Settings are validated against the vocabulary their reader actually uses.**
+  4.1.1 guessed ranges: it refused `0` for five timeouts although `budget_cap`
+  documents 0 as "no limit of my own" (ralphie sets `ENGINE_IDLE_TIMEOUT=0`
+  itself), refused `RALPHIE_NOTIFY_WAIT=0`, and range-checked
+  `RALPHIE_DIALOG_THINKING` — a BOOLEAN whose reader accepts `true|yes|on` — as
+  a number. Numbers and booleans are now separate tables, each derived from its
+  reader, with a test per class and an assertion that every entry is a real
+  documented knob (the first draft of the boolean table contained a name this
+  program has never had).
+
+
+---
+
+## 4.1.2 — 2026-09-23
+
+- **`commits` in `status --json` is per RUN**, like `run_tokens` and `run_cost`
+  beside it. 4.1.1 added the field and documented it as per-run while it in fact
+  accumulated for the life of the project, so it could never answer the question
+  it exists for: did THIS run save anything?
+
+
+---
+
 ## 4.1.1 — 2026-09-23
 
 The retrace release. Six adversarial reviews of 4.1.0, one surface each, plus

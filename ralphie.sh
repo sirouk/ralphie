@@ -110,7 +110,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.1.1"
+VERSION="4.1.3"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -362,7 +362,7 @@ STATE_KEYS="cycle engine model request_set objective_hash acceptance_binding acc
     plan_obj plan_sig plan_told \
     panel_runs panel_cycle panel_seconds \
     tokens_spent run_tokens run_cost run_priced start_commit base_branch total_seconds \
-    gates_fingerprint commit_count"
+    gates_fingerprint commit_count cycle_nonce report_unattributed"
 
 state_get() {
     local key="$1" def="${2:-}" line
@@ -908,6 +908,11 @@ run_init() {
     state_set run_tokens 0
     state_set run_cost 0
     state_set run_priced 0
+    # RUN-SCOPED, like the three above it. `commits` answers "did THIS run save
+    # anything", which is the question --no-commit and a gitless project make
+    # ambiguous; a lifetime total cannot answer it, and documenting it as
+    # per-run while it accumulated would have been its own small lie.
+    state_set commit_count 0
     OWNS_RUN=1
 }
 OWNS_RUN=0
@@ -4961,6 +4966,17 @@ EOF
 # case autonomy cannot cover: an engine that pauses on its FINAL turn, or an
 # engine driven one shot at a time. It buys back the work instead of the cycle.
 
+# The continuation's own block template. Declared where parse_report can see
+# it: the placeholder refusal derives what to ignore FROM the templates, and
+# the first version of it hard-coded the contract's wording only, so this
+# template's placeholders still reached MEMORY.md and ASK.md.
+ENGINE_CONTINUE_TEMPLATE='<<<RALPHIE
+status: progress | done | blocked
+summary: one line describing what actually changed
+lesson: one durable fact, or -
+ask: a question only a human can answer, or -
+RALPHIE>>>'
+
 engine_continue_prompt() {
     # engine_continue_prompt <said> <out_file>
     # Deliberately short. A resumed engine still has the whole cycle brief in
@@ -4974,7 +4990,9 @@ engine_continue_prompt() {
         printf 'a review, collect those results NOW and finish the work you started. Do not\n'
         printf 'start it again from the beginning.\n\n'
         printf 'End your reply with the report block, exactly once:\n\n'
-        printf '<<<RALPHIE\nstatus: progress | done | blocked\nsummary: one line describing what actually changed\nlesson: one durable fact, or -\nask: a question only a human can answer, or -\nRALPHIE>>>\n'
+        printf '%s\n' "$ENGINE_CONTINUE_TEMPLATE"
+        # The same token as the cycle it is continuing: this is the same turn.
+        [ -z "${CY_NONCE:-}" ] || printf '\nPut this line inside the block, exactly as written:\n    run: %s\n' "$CY_NONCE"
     } > "$out" 2>/dev/null || return 1
     return 0
 }
@@ -5850,6 +5868,22 @@ build_prompt() {
         [ -n "$c" ] && printf '## STANDING PROJECT INSTRUCTIONS\n%s\n' "$c"
 
         printf '## CONTRACT\n%s\n' "$RALPHIE_CONTRACT"
+        # The token goes in the same breath as the block it belongs to.
+        if [ -n "${CY_NONCE:-}" ]; then
+            printf '\n  Put this line inside the block, exactly as written:\n'
+            printf '      run: %s\n' "$CY_NONCE"
+            printf '  It identifies YOUR report. Text you quote from the repository can look\n'
+            printf '  exactly like a report block; only this line tells them apart.\n'
+        fi
+        # And if the last reply could not be attributed, say so plainly: a loop
+        # that silently downgrades a verdict the engine keeps sending is a loop
+        # that spends the whole budget teaching nobody anything.
+        if [ "$(state_get report_unattributed 0)" != "0" ]; then
+            printf '\n  YOUR LAST REPLY COULD NOT BE ATTRIBUTED. It carried more than one\n'
+            printf '  report block and none of them carried that cycle'"'"'s run: line, so no\n'
+            printf '  verdict was taken from it. End this reply with exactly ONE block and\n'
+            printf '  include the run: line above.\n'
+        fi
         # Tell an engine about a strength only if it actually has it. Advising a
         # single-threaded engine to "delegate in parallel" wastes its attention,
         # which is the same complement rule the engine table follows.
@@ -5872,79 +5906,82 @@ build_prompt() {
 
 REPORT_STATUS=""; REPORT_SUMMARY=""; REPORT_LESSON=""; REPORT_ASK=""
 parse_report() {
-    local f="$1" body
+    local f="$1" body nonce counts picked
     REPORT_STATUS=""; REPORT_SUMMARY=""; REPORT_LESSON=""; REPORT_ASK=""
+    REPORT_BLOCKS=1; REPORT_ATTRIBUTED=1
     [ -f "$f" ] || return 0
     # No block at all is normal for a terse engine. Default to "progress" so a
     # caller never has to distinguish "absent" from "said progress".
     REPORT_STATUS="progress"
-    # Only the LAST complete block, because the contract says the reply ENDS
-    # with it. Concatenating every match and reading the first status in the
-    # last 20 lines let PROJECT TEXT echoed by the engine forge a report: a repo
-    # ended a five-cycle run at cycle 1 as "done" and raised a question in
-    # Ralphie's own voice asking the operator for the production database
-    # password.
-    body="$(awk '/<<<RALPHIE/{buf=""; inb=1}
-                 inb{buf = buf $0 "\n"}
-                 /RALPHIE>>>/{if (inb) {last=buf; inb=0}}
-                 END{printf "%s", last}' "$f" 2>/dev/null)"
-    [ -n "$body" ] || return 0
-    # AMBIGUITY IS NOT AUTHORITY. The contract says the reply ENDS with one
-    # block, so more than one means something else in the reply is shaped like
-    # a report: a quoted file, a pasted log, the contract itself echoed back.
-    # Taking the last one is a guess, and the guess is worth a whole run --
-    # measured: an engine that said "still working, not finished" and then
-    # quoted a NOTES.md containing an old block ended the run at cycle 1 as
-    # "objective complete", exit 0. A terminal claim therefore needs an
-    # unambiguous reply; progress does not, because progress buys another cycle
-    # and cannot end anything.
-    REPORT_BLOCKS="$(awk '/<<<RALPHIE/{inb=1} /RALPHIE>>>/{if(inb){c++; inb=0}} END{print c+0}' "$f" 2>/dev/null)"
+    nonce="${CY_NONCE:-$(state_get cycle_nonce '' 2>/dev/null || printf '')}"
+    # WHICH BLOCK IS THE ENGINE'S? Three answers, in order of how much they
+    # prove, because the two wrong answers each cost a whole run:
+    #   one block            trust it, exactly as every version before this did.
+    #   many, one has the    trust that one. Nothing inside the project can know
+    #     cycle's token      this cycle's token, so the token IS the authorship
+    #                        proof that the old "last block wins" rule only
+    #                        guessed at (measured: a quoted NOTES.md ended a run
+    #                        at cycle 1 as "objective complete").
+    #   many, none has it    take no VERDICT from the reply, say so to the
+    #                        engine in the next prompt, and count it. Refusing
+    #                        the whole reply instead -- 4.1.1 -- also refuses an
+    #                        honest engine that restates the format once, and
+    #                        measured that at three times the cost with `done`
+    #                        permanently unreachable.
+    # One awk pass: "<total> <tab> <token hits>", then the chosen block.
+    counts="$(awk -v nonce="$nonce" '
+        /<<<RALPHIE/ { inb=1; buf="" }
+        inb          { buf = buf $0 "\n" }
+        /RALPHIE>>>/ {
+            if (inb) {
+                n++; last=buf
+                if (nonce != "" && index(buf, nonce) > 0) { hits++; hit=buf }
+                inb=0
+            }
+        }
+        END {
+            printf "%d %d\n", n+0, hits+0
+            printf "%s", (hits == 1 ? hit : last)
+        }' "$f" 2>/dev/null)"
+    [ -n "$counts" ] || return 0
+    # First line: "<blocks> <token hits>". Everything after it: the chosen block.
+    local head hits
+    head="${counts%%$RALPHIE_NL*}"
+    picked="${counts#*$RALPHIE_NL}"
+    [ "$picked" = "$counts" ] && picked=""
+    REPORT_BLOCKS="${head%% *}"; hits="${head##* }"
     is_int "${REPORT_BLOCKS:-}" || REPORT_BLOCKS=1
+    is_int "${hits:-}" || hits=0
+    body="$picked"
+    [ -n "$body" ] || return 0
+    if [ "$REPORT_BLOCKS" -gt 1 ] && [ "$hits" != 1 ]; then REPORT_ATTRIBUTED=0; fi
     REPORT_STATUS="$(printf '%s\n' "$body"  | sed -n 's/^[[:space:]]*status:[[:space:]]*//p'  | sed -n 1p | tr -d '\r')"
     REPORT_SUMMARY="$(printf '%s\n' "$body" | sed -n 's/^[[:space:]]*summary:[[:space:]]*//p' | sed -n 1p | tr -d '\r')"
     REPORT_LESSON="$(printf '%s\n' "$body"  | sed -n 's/^[[:space:]]*lesson:[[:space:]]*//p'  | sed -n 1p | tr -d '\r')"
     REPORT_ASK="$(printf '%s\n' "$body"     | sed -n 's/^[[:space:]]*ask:[[:space:]]*//p'     | sed -n 1p | tr -d '\r')"
     case "$REPORT_LESSON" in -|none|n/a|NA|"") REPORT_LESSON="";; esac
     case "$REPORT_ASK"    in -|none|n/a|NA|"") REPORT_ASK="";; esac
-    # THE TEMPLATE IS NOT A REPORT. The contract Ralphie sends contains a
-    # literal, complete block, so an engine that echoes its own instructions
-    # hands back the placeholder text -- and it was believed: "one durable fact
-    # a future cycle would be glad to already know" was written into MEMORY.md
-    # for ever, and "a specific question only a human can answer" was filed as
-    # a question in Ralphie's own voice. Placeholders are not facts.
-    case "$REPORT_LESSON" in
-        'one durable fact a future cycle would be glad to already know, or -'|\
-        'one durable fact a future cycle would be glad to already know') REPORT_LESSON="";;
-    esac
-    case "$REPORT_ASK" in
-        'a specific question only a human can answer, or -'|\
-        'a specific question only a human can answer') REPORT_ASK="";;
-    esac
-    case "$REPORT_SUMMARY" in
-        'one line describing what actually changed') REPORT_SUMMARY="";;
-    esac
-    case "$REPORT_STATUS" in
-        'progress | done | blocked') REPORT_STATUS="progress";;
-    esac
+    report_drop_placeholders
     case "$(printf '%s' "$REPORT_STATUS" | tr '[:upper:]' '[:lower:]')" in
         done|complete|finished) REPORT_STATUS="done";;
         blocked|stuck)          REPORT_STATUS="blocked";;
         *)                      REPORT_STATUS="progress";;
     esac
-    if [ "$REPORT_BLOCKS" -gt 1 ]; then
+    if [ "$REPORT_ATTRIBUTED" = 0 ]; then
+        # A VERDICT needs authorship; a question does not. Blanking `ask:` here
+        # in 4.1.1 also broke the blocked hand-over that the same patch had just
+        # restored, because consensus_stop requires blocked AND a question.
+        # A question costs nothing to forward and only ever helps the human.
         [ "$REPORT_STATUS" = progress ] || {
-            warn "the reply carries $REPORT_BLOCKS report blocks, so '$REPORT_STATUS' is not taken from it."
-            dim  "  one reply, one block: text that merely LOOKS like a report cannot end a run."
-            event report ambiguous "$REPORT_BLOCKS report blocks in one reply; $REPORT_STATUS not taken" 2>/dev/null || true
+            warn "the reply carries $REPORT_BLOCKS report blocks and none carries this cycle's run: line."
+            dim  "  '$REPORT_STATUS' is not taken from it; the engine is told so in the next prompt."
+            event report unattributed "$REPORT_BLOCKS blocks, no run: line; $REPORT_STATUS not taken" 2>/dev/null || true
             REPORT_STATUS="progress"
         }
-        # The two fields with durable side effects go too: a lesson is written
-        # into MEMORY.md and read by every future prompt, and an ask is filed
-        # as a question in Ralphie's own voice. Neither may come from a reply
-        # that cannot say which of its blocks is the engine's.
-        [ -z "$REPORT_LESSON" ] || dim '  (lesson ignored: the reply had more than one report block)'
-        [ -z "$REPORT_ASK" ]    || dim '  (question ignored: the reply had more than one report block)'
-        REPORT_LESSON=""; REPORT_ASK=""
+        # A durable lesson from a reply we cannot attribute is a fact we cannot
+        # source, and MEMORY.md is read by every future prompt.
+        [ -z "$REPORT_LESSON" ] || dim '  (lesson not stored: the reply could not be attributed)'
+        REPORT_LESSON=""
     fi
     # One field of one reply may not own the ledger, the prompt or the next ten
     # cycles. Measured: a 3 MB summary went verbatim into an event line, and
@@ -5956,6 +5993,54 @@ parse_report() {
     REPORT_ASK="$(report_field_bound "$REPORT_ASK")"
 }
 
+report_attribution_streak() {
+    # A run whose verdicts can never be attributed must END, not spin. The
+    # engine is told in the next prompt (build_prompt), so two more cycles is a
+    # fair chance to comply; after that, continuing would just buy the same
+    # unusable reply at full price. Stopping is the honest outcome and it is
+    # NOT a pass: nothing is marked verified, nothing is called done.
+    local n
+    if [ "${REPORT_ATTRIBUTED:-1}" = 1 ]; then
+        [ "$(state_get report_unattributed 0)" = "0" ] || state_set report_unattributed 0
+        return 0
+    fi
+    n="$(state_get report_unattributed 0)"; is_int "$n" || n=0
+    n=$(( n + 1 ))
+    state_set report_unattributed "$n"
+    [ "$n" -lt 3 ] && return 0
+    err "$n cycles in a row produced a reply whose report block could not be attributed."
+    dim  "  every one of them carried more than one block and none carried the run: line."
+    state_set status blocked
+    state_set reason "the engine's reports could not be attributed for $n cycles"
+    event report halted "unattributable reports on $n consecutive cycles" "streak=$n"
+    ask_human "Ralphie stopped after $n cycles whose replies contained more than one report block and none carried that cycle's run: line, so no verdict could be attributed to the engine. Nothing was marked verified. This usually means the engine quotes text containing a report block, or ignores the run: line. Check the transcript in .ralphie/run/sessions, then: $ME run"
+    return 2
+}
+
+report_drop_placeholders() {
+    # THE TEMPLATE IS NOT A REPORT. Every prompt Ralphie sends contains a
+    # literal, complete block, so an engine that echoes its instructions hands
+    # back the placeholder text -- and it was believed: the placeholder lesson
+    # went into MEMORY.md for ever and the placeholder question was filed as a
+    # real one. Derived from the templates themselves rather than hard-coded,
+    # because the first version of this covered RALPHIE_CONTRACT only and the
+    # continuation prompt sends a DIFFERENT template with the same shape.
+    # WHOLE LINES, not substrings. Matching `status: $REPORT_STATUS` anywhere in
+    # the template also matched the contract's own PROSE -- "status: done means
+    # the objective is fully met" -- and reset a perfectly good `done` to
+    # progress. A placeholder is a LINE of the template, so that is what is
+    # compared, with the template padded so its first and last lines count too.
+    local t nl="$RALPHIE_NL"
+    for t in "$RALPHIE_CONTRACT" "${ENGINE_CONTINUE_TEMPLATE:-}"; do
+        [ -n "$t" ] || continue
+        t="$nl$t$nl"
+        [ -z "$REPORT_LESSON" ]  || case "$t" in *"${nl}lesson: ${REPORT_LESSON}${nl}"*)   REPORT_LESSON="";;   esac
+        [ -z "$REPORT_ASK" ]     || case "$t" in *"${nl}ask: ${REPORT_ASK}${nl}"*)         REPORT_ASK="";;      esac
+        [ -z "$REPORT_SUMMARY" ] || case "$t" in *"${nl}summary: ${REPORT_SUMMARY}${nl}"*) REPORT_SUMMARY="";;  esac
+        [ -z "$REPORT_STATUS" ]  || case "$t" in *"${nl}status: ${REPORT_STATUS}${nl}"*)   REPORT_STATUS="progress";; esac
+    done
+    return 0
+}
 report_field_bound() {
     # 2 KiB is far more than a sentence and far less than a denial of service.
     local v="$1" max="${REPORT_FIELD_MAX:-2048}"
@@ -6039,6 +6124,15 @@ cycle_begin() {
     fi
     state_bump cycle
     CY_N="$(state_get cycle)"
+    # ONE CYCLE, ONE TOKEN. The report block is the only thing in the reply that
+    # can end a run, and text the engine merely QUOTES can be shaped exactly like
+    # one. Nothing inside the project can know this cycle's token, so a block
+    # that carries it is provably the engine's own answer to this prompt. 4.1.1
+    # tried to solve the same problem by refusing every reply with more than one
+    # block, which also refuses an honest engine that restates the format once --
+    # measured: three times the cost and `done` unreachable.
+    CY_NONCE="$(rand_token | cut -c1-8)"
+    state_set cycle_nonce "$CY_NONCE"
     CY_PROMPT="$RUN_DIR/cycle-$CY_N.prompt.md"
     CY_LOG="$LOG_DIR/cycle-$CY_N.log"
     CY_OUT="$RUN_DIR/cycle-$CY_N.answer"
@@ -6565,6 +6659,7 @@ cycle_learn() {
     # Attributed, always. A question relayed from the engine must never look
     # like Ralphie speaking: the same channel was used to phish an operator.
     [ -n "$REPORT_ASK" ]    && ask_human "The engine asks: $REPORT_ASK"
+    report_attribution_streak
 
     # A loop that cannot move the tree will not start moving it by trying
     # harder. Stop and say so, rather than spending the whole budget.
@@ -10317,7 +10412,12 @@ engine_chat_attach() {
     good "attached to the chat engine session. Everything you see is the engine itself."
     dim  "  detach (session keeps running): Ctrl-C or /quit"
     dim  "  end it entirely:                $ME chat --stop"
-    steerer_pa_attach_tui "$name" || true
+    local arc=0
+    steerer_pa_attach_tui "$name" || arc=$?
+    if [ "$arc" = 127 ]; then
+        err "the chat session $name could not be attached."
+        return 1
+    fi
     good "back at the ralphie console."
     dim  "  resume: $ME chat     end: $ME chat --stop"
     return 0
@@ -10654,9 +10754,14 @@ steerer_pa_attach_tui() {
     #        is reset to default in the child, so the TUI still gets its Ctrl-C.
     #   tty  A TUI that dies mid-draw can leave the terminal in raw mode. The
     #        line discipline is saved before the attach and restored after.
+    # 127 means NEVER ATTACHED (no engine, or no live session of that name).
+    # Any other status is the view's own exit. The caller must be able to tell
+    # them apart: 4.1.1 wrapped this call in `|| true`, so a refusal printed
+    # "attached to the steerer ... unfettered" and then "detached. The steerer
+    # keeps running", exit 0 -- two claims about something that never happened.
     local bin rc=0 prev_int tty_state=""
-    bin="$(steerer_bin prime-agent)" || return 1
-    steerer_pa_id "$1" >/dev/null 2>&1 || { err "no live steerer named $1"; return 1; }
+    bin="$(steerer_bin prime-agent)" || return 127
+    steerer_pa_id "$1" >/dev/null 2>&1 || { err "no live steerer named $1"; return 127; }
     prev_int="$(trap -p INT 2>/dev/null || printf '')"
     [ -t 0 ] && tty_state="$(stty -g < /dev/tty 2>/dev/null)" || tty_state=""
     trap ':' INT
@@ -10667,9 +10772,11 @@ steerer_pa_attach_tui() {
     "$bin" attach "$1" || rc=$?
     if [ -n "$prev_int" ]; then eval "$prev_int" 2>/dev/null || trap - INT; else trap - INT; fi
     [ -z "$tty_state" ] || stty "$tty_state" < /dev/tty 2>/dev/null || true
-    # Detaching is not failing: the caller returns to the console either way.
-    [ "$rc" -eq 0 ] || dim "  (the engine view ended with status $rc)"
-    return 0
+    # Detaching is not failing. 0 is a clean exit, 130 is Ctrl-C and 143 is a
+    # TERM: all three are ordinary ways to leave a view, and announcing them as
+    # a status made the routine act of pressing Ctrl-C read like a fault.
+    case "$rc" in 0|130|143) ;; *) dim "  (the engine view ended with status $rc)";; esac
+    return "$rc"
 }
 
 steerer_pa_logs() {
@@ -12509,23 +12616,46 @@ config_unquote() {
 # proves it), so a range that refused 0 would have broken four documented
 # switches. A knob whose real vocabulary is unclear stays out of this list.
 CONFIG_NUMERIC="
-ENGINE_TIMEOUT:1:86400 ENGINE_IDLE_TIMEOUT:1:86400 ENGINE_OUTPUT_MAX_BYTES:1024:1073741824
+ENGINE_TIMEOUT:0:86400 ENGINE_IDLE_TIMEOUT:0:86400 ENGINE_OUTPUT_MAX_BYTES:1024:1073741824
 ENGINE_RETRIES:1:20 ENGINE_BACKOFF:0:3600 ENGINE_MAX_TURNS:1:1000 ENGINE_MAX_CONT:0:100
-RALPHIE_DIALOG_THINKING:0:1
 ENGINE_MAX_TOKENS:1:100000000 ENGINE_CONTINUE_MAX:0:100
-GATE_TIMEOUT:1:86400 GATE_RETRIES:0:20 GATE_TRIAL_TIMEOUT:1:86400
+GATE_TIMEOUT:0:86400 GATE_RETRIES:0:20 GATE_TRIAL_TIMEOUT:0:86400
 GATE_BRIEF_BYTES:64:1048576 GATE_LOG_MAX:1024:1073741824
-COMMIT_TIMEOUT:1:86400 NOCHANGE_LIMIT:0:1000 STAGNATION_LIMIT:0:1000
+COMMIT_TIMEOUT:0:86400 NOCHANGE_LIMIT:0:1000 STAGNATION_LIMIT:0:1000
 OSCILLATION_LIMIT:0:1000 RETREAT_LIMIT:0:1000 CONSENSUS_LIMIT:0:1000
 MEMORY_MAX:1:100000 MIN_ANSWER_BYTES:1:1048576
 RALPHIE_MAX_COMMIT_BYTES:1:1099511627776 RALPHIE_MIN_UPDATE_BYTES:1:1099511627776
-RALPHIE_CHAT_TIMEOUT:1:300 RALPHIE_KEEP_CYCLES:1:100000 RALPHIE_KEEP_RUNS:1:100000
+RALPHIE_CHAT_TIMEOUT:0:300 RALPHIE_KEEP_CYCLES:1:100000 RALPHIE_KEEP_RUNS:1:100000
 RALPHIE_LEDGER_MAX:1024:1073741824 RALPHIE_LEDGER_GENERATIONS:1:1000
-RALPHIE_NOTIFY_WAIT:1:3600 RALPHIE_SETUP_TIMEOUT:1:3600
+RALPHIE_NOTIFY_WAIT:0:3600 RALPHIE_SETUP_TIMEOUT:0:3600
 RALPHIE_DIALOG_ARG_CHARS:16:4000 RALPHIE_DIALOG_RESULT_CHARS:16:8000
-RALPHIE_DIALOG_TAIL_BYTES:0:1073741824 RALPHIE_STEERER_WAIT:1:600
-RALPHIE_STEERER_MAILBOX_MAX:1:100000 PREFLIGHT_TIMEOUT:1:3600
+RALPHIE_DIALOG_TAIL_BYTES:0:1073741824 RALPHIE_STEERER_WAIT:0:600
+RALPHIE_STEERER_MAILBOX_MAX:1:100000 PREFLIGHT_TIMEOUT:0:3600
 "
+
+# Settings whose value is a YES/NO, validated against the SAME vocabulary
+# `is_true` reads. They are not numbers: RALPHIE_DIALOG_THINKING=true is
+# documented, its reader accepts 1|true|yes|y|on, and range-checking it as
+# 0..1 -- which 4.1.1 did -- refused a spelling this program tells people to
+# use. A junk boolean is still worth refusing, because `ture` silently means
+# "off" and an operator who typed it believes the opposite.
+CONFIG_BOOLEAN="
+RALPHIE_VERBOSE RALPHIE_QUIET RALPHIE_RAILS RALPHIE_GIT_INIT RALPHIE_CONFIG
+RALPHIE_SETUP RALPHIE_SETUP_DONE RALPHIE_DIALOG_THINKING RALPHIE_ENGINE_NEWEST
+RALPHIE_ENGINE_SESSION RALPHIE_WS_SUBMODULES RALPHIE_CONFIG
+"
+
+config_is_boolean() {
+    case " $(printf '%s' "$CONFIG_BOOLEAN" | tr '\n' ' ') " in *" $1 "*) return 0;; esac
+    return 1
+}
+
+config_boolean_ok() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|y|on|0|false|no|n|off) return 0;;
+    esac
+    return 1
+}
 
 config_env_numeric_guard() {
     # Any numeric setting that survived to this point with an unusable value
@@ -12540,6 +12670,14 @@ config_env_numeric_guard() {
         lo="${range%% *}"; hi="${range##* }"
         if ! is_int "$val" || [ "$val" -lt "$lo" ] || [ "$val" -gt "$hi" ]; then
             warn "$name=$val is not a number between $lo and $hi; using the built-in default"
+            unset "$name" 2>/dev/null || true
+        fi
+    done
+    for name in $CONFIG_BOOLEAN; do
+        eval "val=\${$name:-}"
+        [ -n "$val" ] || continue
+        if ! config_boolean_ok "$val"; then
+            warn "$name=$val is not yes or no (1|true|yes|on / 0|false|no|off); using the built-in default"
             unset "$name" 2>/dev/null || true
         fi
     done
@@ -12571,6 +12709,10 @@ config_value_ok() {
         lo="${range%% *}"; hi="${range##* }"
         is_int "$val" || return 1
         [ "$val" -ge "$lo" ] && [ "$val" -le "$hi" ] || return 1
+        return 0
+    fi
+    if config_is_boolean "$key"; then
+        config_boolean_ok "$val" || return 1
         return 0
     fi
     case "$key" in
@@ -14431,8 +14573,17 @@ watch_follow_cli() {
 
 watch_attach_now() {
     # The socket itself: everything on screen from here is the engine.
-    good "attached to the steerer ($1) unfettered. Detach anytime: Ctrl-C."
-    steerer_pa_attach_tui "$1" || true
+    # Nothing here announces an outcome it has not observed: the line before
+    # the attach says what is being ATTEMPTED, and only the line after it
+    # reports what happened.
+    local rc=0
+    dim "attaching to the steerer ($1), unfettered. Detach anytime: Ctrl-C."
+    steerer_pa_attach_tui "$1" || rc=$?
+    if [ "$rc" = 127 ]; then
+        err "could not attach to $1; nothing was shown."
+        dim "  is it still live?  $ME steerer status"
+        return 1
+    fi
     good "detached. The steerer keeps running (logs: $ME steerer logs; stop: $ME steerer stop)."
     return 0
 }
@@ -15389,6 +15540,20 @@ main() {
     if [ "$CMD" = chat ]; then chat_command_main "${REST[@]+"${REST[@]}"}"; exit $?; fi
     if [ "$CMD" = discover ]; then cmd_discover; exit $?; fi
     if [ "$CMD" = watch ]; then
+        # EVERY argument, not only the first. The 4.1.1 guard inspected
+        # REST[0] alone, so `watch --attach --bogus` sailed past it and came
+        # out as "launch --bogus named:".
+        for __w in "${REST[@]+"${REST[@]}"}"; do
+            case "$__w" in
+                --follow|-f|--attach|-a|--engine) ;;
+                -*) err "unknown option for watch: $__w"
+                    dim  "  watch [ID]        bounded snapshot (or attach on a terminal)"
+                    dim  "  watch --follow    live humane tail of the engine dialog"
+                    dim  "  watch --attach    attach, starting a steerer if none is live"
+                    exit 1;;
+            esac
+        done
+        unset __w
         case "${REST[0]:-}" in
             --follow|-f)
                 REST=( "${REST[@]:1}" )
@@ -15405,7 +15570,11 @@ main() {
                     err "watch --attach needs a terminal; it starts and shows a live agent."
                     dim  "  for a pipe or CI use:  $ME watch        (bounded snapshot)"
                     dim  "  for a live text tail:  $ME watch --follow"
-                    exit 2
+                    # 1, not 2. The documented table gives 2 to a RUN that
+                    # "stopped early and needs you", which is what a cron
+                    # wrapper pages a human on; a typed flag that cannot work
+                    # here is "a command was refused", which is 1.
+                    exit 1
                 fi
                 watch_attach_cli 1 "${REST[@]+"${REST[@]}"}"
                 exit $?;;
@@ -15422,7 +15591,7 @@ main() {
                 dim  "  watch [ID]        bounded snapshot (or attach on a terminal)"
                 dim  "  watch --follow    live humane tail of the engine dialog"
                 dim  "  watch --attach    attach, starting a steerer if none is live"
-                exit 2;;
+                exit 1;;
             *)
                 # On a terminal, watch = attach to the live steerer, unfiltered.
                 # Everything the engine shows is the engine itself. Detach with
