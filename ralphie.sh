@@ -110,7 +110,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.1.0"
+VERSION="4.1.1"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -169,6 +169,11 @@ project_bind() {
     # reads a knob, but after parse_args, so the flag an operator just typed is
     # already in hand and outranks the file. Writes nothing.
     config_load
+    # The file is not the only source of junk: `GATE_TIMEOUT=abc ralphie.sh
+    # run` silently removed the gate watchdog for the whole run. The
+    # environment is the operator's own, so this says what it did rather than
+    # refusing to start, but it never lets an unusable number through.
+    config_env_numeric_guard
     config_apply
 }
 
@@ -356,7 +361,8 @@ STATE_KEYS="cycle engine model request_set objective_hash acceptance_binding acc
     retreat_level stagnation_sig stagnation_streak retreat_pair retreat_pair_count \
     plan_obj plan_sig plan_told \
     panel_runs panel_cycle panel_seconds \
-    tokens_spent run_tokens run_cost run_priced start_commit base_branch total_seconds"
+    tokens_spent run_tokens run_cost run_priced start_commit base_branch total_seconds \
+    gates_fingerprint commit_count"
 
 state_get() {
     local key="$1" def="${2:-}" line
@@ -387,12 +393,7 @@ state_set() {
     # all of it silent, because each individual write "succeeded".
     [ -e "$STATE_FILE" ] && [ ! -f "$STATE_FILE" ] && ensure_state_file
     lk="$STATE_FILE.lock"
-    while ! mkdir "$lk" 2>/dev/null; do
-        tries=$((tries+1))
-        # Bounded: a crashed writer must never wedge the loop forever.
-        [ "$tries" -ge 30 ] && { rm -rf "$lk" 2>/dev/null; mkdir "$lk" 2>/dev/null || break; break; }
-        sleep 1
-    done
+    state_lock
     tmp="$STATE_FILE.tmp.$$.$(rand_token | cut -c1-6)"
     { [ -f "$STATE_FILE" ] && grep -vE "^${key}=" "$STATE_FILE" 2>/dev/null || true
       printf '%s=%s\n' "$key" "$val"
@@ -406,7 +407,7 @@ state_set() {
     # key that was just written; otherwise the previous state is left alone.
     if ! grep -qE "^${key}=" "$tmp" 2>/dev/null; then
         rm -rf "$tmp" 2>/dev/null || true
-        rmdir "$lk" 2>/dev/null || true
+        state_unlock
         dbg "incomplete state write for $key (out of space?); keeping the previous state"
         return 0
     fi
@@ -417,7 +418,11 @@ state_set() {
     elif [ -e "$STATE_FILE" ] && [ ! -f "$STATE_FILE" ]; then
         # The state file was replaced by a DIRECTORY. Repair it in place.
         rm -rf "$STATE_FILE" "$tmp" 2>/dev/null || true
-        { printf '%s\n' "$key" "$val"; } > "$STATE_FILE" 2>/dev/null || true
+        # `printf '%s\n' "$key" "$val"` wrote TWO lines -- "key" then "value" --
+        # so the repaired file held no `key=value` at all and every later read
+        # of it returned the default. The repair must write the same format
+        # every other writer does.
+        printf '%s=%s\n' "$key" "$val" > "$STATE_FILE" 2>/dev/null || true
     else
         # The rename failed with a real regular file still on disk. Deleting it
         # to "retry" is how the whole state was lost: the retry needs the same
@@ -425,7 +430,7 @@ state_set() {
         rm -rf "$tmp" 2>/dev/null || true
         dbg "state replacement failed for $key; keeping the previous state"
     fi
-    rmdir "$lk" 2>/dev/null || true
+    state_unlock
 }
 
 # --- durability ---------------------------------------------------------------
@@ -457,9 +462,54 @@ durable_cycle_sync() {
 }
 
 state_bump() {
+    # READ AND WRITE UNDER ONE LOCK. state_set's mutex protected the write
+    # only, so two processes could both read 30 and both write 31: measured,
+    # two writers x 60 bumps left pass_count at 60 instead of 120. A counter
+    # that silently loses half its increments is worse than no counter.
     local key="$1" by="${2:-1}" cur
+    state_lock
     cur="$(state_get "$key" 0)"; is_int "$cur" || cur=0
     state_set "$key" "$(( cur + by ))"
+    state_unlock
+}
+
+STATE_LOCK_DEPTH=0
+state_lock() {
+    # Reentrant, bounded, and liveness-aware.
+    #   reentrant  state_bump holds it across a read-modify-write that calls
+    #              state_set, which takes it again.
+    #   liveness   the old mutex stole the directory after 30 seconds no matter
+    #              who held it, so a slow-but-live writer was robbed; and a
+    #              crashed writer left it behind for ever, which cost a
+    #              measured 34-second `status`. The holder's pid decides.
+    local lk="$STATE_FILE.lock" tries=0 holder
+    if [ "${STATE_LOCK_DEPTH:-0}" -gt 0 ]; then STATE_LOCK_DEPTH=$((STATE_LOCK_DEPTH+1)); return 0; fi
+    while ! mkdir "$lk" 2>/dev/null; do
+        holder="$(worker_metadata "$lk/pid" 30 2>/dev/null || printf '')"
+        if [ -n "$holder" ] && is_int "$holder" &&
+           ! kill -0 "$holder" 2>/dev/null && ! ps -p "$holder" >/dev/null 2>&1; then
+            # The writer is gone. Its mutex goes with it, at once.
+            rm -rf "$lk" 2>/dev/null || true
+            continue
+        fi
+        tries=$((tries+1))
+        # A holder with no pid recorded yet is treated as live, but never for
+        # longer than this: an interrupted writer must not wedge the loop.
+        [ "$tries" -ge 30 ] && { rm -rf "$lk" 2>/dev/null || true; mkdir "$lk" 2>/dev/null || break; break; }
+        sleep 1
+    done
+    printf '%s\n' "$$" > "$lk/pid" 2>/dev/null || true
+    STATE_LOCK_DEPTH=1
+    return 0
+}
+
+state_unlock() {
+    local lk="$STATE_FILE.lock"
+    [ "${STATE_LOCK_DEPTH:-0}" -gt 0 ] || return 0
+    STATE_LOCK_DEPTH=$((STATE_LOCK_DEPTH-1))
+    [ "$STATE_LOCK_DEPTH" -eq 0 ] || return 0
+    rm -rf "$lk" 2>/dev/null || true
+    return 0
 }
 
 event() {
@@ -612,6 +662,10 @@ ensure_state_file() {
     # but loses its cycle numbers, its recovery point and its counters while
     # still reporting success. Measured: a run committed real work under
     # "cycle  " with "no commits yet" as its undo point. Repair, never run blind.
+    # Whether a repair happened is remembered, because the repair DESTROYS the
+    # evidence the schema guard needs: after it, the file is a normal empty
+    # state file with no stamp, indistinguishable from a brand-new project.
+    if [ -e "$STATE_FILE" ] && [ ! -f "$STATE_FILE" ]; then STATE_WAS_UNUSABLE=1; fi
     ensure_own_file "$STATE_FILE" "state file"
 }
 
@@ -739,6 +793,18 @@ schema_adopt() {
     # RUNS LAST in ledger_init, after any rebuild from the ledger, so what is
     # stamped is the state this build actually intends to use.
     local have known="$STATE_SCHEMA" k
+    # A state file that is not a regular file has no readable stamp, so the
+    # downgrade refusal -- the one guard that keeps an older build from
+    # silently dropping a newer build's keys -- simply does not fire. Replacing
+    # .ralphie/state with a DIRECTORY is a case this program repairs on
+    # purpose, and the repair runs FIRST, so by the time this is reached the
+    # file looks brand new. The repair leaves word that it happened.
+    if [ "${STATE_WAS_UNUSABLE:-0}" = 1 ]; then
+        warn "$STATE_FILE is not a regular file; its schema stamp cannot be read."
+        dim  "  it will be repaired, and this build ($known) will stamp it as its own."
+        dim  "  if a NEWER ralphie wrote this directory, stop and update first:  $ME update"
+        event schema unverified "state was not a regular file; schema could not be read"
+    fi
     have="$(state_get schema '')"
     if [ -z "$have" ]; then
         # No stamp is schema 1: either a brand-new directory or a 3.1.x one.
@@ -1042,9 +1108,14 @@ LOCK_TOKEN=""
 # prevent, not the cure for it.
 LOCK_LOST=0
 lock_matches() {
+    # NEVER a bare `cat` on lock metadata. A planted FIFO at .ralphie/lock/pid
+    # parks whoever opens it, for ever: worker_admit has refused ambiguous lock
+    # metadata for exactly this reason since 4.0, while the readers here, in
+    # `status`, in `run` and in this very cycle-boundary check still opened it
+    # blind. One guarded reader, everywhere.
     [ "$LOCK_HELD" = 1 ] && [ ! -L "$LOCK_FILE" ] &&
-        [ "$(cat "$LOCK_FILE/pid" 2>/dev/null)" = "$$" ] &&
-        [ "$(cat "$LOCK_FILE/token" 2>/dev/null)" = "$LOCK_TOKEN" ]
+        [ "$(worker_metadata "$LOCK_FILE/pid" 30 || printf '')" = "$$" ] &&
+        [ "$(worker_metadata "$LOCK_FILE/token" 128 || printf '')" = "$LOCK_TOKEN" ]
 }
 
 lock_acquire() {
@@ -1070,7 +1141,7 @@ lock_acquire() {
         sleep 0.1
     done
     if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
-        stale_pid="$(cat "$LOCK_FILE/pid" 2>/dev/null || true)"
+        stale_pid="$(worker_metadata "$LOCK_FILE/pid" 30 2>/dev/null || true)"
         if [ -L "$LOCK_FILE" ] || [ ! -d "$LOCK_FILE" ] ||
            ! is_int "$stale_pid" || [ "$stale_pid" = 0 ]; then
             err "ambiguous lock: $LOCK_FILE; stop all launchers/workers before manual recovery"
@@ -2015,6 +2086,37 @@ gates_list() {
 # through count_of rather than directly (see AGENTS.md).
 gates_count() { count_of gates_list; }
 
+gates_fingerprint() {
+    # A stable identity for the gate SET, so a change between runs is visible.
+    # guard_gates defends a run in progress; across runs the only witness was
+    # .ralphie/gates.baseline, which lives beside .ralphie/gates and is
+    # refreshed from it every clean cycle -- so rewriting both between runs
+    # replaced "what working means" with no warning anywhere. This cannot stop
+    # that (an operator may legitimately change gates), but nothing silent is
+    # allowed to change the meaning of "verified".
+    local scratch
+    scratch="$RUN_DIR/.gates.fp.$$"
+    mkdir -p "$RUN_DIR" 2>/dev/null || true
+    gates_list > "$scratch" 2>/dev/null || true
+    LC_ALL=C sort "$scratch" > "$scratch.s" 2>/dev/null || true
+    printf '%s' "$(sha_of < "$scratch.s" 2>/dev/null || printf 'unknown')"
+    rm -f "$scratch" "$scratch.s" 2>/dev/null || true
+}
+
+gates_fingerprint_check() {
+    # Called once per run, after the gates are known.
+    local now before
+    now="$(gates_fingerprint)"
+    [ -n "$now" ] || return 0
+    before="$(state_get gates_fingerprint '')"
+    state_set gates_fingerprint "$now"
+    [ -n "$before" ] && [ "$before" != "$now" ] || return 0
+    warn "the gate set changed since the last run here."
+    dim  "  what counts as working is different now: $ME gates"
+    event gate changed "gate set changed between runs" "before=$before" "after=$now"
+    return 0
+}
+
 run_gates() {
     # The single source of truth for "is it working". Returns 0 only if every
     # gate passes. Writes per-gate output for the next prompt to learn from.
@@ -2548,6 +2650,7 @@ release_owned_paths() {
         printf '%s\0' "$rec" >> "$kept"
     done < "$OWNED_FILE"
     mv -f "$kept" "$OWNED_FILE" 2>/dev/null || rm -f "$kept" 2>/dev/null
+    owned_seal
     rm -f "$dirty" 2>/dev/null || true
     return 0
 }
@@ -2603,6 +2706,7 @@ record_owned_paths() {
         printf '%s\t%s\0' "$(path_fingerprint "$p")" "$p" >> "$OWNED_FILE"
     done < "$tmp"
     rm -f "$tmp" 2>/dev/null || true
+    owned_seal
 }
 
 pre_dirty_count() {
@@ -2704,6 +2808,40 @@ record_recovery_point() {
     event git recovery "run starts at $sha" "sha=$sha"
 }
 
+owned_seal() {
+    # The exclusion list was sealed; its INPUT was not. `owned.nul` decides
+    # which dirty paths are RALPHIE's rather than the operator's, so one forged
+    # "<fingerprint>\t<path>" record drops the operator's in-flight file out of
+    # protection and straight into the next commit -- silently, because the
+    # "N path(s) were already modified" line simply stops being printed. The
+    # engine has tool authority over .ralphie/, so the seal is taken when the
+    # cycle's snapshot is taken and checked again before anything is committed.
+    OWNED_SEAL="$(owned_count):$(owned_sha)"
+}
+
+owned_sha() {
+    # The file legitimately does not exist yet on most cycles. Reading it
+    # anyway made the shell print "No such file or directory" into the
+    # operator's console -- and into the one assertion that proves deleting
+    # .ralphie mid-cycle does not break a run.
+    [ -n "${OWNED_FILE:-}" ] && [ -f "$OWNED_FILE" ] || { printf 'none'; return 0; }
+    sha_of < "$OWNED_FILE" 2>/dev/null || printf 'none'
+}
+
+owned_count() {
+    [ -n "${OWNED_FILE:-}" ] && [ -f "$OWNED_FILE" ] || { printf '0'; return 0; }
+    local n; n="$(tr '\0' '\n' < "$OWNED_FILE" 2>/dev/null | grep -c . 2>/dev/null)" || n=0
+    is_int "$n" || n=0
+    printf '%s' "$n"
+}
+
+owned_intact() {
+    # Ralphie's OWN writes re-seal as they go, so a mismatch here means the
+    # file changed by some other hand during the cycle.
+    [ -n "${OWNED_SEAL:-}" ] || return 0
+    [ "$(owned_count):$(owned_sha)" = "$OWNED_SEAL" ]
+}
+
 pre_dirty_seal() {
     # POSITIVE PROOF, not another negative test. Three rounds of review each
     # produced a guard that asked "is the exclusion list damaged?" -- first
@@ -2749,6 +2887,11 @@ snapshot_pre_dirty() {
     # excluded its own verified work from its commit.
     PRE_DIRTY_FILE="$RUN_DIR/pre-dirty.$$.nul"
     OWNED_FILE="$HOME_DIR/owned.nul"
+    # Sealed as the cycle's snapshot is taken, so a change made while the
+    # engine works is visible at commit time. A file that arrived before this
+    # process started cannot be verified by anything inside the project, and
+    # this does not pretend otherwise: it bounds the engine's window.
+    owned_seal
     # What the operator has STAGED, which is different from what they have
     # modified. These paths are the ones the private-index commit must leave
     # alone afterwards, because a staged revision can exist nowhere else.
@@ -3286,6 +3429,10 @@ git_commit_cycle() {
     resync_operator_index
     local sha; sha="$(git -C "$PROJECT" rev-parse --short HEAD 2>/dev/null || printf '?')"
     good "committed $sha  $(head -1 < <(printf '%s' "$msg"))"
+    # Counted, because "done" and "done and saved nothing" were the same line
+    # of JSON: --no-commit (or a gitless run) produced an identical
+    # {"status":"done",...} with the work still only on disk.
+    state_bump commit_count 1
     event commit ok "$msg" "sha=$sha"
     warn_protected_unsaved
 }
@@ -3432,6 +3579,17 @@ index_holds_our_work_only() {
     # index is EMPTY. So "not quiet" -- the `||` branch -- means there IS
     # something staged, which is the good case, and the function returns 0.
     local idx="$1"
+    # The ownership list decided what was excluded from this index. If it
+    # changed during the cycle, the index was built on a claim nobody can
+    # stand behind, so nothing is committed from it. Work stays on disk: that
+    # is recoverable, and a wrong commit of the operator's in-flight file is not.
+    if ! owned_intact; then
+        rm -f "$idx" 2>/dev/null || true
+        err "the ownership record changed during this cycle; nothing is committed from it."
+        dim "  your work is on disk and untouched. Review .ralphie/owned.nul before the next run."
+        event commit blocked "owned.nul changed during the cycle; the commit index is not trusted"
+        return 1
+    fi
     ( cd "$(git_top)" && GIT_INDEX_FILE="$idx" git diff --cached --quiet ) || return 0
     # The gates passed on a tree that includes the operator's uncommitted
     # edits, but those edits are not Ralphie's to commit -- and when the agent
@@ -5207,6 +5365,7 @@ retreat_note() {
                 ;;
         esac
         printf '\nThat evidence is the work for this cycle. Report status: progress.\n'
+        retreat_blocked_exception
         return 0
     fi
     printf 'A re-plan did not help either, so the approach itself, or the way the work\n'
@@ -5217,6 +5376,23 @@ retreat_note() {
     printf 'decision is genuinely required before anything can move, put that single\n'
     printf 'question in ask:.\n'
     printf '\nThat statement is the work for this cycle. Report status: progress.\n'
+    retreat_blocked_exception
+}
+
+retreat_blocked_exception() {
+    # A retreat and a genuine dead end are different things, and the retreat
+    # note used to end the argument by ORDERING "Report status: progress." --
+    # including to an engine that had just reported blocked with a real
+    # question. The blocked stop needs two consecutive blocked reports, so that
+    # instruction made the documented "two cycles of blocked WITH an ask hands
+    # the run to a human" unreachable for exactly the engines it was written
+    # for: the streak reset every other cycle, for ever, at full price.
+    [ "$(state_get consensus_claim '')" = blocked ] || return 0
+    printf '\nEXCEPTION: you reported blocked last cycle with a question. If that\n'
+    printf 'question is still unanswered and nothing above can be done without it,\n'
+    printf 'report blocked again and repeat the SAME question. A second identical\n'
+    printf 'report is what hands this run to a human, and that is the right outcome\n'
+    printf 'here -- it is not a failure, and it costs nobody another paid cycle.\n'
 }
 
 select_stance() {
@@ -5713,17 +5889,80 @@ parse_report() {
                  /RALPHIE>>>/{if (inb) {last=buf; inb=0}}
                  END{printf "%s", last}' "$f" 2>/dev/null)"
     [ -n "$body" ] || return 0
+    # AMBIGUITY IS NOT AUTHORITY. The contract says the reply ENDS with one
+    # block, so more than one means something else in the reply is shaped like
+    # a report: a quoted file, a pasted log, the contract itself echoed back.
+    # Taking the last one is a guess, and the guess is worth a whole run --
+    # measured: an engine that said "still working, not finished" and then
+    # quoted a NOTES.md containing an old block ended the run at cycle 1 as
+    # "objective complete", exit 0. A terminal claim therefore needs an
+    # unambiguous reply; progress does not, because progress buys another cycle
+    # and cannot end anything.
+    REPORT_BLOCKS="$(awk '/<<<RALPHIE/{inb=1} /RALPHIE>>>/{if(inb){c++; inb=0}} END{print c+0}' "$f" 2>/dev/null)"
+    is_int "${REPORT_BLOCKS:-}" || REPORT_BLOCKS=1
     REPORT_STATUS="$(printf '%s\n' "$body"  | sed -n 's/^[[:space:]]*status:[[:space:]]*//p'  | sed -n 1p | tr -d '\r')"
     REPORT_SUMMARY="$(printf '%s\n' "$body" | sed -n 's/^[[:space:]]*summary:[[:space:]]*//p' | sed -n 1p | tr -d '\r')"
     REPORT_LESSON="$(printf '%s\n' "$body"  | sed -n 's/^[[:space:]]*lesson:[[:space:]]*//p'  | sed -n 1p | tr -d '\r')"
     REPORT_ASK="$(printf '%s\n' "$body"     | sed -n 's/^[[:space:]]*ask:[[:space:]]*//p'     | sed -n 1p | tr -d '\r')"
     case "$REPORT_LESSON" in -|none|n/a|NA|"") REPORT_LESSON="";; esac
     case "$REPORT_ASK"    in -|none|n/a|NA|"") REPORT_ASK="";; esac
+    # THE TEMPLATE IS NOT A REPORT. The contract Ralphie sends contains a
+    # literal, complete block, so an engine that echoes its own instructions
+    # hands back the placeholder text -- and it was believed: "one durable fact
+    # a future cycle would be glad to already know" was written into MEMORY.md
+    # for ever, and "a specific question only a human can answer" was filed as
+    # a question in Ralphie's own voice. Placeholders are not facts.
+    case "$REPORT_LESSON" in
+        'one durable fact a future cycle would be glad to already know, or -'|\
+        'one durable fact a future cycle would be glad to already know') REPORT_LESSON="";;
+    esac
+    case "$REPORT_ASK" in
+        'a specific question only a human can answer, or -'|\
+        'a specific question only a human can answer') REPORT_ASK="";;
+    esac
+    case "$REPORT_SUMMARY" in
+        'one line describing what actually changed') REPORT_SUMMARY="";;
+    esac
+    case "$REPORT_STATUS" in
+        'progress | done | blocked') REPORT_STATUS="progress";;
+    esac
     case "$(printf '%s' "$REPORT_STATUS" | tr '[:upper:]' '[:lower:]')" in
         done|complete|finished) REPORT_STATUS="done";;
         blocked|stuck)          REPORT_STATUS="blocked";;
         *)                      REPORT_STATUS="progress";;
     esac
+    if [ "$REPORT_BLOCKS" -gt 1 ]; then
+        [ "$REPORT_STATUS" = progress ] || {
+            warn "the reply carries $REPORT_BLOCKS report blocks, so '$REPORT_STATUS' is not taken from it."
+            dim  "  one reply, one block: text that merely LOOKS like a report cannot end a run."
+            event report ambiguous "$REPORT_BLOCKS report blocks in one reply; $REPORT_STATUS not taken" 2>/dev/null || true
+            REPORT_STATUS="progress"
+        }
+        # The two fields with durable side effects go too: a lesson is written
+        # into MEMORY.md and read by every future prompt, and an ask is filed
+        # as a question in Ralphie's own voice. Neither may come from a reply
+        # that cannot say which of its blocks is the engine's.
+        [ -z "$REPORT_LESSON" ] || dim '  (lesson ignored: the reply had more than one report block)'
+        [ -z "$REPORT_ASK" ]    || dim '  (question ignored: the reply had more than one report block)'
+        REPORT_LESSON=""; REPORT_ASK=""
+    fi
+    # One field of one reply may not own the ledger, the prompt or the next ten
+    # cycles. Measured: a 3 MB summary went verbatim into an event line, and
+    # history_brief's per-character decoder then took more than 100s per cycle
+    # and rotated five ledger generations away. Display and evidence both fit
+    # in a bounded line; the whole answer is always in the transcript.
+    REPORT_SUMMARY="$(report_field_bound "$REPORT_SUMMARY")"
+    REPORT_LESSON="$(report_field_bound "$REPORT_LESSON")"
+    REPORT_ASK="$(report_field_bound "$REPORT_ASK")"
+}
+
+report_field_bound() {
+    # 2 KiB is far more than a sentence and far less than a denial of service.
+    local v="$1" max="${REPORT_FIELD_MAX:-2048}"
+    is_int "$max" && [ "$max" -ge 64 ] || max=2048
+    [ "${#v}" -le "$max" ] && { printf '%s' "$v"; return 0; }
+    printf '%s... [truncated %s of %s characters; the full text stays in the transcript]' \
+        "$(printf '%s' "$v" | cut -c1-"$max")" "$(( ${#v} - max ))" "${#v}"
 }
 
 remember() {
@@ -7695,6 +7934,9 @@ loop() {
     fi
     state_set status running
     spend_limits_check
+    # What "working" means, recorded per run. A change between runs is the
+    # operator's right; passing in silence is not.
+    gates_fingerprint_check
     local i=0
     while :; do
         i=$((i+1))
@@ -7812,10 +8054,14 @@ chat_session_unlock() {
         [ -f "$path/owner" ] && [ -r "$path/owner" ] &&
         [ "$(file_bytes "$path/owner")" -le 128 ] &&
         [ "$(cat "$path/owner")" = "$token" ] || return 1
-    # The pid file (4.0.1) must go with the owner, or rmdir fails on the
-    # non-empty lock and every later chat in this project refuses: the pid
-    # recorded is the live shell itself, so the "live lock" check wins.
-    rm -f "$path/owner" "$path/pid" && rmdir "$path"
+    # Release removes the whole lock, not a list of filenames. 4.0.1 added a
+    # `pid` file and left `rm -f owner; rmdir` behind: rmdir then failed on the
+    # non-empty directory and every later chat in the project refused for ever,
+    # because the pid recorded there was the live shell's own. Enumerating two
+    # names instead of one only moves that bug to the third file someone adds,
+    # so ownership is proved above and then the directory goes as a unit.
+    rm -rf "$path" 2>/dev/null || return 1
+    [ ! -e "$path" ]
 }
 
 chat_sessions() {
@@ -8588,7 +8834,13 @@ rail_arm() {
     [ -n "$cmd" ] && [ -n "$desc" ] || return 0
     RAIL_N=$((RAIL_N+1))
     RAIL_DESC[$RAIL_N]="$desc"; RAIL_CMD[$RAIL_N]="$cmd"
-    RAIL_SAFE[$RAIL_N]="$3";    RAIL_VERB[$RAIL_N]="$(printf '%s' "${4:-}" | tr -d '\n\r')"
+    # Hardening only, never loosening, and in the SAME place for both paths.
+    # rail_load already refused to trust a stored `safe` on a spending command;
+    # arming did not, so `/draft` sat in slot 1 of S3 and S11 marked safe and a
+    # bare Enter bought inference -- the one thing the [Next] block promises it
+    # will never do. The class is derived from the command here too.
+    if [ "$(rail_class "$cmd")" = safe ]; then RAIL_SAFE[$RAIL_N]="$3"; else RAIL_SAFE[$RAIL_N]=spends; fi
+    RAIL_VERB[$RAIL_N]="$(printf '%s' "${4:-}" | tr -d '\n\r')"
     return 0
 }
 
@@ -8640,6 +8892,12 @@ rail_load() {
     RAIL_STATE="$(printf '%s\n' "$raw" | sed -n '2p')"
     RAIL_NO_DESC="$(printf '%s\n' "$raw" | sed -n '3p')"
     RAIL_NO_CMD="$(printf '%s\n' "$raw" | sed -n '4p')"
+    # The `n` key runs this line, so it is validated exactly like the numbered
+    # ones. It was not: a writer inside the project could keep line 1 (the
+    # binding) and rewrite line 4, and `n` would then run arbitrary chat input.
+    if [ -n "$RAIL_NO_CMD" ] && ! rail_cmd_known "$RAIL_NO_CMD"; then
+        RAIL_STALE=1; return 1
+    fi
     i=1
     while [ "$i" -le "$n" ]; do
         base=$(( 5 + (i - 1) * 4 ))
@@ -9005,8 +9263,14 @@ rail_take() {
         return 0
     fi
     if [ "$what" = no ]; then rail_decline; return 0; fi
+    # A rail WAS on screen, so the word was an answer to it and is consumed
+    # here, whatever the armed command then returned. Propagating that status
+    # made `yes` fall through to ordinary conversation when the option failed
+    # (S5's /watch with no worker, for one) and bought a paid inference whose
+    # entire input was the word "yes".
     rail_accept "$what" || rc=$?
-    return "$rc"
+    [ "$rc" -eq 0 ] || dim "  (that option ended with status $rc; nothing else was sent)"
+    return 0
 }
 
 rail_accept() {
@@ -9396,8 +9660,17 @@ chat_command_main() {
     # locks wrote only an `owner` token and no pid, so "no pid file" also
     # means an older dead lock, not a live one.
     ( umask 077; mkdir "$HOME_DIR/chat/lock" ) 2>/dev/null || {
-        local stale_pid
-        stale_pid="$(cat "$HOME_DIR/chat/lock/pid" 2>/dev/null || true)"
+        local stale_pid tries=0
+        # A lock with no pid yet is not evidence of a dead chat: it is what a
+        # LIVE chat looks like for the instant between creating the directory
+        # and publishing its pid. Reading once and calling it stale let a
+        # second chat delete a running chat's lock. Give the writer that
+        # instant before deciding, and only then treat silence as death.
+        while [ "$tries" -lt 10 ]; do
+            stale_pid="$(worker_metadata "$HOME_DIR/chat/lock/pid" 30 2>/dev/null || true)"
+            [ -n "$stale_pid" ] && break
+            tries=$((tries+1)); sleep 0.2
+        done
         if [ -z "$stale_pid" ] || ! is_int "$stale_pid" \
            || ! { kill -0 "$stale_pid" 2>/dev/null || ps -p "$stale_pid" >/dev/null 2>&1; }; then
             rm -rf "$HOME_DIR/chat/lock" 2>/dev/null || true
@@ -9411,9 +9684,11 @@ chat_command_main() {
         fi
     }
     CHAT_LOCK_PATH="$HOME_DIR/chat/lock"; CHAT_LOCK_TOKEN="$(rand_token)"
-    ( set -C; umask 077; printf '%s\n' "$CHAT_LOCK_TOKEN" > "$CHAT_LOCK_PATH/owner" ) || return 1
-    # The pid rides with the token, so a closed terminal cannot wedge chat again.
+    # The pid is published FIRST, in the same breath as the directory. Written
+    # after the owner token, it left a window in which this live chat's lock
+    # looked pid-less -- and therefore stale -- to anyone else arriving.
     printf '%s\n' "$$" > "$CHAT_LOCK_PATH/pid" 2>/dev/null || true
+    ( set -C; umask 077; printf '%s\n' "$CHAT_LOCK_TOKEN" > "$CHAT_LOCK_PATH/owner" ) || return 1
     trap chat_session_cleanup EXIT
     chat_session_select "$session" initial || return 1
     CHAT_TTY_STATE=""
@@ -9435,8 +9710,11 @@ chat_command_main() {
     # here on detach. No engine output is parsed on this path.
     if rails_on && [ "$#" -eq 0 ] && [ "${RALPHIE_CHAT_ENGINE:-engine}" != ralphie ] &&
        have tmux && engine_present prime-agent 2>/dev/null; then
-        engine_chat_attach
-        # Back in the harness console: fall through into the rails prompt below.
+        # The attach is an OFFER, never a dependency. Whatever happens to the
+        # engine session -- refused engine, dead daemon, failed boot, a TUI that
+        # exits 130 -- control lands on the rails console below. A bare call
+        # here would take `set -e` at its word and end chat instead.
+        engine_chat_attach || warn 'the engine chat session is unavailable; staying on the ralphie console.'
     fi
     chat_screen_start
     if rails_on; then
@@ -9567,7 +9845,7 @@ EOF
 request_write_lock() {
     local tries=0 pid
     while :; do
-        pid="$(cat "$LOCK_FILE/pid" 2>/dev/null || true)"
+        pid="$(worker_metadata "$LOCK_FILE/pid" 30 2>/dev/null || true)"
         if [ ! -d "$LOCK_FILE" ] || [ -z "$pid" ] || { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null && ! ps -p "$pid" >/dev/null 2>&1; }; then
             if lock_acquire 2>/dev/null; then return 0; fi
         fi
@@ -9994,14 +10272,16 @@ engine_chat_boot() {
     tmux new-session -d -s "$name" -x 200 -y 50 "$cmdline" 2>/dev/null ||
         { err "tmux could not start a terminal for the chat session"; return 1; }
     while [ "$tries" -lt "${STEERER_BOOT_SECONDS:-60}" ]; do
-        # Sessions land in a scratch file first; the awk reader must never be
-        # an early-exit reader on a pipe (EPIPE breaks `set -o pipefail`).
-        steerer_pa_sessions > "$(steerer_scratch)" 2>/dev/null
-        id="$(awk -F'\t' -v b="$before" '$1 ~ /^[0-9a-f]/ && (b !~ (" " $1 " ")) { print $1; exit }' < "$(steerer_scratch)" 2>/dev/null)"
+        id="$(steerer_pa_new_id "$before")"
         [ -n "$id" ] && break
+        [ "$tries" -eq 5 ] && dim "  still waiting for the chat session to register with the daemon..."
         sleep 1; tries=$((tries+1))
     done
-    [ -n "$id" ] || { err "the chat agent never registered with the daemon"; steerer_tmux_kill "$name"; return 1; }
+    [ -n "$id" ] || {
+        err "the chat session never registered with the daemon after ${STEERER_BOOT_SECONDS:-60}s"
+        steerer_tmux_kill "$name"
+        return 1
+    }
     tries=0
     while [ "$tries" -lt 20 ]; do
         if steerer_bounded "$bin" rename "$id" "$name" --json >/dev/null 2>&1 &&
@@ -10027,11 +10307,17 @@ engine_chat_attach() {
         return 1
     }
     name="$(engine_chat_session_name)"
-    engine_chat_live "$name" || engine_chat_boot "$name" || return 1
+    if ! engine_chat_live "$name"; then
+        # Booting a session is the one thing here that SPENDS, so it is named
+        # before it happens, exactly like `watch --attach`.
+        warn "starting this project's chat session. A resident agent spends tokens."
+        dim  "  keep the console only:  RALPHIE_CHAT_ENGINE=ralphie $ME chat"
+        engine_chat_boot "$name" || return 1
+    fi
     good "attached to the chat engine session. Everything you see is the engine itself."
     dim  "  detach (session keeps running): Ctrl-C or /quit"
     dim  "  end it entirely:                $ME chat --stop"
-    steerer_pa_attach_tui "$name"
+    steerer_pa_attach_tui "$name" || true
     good "back at the ralphie console."
     dim  "  resume: $ME chat     end: $ME chat --stop"
     return 0
@@ -10046,11 +10332,31 @@ engine_chat_stop() {
         name="$(head -c 128 < "$f" 2>/dev/null | tr -d '\r\n' || true)"
         engine_chat_session_name_valid "$name" || name=''
     fi
-    if [ -n "$name" ] && steerer_pa_id "$name" >/dev/null 2>&1; then
-        steerer_api stop "$name" >/dev/null 2>&1 || true
+    # The chat session is prime-agent's, always: engine_chat_attach refuses any
+    # other engine. Routing through steerer_api would dispatch on the STEERER
+    # engine instead, so RALPHIE_STEERER_ENGINE=claude used to send the stop to
+    # claude, swallow the failure, and still delete the only name that could
+    # have found the real session again.
+    if [ -z "$name" ]; then
+        good "no chat session is recorded here; nothing to stop."
+        return 0
     fi
-    rm -f "$(engine_chat_session_name_file)" 2>/dev/null || true
-    good "chat engine session stopped."
+    if ! steerer_pa_id "$name" >/dev/null 2>&1; then
+        rm -f "$(engine_chat_session_name_file)" 2>/dev/null || true
+        good "no chat session was running ($name); cleared its name."
+        return 0
+    fi
+    if steerer_pa_stop "$name" >/dev/null 2>&1; then
+        rm -f "$(engine_chat_session_name_file)" 2>/dev/null || true
+        good "chat session $name stopped."
+        return 0
+    fi
+    # Never claim an effect that did not happen, and never throw away the only
+    # handle to a session that is still running.
+    err "could not stop the chat session $name; its name is kept so you can retry."
+    dim  "  retry:    $ME chat --stop"
+    dim  "  by hand:  prime-agent stop $name"
+    return 1
 }
 
 
@@ -10244,6 +10550,24 @@ steerer_pa_live_ids() {
     steerer_pa_sessions | awk -F'\t' '$2 == "live" { print $1 }'
 }
 
+steerer_pa_new_id() {
+    # The id of the one LIVE session in THIS project that was not live before.
+    # Both boots (the steerer and the chat session) read it through here, and
+    # that is the point: the chat copy of this scan drifted in 4.1.0 and cost
+    # the whole feature. Two rules it must never lose again:
+    #   * `lifecycle == live` AND `cwd == $PROJECT`. Matching on the id shape
+    #     alone can pick up -- and then RENAME -- a session the operator has
+    #     open somewhere else.
+    #   * read from a process substitution, never from steerer_scratch: that
+    #     helper hands out ONE path per process and steerer_pa_sessions
+    #     truncates and deletes it itself, so a second call empties the file
+    #     this reader was given.
+    local before="$1"
+    awk -F'\t' -v seen="$before" -v w="$PROJECT" \
+        '$2 == "live" && $3 == w && index(seen, " " $1 " ") == 0 { print $1; exit }' \
+        < <(steerer_pa_sessions) || true
+}
+
 steerer_pa_start() {
     local name="$1" bin cmdline before id="" tries=0
     bin="$(steerer_bin prime-agent)" || { err "prime-agent is not installed"; return 1; }
@@ -10264,9 +10588,7 @@ steerer_pa_start() {
     tmux new-session -d -s "$name" -x 200 -y 50 "$cmdline" 2>/dev/null ||
         { err "tmux could not start a terminal for the steerer"; return 1; }
     while [ "$tries" -lt "$STEERER_BOOT_SECONDS" ]; do
-        id="$(awk -F'\t' -v seen="$before" -v w="$PROJECT" \
-              '$2 == "live" && $3 == w && index(seen, " " $1 " ") == 0 { print $1; exit }' \
-              < <(steerer_pa_sessions) || true)"
+        id="$(steerer_pa_new_id "$before")"
         [ -n "$id" ] && break
         sleep 1; tries=$((tries+1))
     done
@@ -10338,10 +10660,16 @@ steerer_pa_attach_tui() {
     prev_int="$(trap -p INT 2>/dev/null || printf '')"
     [ -t 0 ] && tty_state="$(stty -g < /dev/tty 2>/dev/null)" || tty_state=""
     trap ':' INT
-    "$bin" attach "$1"; rc=$?
+    # `cmd; rc=$?` is the trap the whole contract died on: under `set -e` the
+    # failing command exits the shell BEFORE the assignment, so a TUI that ends
+    # on 130 (Ctrl-C) or 1 skipped both restores below and took ralphie with it.
+    # The detach path must survive every exit status the engine can produce.
+    "$bin" attach "$1" || rc=$?
     if [ -n "$prev_int" ]; then eval "$prev_int" 2>/dev/null || trap - INT; else trap - INT; fi
     [ -z "$tty_state" ] || stty "$tty_state" < /dev/tty 2>/dev/null || true
-    return "$rc"
+    # Detaching is not failing: the caller returns to the console either way.
+    [ "$rc" -eq 0 ] || dim "  (the engine view ended with status $rc)"
+    return 0
 }
 
 steerer_pa_logs() {
@@ -10365,7 +10693,10 @@ steerer_tmux_kill() {
     # Only ever this program's own session, matched exactly. `=` forces tmux to
     # compare the whole name: its default target matching is by PREFIX, and a
     # bare `ralphie` would otherwise have matched every steerer on the machine.
-    case "${1:-}" in ralphie-steerer-*) ;; *) return 0;; esac
+    # Every session family this program NAMES, it must also be able to clean up.
+    # 4.1.0 added `ralphie-chat-*` and did not add it here, so every failed chat
+    # boot left its tmux window (and the agent inside it) behind.
+    case "${1:-}" in ralphie-steerer-*|ralphie-chat-*) ;; *) return 0;; esac
     have tmux || return 0
     tmux has-session -t "=$1" 2>/dev/null || return 0
     tmux kill-session -t "=$1" 2>/dev/null || true
@@ -10660,10 +10991,25 @@ steerer_running() {
 steerer_start() {
     local name impl id
     impl="$(steerer_impl)" || { err "no steerer engine is installed  (prime-agent or claude)"; return 1; }
-    if steerer_running; then
-        good "a steerer is already running here: $(steerer_read name || printf '?')"
-        dim  "  talk to it: $ME steerer attach"
-        return 0
+    # Liveness is decided by a 5-second bounded call into another program's
+    # CLI, so ONE timeout must never be read as "nothing is running". It was:
+    # a transient list timeout made this allocate a second name, start a second
+    # billing agent, and overwrite the address of the first one, which then ran
+    # on unreachable. A recorded name gets three chances to answer.
+    local probe=0
+    while [ "$probe" -lt 3 ]; do
+        if steerer_running; then
+            good "a steerer is already running here: $(steerer_read name || printf '?')"
+            dim  "  talk to it: $ME steerer attach"
+            return 0
+        fi
+        [ -n "$(steerer_read name 2>/dev/null || printf '')" ] || break
+        probe=$((probe+1))
+        [ "$probe" -lt 3 ] && sleep 1
+    done
+    if [ -n "$(steerer_read name 2>/dev/null || printf '')" ]; then
+        warn "the recorded steerer $(steerer_read name || printf '?') did not answer; treating it as gone."
+        dim  "  if it is still alive, stop it by name:  prime-agent stop $(steerer_read name || printf '?')"
     fi
     # A name is allocated PER RUN and persisted. prime-agent keeps a name
     # reserved after its agent is stopped, so a fixed one collides for ever.
@@ -12149,13 +12495,84 @@ config_unquote() {
     printf '%s' "$(trim "$v")"
 }
 
+# Every setting whose value is used as a NUMBER, with the range that keeps it
+# meaningful. This list is the whole defence: the comment below used to claim
+# the readers clamped their own junk, and four of them did not --
+# GATE_TIMEOUT=abc silently removed the gate watchdog, MIN_ANSWER_BYTES=$HOME
+# rejected every good answer the engine gave, RALPHIE_MAX_COMMIT_BYTES=1MB
+# printed seven raw bash errors and committed a 3 MiB blob, and ENGINE_BACKOFF
+# ended the run with a bare line number. A repository someone cloned may set
+# any of them.
+#
+# The ranges are the VOCABULARY, not a guess: 0 disables a streak limit on
+# purpose (CONSENSUS_LIMIT=0 restores the pre-4.0 behaviour, and the suite
+# proves it), so a range that refused 0 would have broken four documented
+# switches. A knob whose real vocabulary is unclear stays out of this list.
+CONFIG_NUMERIC="
+ENGINE_TIMEOUT:1:86400 ENGINE_IDLE_TIMEOUT:1:86400 ENGINE_OUTPUT_MAX_BYTES:1024:1073741824
+ENGINE_RETRIES:1:20 ENGINE_BACKOFF:0:3600 ENGINE_MAX_TURNS:1:1000 ENGINE_MAX_CONT:0:100
+RALPHIE_DIALOG_THINKING:0:1
+ENGINE_MAX_TOKENS:1:100000000 ENGINE_CONTINUE_MAX:0:100
+GATE_TIMEOUT:1:86400 GATE_RETRIES:0:20 GATE_TRIAL_TIMEOUT:1:86400
+GATE_BRIEF_BYTES:64:1048576 GATE_LOG_MAX:1024:1073741824
+COMMIT_TIMEOUT:1:86400 NOCHANGE_LIMIT:0:1000 STAGNATION_LIMIT:0:1000
+OSCILLATION_LIMIT:0:1000 RETREAT_LIMIT:0:1000 CONSENSUS_LIMIT:0:1000
+MEMORY_MAX:1:100000 MIN_ANSWER_BYTES:1:1048576
+RALPHIE_MAX_COMMIT_BYTES:1:1099511627776 RALPHIE_MIN_UPDATE_BYTES:1:1099511627776
+RALPHIE_CHAT_TIMEOUT:1:300 RALPHIE_KEEP_CYCLES:1:100000 RALPHIE_KEEP_RUNS:1:100000
+RALPHIE_LEDGER_MAX:1024:1073741824 RALPHIE_LEDGER_GENERATIONS:1:1000
+RALPHIE_NOTIFY_WAIT:1:3600 RALPHIE_SETUP_TIMEOUT:1:3600
+RALPHIE_DIALOG_ARG_CHARS:16:4000 RALPHIE_DIALOG_RESULT_CHARS:16:8000
+RALPHIE_DIALOG_TAIL_BYTES:0:1073741824 RALPHIE_STEERER_WAIT:1:600
+RALPHIE_STEERER_MAILBOX_MAX:1:100000 PREFLIGHT_TIMEOUT:1:3600
+"
+
+config_env_numeric_guard() {
+    # Any numeric setting that survived to this point with an unusable value
+    # came from the environment (the file path refuses it). Fall back to the
+    # built-in default and say so once, by name.
+    local entry name val range lo hi
+    for entry in $CONFIG_NUMERIC; do
+        name="${entry%%:*}"
+        eval "val=\${$name:-}"
+        [ -n "$val" ] || continue
+        range="$(config_numeric_range "$name")" || continue
+        lo="${range%% *}"; hi="${range##* }"
+        if ! is_int "$val" || [ "$val" -lt "$lo" ] || [ "$val" -gt "$hi" ]; then
+            warn "$name=$val is not a number between $lo and $hi; using the built-in default"
+            unset "$name" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
+config_numeric_range() {
+    # "min max" for a numeric setting, or nothing when the name is not one.
+    local entry name
+    for entry in $CONFIG_NUMERIC; do
+        name="${entry%%:*}"
+        [ "$name" = "$1" ] || continue
+        entry="${entry#*:}"
+        printf '%s %s' "${entry%%:*}" "${entry#*:}"
+        return 0
+    done
+    return 1
+}
+
 config_value_ok() {
     # Checked once, here, rather than by every reader. Two settings have a
-    # CLOSED vocabulary because both name something Ralphie then acts on; the
-    # numeric knobs already clamp their own junk at the point of use.
-    local key="$1" val="$2" names
+    # CLOSED vocabulary because both name something Ralphie then acts on, and
+    # every numeric setting is checked against its range HERE -- see
+    # CONFIG_NUMERIC above for why "the readers clamp it themselves" was wrong.
+    local key="$1" val="$2" names range lo hi
     case "$val" in *[[:cntrl:]]*) return 1;; esac
     [ "${#val}" -le 4096 ] || return 1
+    if range="$(config_numeric_range "$key")"; then
+        lo="${range%% *}"; hi="${range##* }"
+        is_int "$val" || return 1
+        [ "$val" -ge "$lo" ] && [ "$val" -le "$hi" ] || return 1
+        return 0
+    fi
     case "$key" in
         RALPHIE_ENGINE)
             [ "$val" = auto ] && return 0
@@ -13322,7 +13739,7 @@ json_dec() {
 run_is_alive() {
     # The lock is the only durable evidence that a run still exists.
     local owner
-    owner="$(cat "$LOCK_FILE/pid" 2>/dev/null || printf '')"
+    owner="$(worker_metadata "$LOCK_FILE/pid" 30 2>/dev/null || printf '')"
     [ -n "$owner" ] || return 1
     kill -0 "$owner" 2>/dev/null || ps -p "$owner" >/dev/null 2>&1
 }
@@ -13377,6 +13794,9 @@ status_json() {
     # `run_cost` stays exactly what it has always been -- the engine's own
     # figure -- so nothing that already reads this line changes meaning.
     # `run_priced` is the separate, clearly-named operator-priced number.
+    # `commits` is ADDED, never redefined: every field above keeps its meaning,
+    # and a reader that does not know this one is unaffected.
+    printf '"commits":%s,' "$(json_num commit_count)"
     printf '"blocked":%s,"untrusted":%s,"unverified":%s,"tokens":%s,"run_tokens":%s,"run_cost":%s,"run_priced":%s,"seconds":%s,"start_commit":"%s","reason":"%s","run":"%s","worker":"%s","worker_state":"%s"}\n' \
         "$(json_num blocked_count)" "$(json_num untrusted_count)" "$(json_num unverified_count)" "$(json_num tokens_spent)" \
         "$(json_num run_tokens)" "$(json_dec run_cost)" "$(json_dec run_priced)" "$(json_num total_seconds)" "$(json_str "$(state_get start_commit '')")" \
@@ -13455,7 +13875,7 @@ cmd_gates() {
         # A loop holds its authoritative gate set in memory. Rewriting the file
         # underneath it looks exactly like the engine deleting a gate: the run
         # reports tampering and blames the engine for the operator's action.
-        local owner; owner="$(cat "$LOCK_FILE/pid" 2>/dev/null || printf '')"
+        local owner; owner="$(worker_metadata "$LOCK_FILE/pid" 30 2>/dev/null || printf '')"
         if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
             err "a ralphie loop is running here (pid $owner)"
             err "stop it first: $ME stop   - rediscovering now would look like tampering to that run"
@@ -13976,7 +14396,11 @@ watch_follow_cli() {
             rendered="$out"
         fi
         [ -n "$rendered" ] || rendered="  (transcript has no displayable records yet)"
-        printf '%s\n' "$rendered"
+        # EVERY chunk is sanitized, exactly as the chat follow does it: this is
+        # untrusted engine output, and a tool result can carry terminal escapes,
+        # bidi overrides or a forged operator prompt. The 4.0.1 watch follow
+        # printed it raw, which re-opened a hole this file had already closed.
+        printf '%s\n' "$rendered" | chat_text
     fi
     while :; do
         f2="$(watch_follow_newest_transcript)" || f2=''
@@ -13996,8 +14420,11 @@ watch_follow_cli() {
         else
             rendered="$out"
         fi
-        [ -n "$rendered" ] && printf '%s\n' "$rendered"
-        idle=$((idle+1)); [ "$idle" -lt 3600 ] || { dim '  (idle for one hour; exiting follow)'; break; }
+        [ -n "$rendered" ] && printf '%s\n' "$rendered" | chat_text
+        # The bound is on IDLENESS, so a busy follow is never cut off: any new
+        # output resets it. Counting ticks retired a live view after an hour.
+        if [ -n "$rendered" ]; then idle=0; else idle=$((idle+1)); fi
+        [ "$idle" -lt 3600 ] || { dim '  (idle for one hour; exiting follow)'; break; }
         sleep 1
     done
 }
@@ -14005,17 +14432,23 @@ watch_follow_cli() {
 watch_attach_now() {
     # The socket itself: everything on screen from here is the engine.
     good "attached to the steerer ($1) unfettered. Detach anytime: Ctrl-C."
-    steerer_pa_attach_tui "$1"
+    steerer_pa_attach_tui "$1" || true
     good "detached. The steerer keeps running (logs: $ME steerer logs; stop: $ME steerer stop)."
     return 0
 }
 
 watch_attach_live_name() {
     # The recorded steerer name, but only when that session is really live.
+    # The liveness probe is a bounded call into another CLI, so a single
+    # timeout is not proof of death: it gets a second chance before this says
+    # "nothing is running" and offers to start something that costs money.
     local name
     name="$(steerer_read name 2>/dev/null || printf '')"
     [ -n "$name" ] || return 1
-    steerer_pa_id "$name" >/dev/null 2>&1 || return 1
+    if ! steerer_pa_id "$name" >/dev/null 2>&1; then
+        sleep 1
+        steerer_pa_id "$name" >/dev/null 2>&1 || return 1
+    fi
     printf '%s' "$name"
 }
 
@@ -14032,6 +14465,15 @@ watch_attach_cli() {
     # the bounded snapshot when there is no terminal to draw on).
     local may_boot="${1:-0}" name
     [ "$#" -eq 0 ] || shift
+    # A launch id names one WORKER; the steerer is one resident agent for the
+    # whole project. `watch 3` therefore keeps meaning "show me launch 3" on a
+    # terminal too, instead of silently attaching to something else.
+    if [ "$#" -gt 0 ]; then
+        dim "  launch ${1} named: showing that launch, not the resident agent."
+        dim "  attach the agent with: $ME watch --attach     follow it: $ME watch --follow ${1}"
+        worker_watch "$@"
+        return $?
+    fi
     if name="$(watch_attach_live_name)"; then watch_attach_now "$name"; return 0; fi
     if [ "$may_boot" = 1 ]; then
         warn 'no steerer is running here. Starting one spends tokens.'
@@ -14954,8 +15396,17 @@ main() {
                 exit $?;;
             --attach|-a)
                 # Explicit attach: this one MAY start a resident agent, and it
-                # says so before it spends anything.
+                # says so before it spends anything. A TUI needs a terminal to
+                # draw on, so without one this refuses instead of spending:
+                # `watch --attach` in cron used to start a billing agent and
+                # then attach it to a pipe.
                 REST=( "${REST[@]:1}" )
+                if [ ! -t 0 ] || [ ! -t 1 ]; then
+                    err "watch --attach needs a terminal; it starts and shows a live agent."
+                    dim  "  for a pipe or CI use:  $ME watch        (bounded snapshot)"
+                    dim  "  for a live text tail:  $ME watch --follow"
+                    exit 2
+                fi
                 watch_attach_cli 1 "${REST[@]+"${REST[@]}"}"
                 exit $?;;
             --engine)
@@ -14964,6 +15415,14 @@ main() {
                 REST=( "${REST[@]:1}" )
                 watch_attach_cli 0 "${REST[@]+"${REST[@]}"}"
                 exit $?;;
+            -*)
+                # An unknown flag is a typo, not a launch id. Everything else in
+                # this CLI refuses one rather than guessing.
+                err "unknown option for watch: ${REST[0]}"
+                dim  "  watch [ID]        bounded snapshot (or attach on a terminal)"
+                dim  "  watch --follow    live humane tail of the engine dialog"
+                dim  "  watch --attach    attach, starting a steerer if none is live"
+                exit 2;;
             *)
                 # On a terminal, watch = attach to the live steerer, unfiltered.
                 # Everything the engine shows is the engine itself. Detach with

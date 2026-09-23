@@ -599,6 +599,10 @@ After `run`, command-looking words such as `status` are objective text. Use
 
 `status --json` normalizes leading zeroes and incomplete decimal notation
 without rounding large counters. Malformed numeric state is reported as zero.
+Since 4.1.1 it also carries `commits`: how many commits this run actually made.
+`{"status":"done","commits":0}` is a run that finished and saved nothing --
+`--no-commit`, or no git repository -- which used to be indistinguishable from
+a run that saved everything.
 
 Useful options:
 

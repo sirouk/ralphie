@@ -3,6 +3,100 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.1.1 — 2026-09-23
+
+The retrace release. Six adversarial reviews of 4.1.0, one surface each, plus
+independent reproduction of every claim. 4.1.0's headline feature did not work
+at all; this fixes that, and eleven older defects the same pass turned up.
+
+**4.1.0 regressions**
+
+- **The engine chat session could never boot.** `engine_chat_boot` asked
+  `steerer_scratch` for its scratch file twice; that helper returns ONE path per
+  process and truncates it on every call, and `steerer_pa_sessions` deletes the
+  same path itself — so the reader always saw an empty file, the new agent's id
+  was never found, and every `chat` waited 60 seconds in silence before failing.
+  Both boots now share one scan (`steerer_pa_new_id`) that also filters on
+  `lifecycle == live` and `cwd == this project`: the chat copy had neither, and
+  could have renamed an unrelated session the operator had open elsewhere.
+- **A failed attach ended `chat` instead of falling back.** The call was a bare
+  statement under `set -e`, so a refused engine or a dead daemon exited 1 with no
+  console at all — the opposite of the contract the redesign was built on.
+- **Ctrl-C did not reliably return you to ralphie.** `"$bin" attach; rc=$?` lets
+  `set -e` exit before the assignment, so a TUI ending on 130 skipped both the
+  INT-trap restore and the terminal restore. Detaching is not failing.
+- **Failed boots leaked a paid agent**: `steerer_tmux_kill` only matched
+  `ralphie-steerer-*`, so every cleanup call in the `ralphie-chat-*` family was a
+  no-op. Both families are now recognised.
+- **`chat --stop` used the wrong engine and claimed success regardless.** It
+  dispatched through the STEERER engine, so `RALPHIE_STEERER_ENGINE=claude` sent
+  the stop to claude, swallowed the failure, and still deleted the only name that
+  could find the real session. It now stops prime-agent directly, reports what
+  actually happened, and keeps the handle when a stop fails.
+- **`watch --attach` had no terminal check** — in cron or CI it would start a
+  billing agent and attach a TUI to a pipe. Refused without a terminal.
+- **`watch --nonsense` was silently accepted** and `watch ID` was ignored on the
+  attach path. Unknown flags are refused; a launch id still means that launch.
+- Booting the chat session now names its cost before it spends, like
+  `watch --attach` does.
+
+**Older defects, found by the same pass**
+
+- **A false "objective complete".** `parse_report` took the LAST report block, so
+  an engine that quoted a file containing one after its own report handed the run
+  a forged verdict: measured, a run that said "still working, not finished" ended
+  at cycle 1 as done, exit 0. More than one block now means no terminal claim, no
+  durable lesson and no question in Ralphie's voice — progress only.
+- **The contract template was believed when echoed back.** It contains a complete
+  report block, so an engine repeating its instructions wrote the placeholder
+  lesson into MEMORY.md for ever and filed the placeholder question as a real one.
+- **`watch --follow` printed untrusted engine text raw**, re-opening the terminal
+  escape and forged-prompt hole the chat follow had already closed. Every chunk is
+  sanitized now, and its idle bound measures idleness rather than elapsed ticks.
+- **A planted FIFO in `.ralphie/lock/pid` parked `run` for ever.** Worker
+  admission had refused ambiguous lock metadata since 4.0 and said why; the other
+  readers still opened it blind. Measured: 4.1.0 never returned; this exits 1 with
+  "ambiguous lock".
+- **Counters lost increments.** `state_bump` read outside the mutex: measured,
+  two writers x 60 bumps left 60. Read and write now share one reentrant lock.
+- **A crashed writer wedged state for 30 seconds**, and a live one could be
+  robbed. The mutex now decides by the holder's liveness.
+- **Numeric settings were not validated**, though a comment claimed they were.
+  `GATE_TIMEOUT=abc` silently removed the gate watchdog, `MIN_ANSWER_BYTES=$HOME`
+  rejected every answer, `RALPHIE_MAX_COMMIT_BYTES=1MB` committed a 3 MiB blob.
+  Every numeric setting now has a declared range, checked from `config.env` and
+  from the environment. `0` still disables the streak limits that document it.
+- **A bare Enter could buy a paid turn.** `/draft` was armed as `safe` while the
+  class table called it spending; the `n` key ran an unvalidated line from a file
+  inside the project; and `yes` fell through to ordinary conversation when the
+  option it took failed, sending the word "yes" to the model as a turn.
+- **One reply field could own the ledger.** An unbounded summary went verbatim
+  into an event line and made the history decoder take minutes per cycle.
+- **Gate changes between runs were invisible.** The gate set is fingerprinted per
+  run; a change is warned and recorded. It is still your right to change them.
+- **`status --json` could not tell "done" from "done and saved nothing".** Added
+  `"commits"`. Every existing field keeps its meaning.
+- **The ownership record was unsealed** while the list built from it was sealed,
+  so one forged line dropped the operator's in-flight file out of protection.
+  It is sealed with the cycle's snapshot and re-checked before any commit.
+- **A live chat's lock could be stolen** in the instant before its pid appeared.
+- **The retreat note ordered "Report status: progress"** even to an engine that
+  had just reported blocked with a real question, which made the documented
+  hand-over to a human unreachable. It now states the exception.
+- Replacing `.ralphie/state` with a directory hid the schema stamp, and the
+  repair ran first: that is now reported instead of passing as a new project.
+- A state-file repair wrote `key\nvalue` instead of `key=value`.
+
+**What may surprise you**
+
+- A junk numeric setting is now refused with a message, where it used to be
+  applied and misbehave quietly.
+- `watch --attach` without a terminal exits 2 instead of starting an agent.
+- An engine reply containing more than one report block can no longer end a run.
+
+
+---
+
 ## 4.1.0 — 2026-09-22
 
 `watch` and `chat` became execution sockets to the engine, not parsed views.
