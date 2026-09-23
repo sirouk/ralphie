@@ -3,6 +3,94 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.2.0 — 2026-09-23
+
+**Chat is now a real engine on rails, and you can watch the work.** Designed
+with a four-seat adversarial panel and a three-agent federation (Claude, Codex,
+Hermes; confidence 82→88, 76→88, 94→97 after cross-review), then built and
+live-verified against the demo project.
+
+**The resident companion**
+
+- **`chat` talks to ONE resident agent per project** — the steerer, which already
+  receives every run event. It remembers the conversation and READS the run with
+  its own tools: status, the ledger, the gates, open questions, the engine's live
+  dialog, queued requests, and any text file in the project (bounded, redacted,
+  never `.ralphie/` or `.git/`, never through a symlink). Measured on the demo
+  project: asked what the gate runs and whether the last cycle passed it, it
+  made 13 reads and answered correctly — and flagged, unprompted, that the
+  "gate pass" logged at cycle 7's start was too fast to be a real run.
+- **It is on rails mechanically, not by prompt.** It boots with
+  `--no-builtin-tools` (its only built-in tool was a full Python REPL),
+  `--no-extensions --no-context-files --no-skills --no-prompt-templates
+  --no-themes` (so nothing the project contains — `.prime/agent/SYSTEM.md`,
+  `AGENTS.md`, a planted extension — can rewrite its rules), and ONE extension
+  that ralphie writes, hash-verifies and loads by path, exposing only read verbs
+  that each run a fixed argv. It cannot edit a file, run a command, or start,
+  stop or change a run. Asked to delete a file and queue a request "yourself",
+  it said it could not, and turned the request into a proposal.
+- **Everything it wants to change is a proposal you approve with `/apply`**,
+  validated by exactly the same code as before.
+- **The first boot asks, with one key.** A resident agent spends tokens, so a
+  warning line is not consent. No prime-agent, tmux or python3, a declined boot,
+  or `RALPHIE_CHAT_ENGINE=ralphie` keep the stateless console, which says so.
+- **It waits as long as the companion is working**, shows each look it takes,
+  and Ctrl-C stops waiting — never chat, never the companion. A reply that
+  arrives after you stopped waiting is shown at your next message.
+- 4.1.x's second, unfenced chat agent is gone; `chat --stop` ends the companion
+  and cleans up any 4.1.x chat session left behind.
+
+**Watch the work**
+
+- **`watch` on a terminal shows the live work**: the engine's own dialog for the
+  current cycle, humanely rendered and sanitized. It starts and spends nothing.
+  `watch --attach` is the companion's own screen.
+- **`request` says when it lands**: at the worker's next cycle boundary (the
+  engine call running now is unchanged), and a live companion is told at once.
+
+**Older defects fixed by the same pass**
+
+- **The panel no longer runs commands a model wrote.** Its safety filter was a
+  denylist that accepted 10 of 12 plainly dangerous commands — including one
+  that installed a gate, after which commits said "Verified by 1 gate(s)" — while
+  refusing harmless ones. Seat checks are now recorded, never run, unless
+  `PANEL_RUN_CHECKS=1`, and even then only a plain test/lint runner command may
+  run. `panel --promote` lists first and promotes one named line, never all.
+- **`PANEL_MAX_PER_RUN` is per run again**; it was a lifetime total, so the panel
+  died for good on any project that had used it three times.
+- **`update` runs the downloaded file before publishing it.** A download
+  truncated at 97% passed every byte check and was published, leaving a kernel
+  that answered every command with exit 0 and no output; a `#!/bin/sh` file
+  bricked the install. The staged file must now run as itself, report exactly
+  the version it declares, print a complete help screen, and end on its last
+  line. **The one-line stream install** refuses a cut-off stream the same way
+  instead of silently replacing a working copy.
+- **Telegram `revoke` from the phone deletes before it speaks.** It used to reply
+  "the token has been deleted", signal itself, and exit before deleting anything.
+  The bearer-token file is also created private instead of chmodded afterwards.
+- **A gate that proves nothing is no longer installed.** A trial the watchdog
+  killed was promoted; a missing test PLUGIN was read as a missing test runner
+  (substring match) and the project's tests left the gates; and
+  `npm run test --workspaces --if-present` was offered when no declared member
+  had a test, running zero tests and passing for ever.
+- **Background launches report what is true.** A worker whose pid could not be
+  recorded kept running while `start` said it failed; it is now stopped first.
+  An old, provably interrupted launch no longer blocks every future `start`.
+  `stop` on a launch that already exited says there is nothing to stop.
+- `steerer stop` no longer deletes its only handle to an agent the engine did not
+  confirm stopping (the defect `chat --stop` was fixed for, one function away).
+
+**What may surprise you**
+
+- `watch` on a terminal is now the live work, not the resident agent's screen
+  (that is `watch --attach`). Piped or in CI it is still the bounded snapshot.
+- Panel checks no longer run by default. Set `PANEL_RUN_CHECKS=1` to run the
+  plain test/lint ones.
+- `panel --promote` with no number now lists; `panel --promote N` promotes one.
+
+
+---
+
 ## 4.1.3 — 2026-09-23
 
 A second adversarial retrace, this time aimed at 4.1.1's own fix pass. Seven

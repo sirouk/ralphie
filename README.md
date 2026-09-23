@@ -281,23 +281,28 @@ A final process state or exit code is not proof that the goal passed its gates.
 Follow requires interactive chat with a terminal. It does not provide an engine
 shell or engine input. Worker engine logs and ledger evidence are separate.
 
-**Since 4.1.0, `watch` and `chat` on a terminal are sockets, not views.**
-`./ralphie.sh watch` attaches to the live steerer and shows its full engine TUI,
-unfettered: nothing is parsed, filtered or abbreviated. Ctrl-C (or the TUI's own
-exit) detaches and returns you to the ralphie console, and the session keeps
-running. A bare `watch` never starts an agent for you -- starting one spends
-tokens -- so with no steerer live it names the command that would and shows the
-free live dialog instead; `watch --attach` is the one that may start one, and it
-says so first. Piped or in CI, `watch` is still the bounded snapshot, and
-`RALPHIE_WATCH_VIEW=ralphie` restores that as the default everywhere.
-Interactive `./ralphie.sh chat` likewise attaches this project's **resident
-engine chat session**: a dedicated per-project prime-agent conversation with its
-own tools and memory, booted once and kept alive between attaches. Leaving that
-TUI is caught by the harness and lands you on the rails console underneath it.
-`chat --stop` ends the session; the run is untouched. One-shot `chat "MESSAGE"`,
-a non-terminal chat and `RALPHIE_CHAT_ENGINE=ralphie` all stay on the rails
-console. Both attach paths need `tmux` and `prime-agent`; without them the
-4.0.x behaviour is used unchanged.
+**Chat is a resident engine on rails; `watch` is the work itself (4.2).**
+`./ralphie.sh chat` talks to this project's ONE resident companion: a
+prime-agent that remembers the conversation, receives every run event, and can
+READ the run -- status, the ledger, the gates, open questions, the engine's live
+dialog, queued requests, and any text file in the project. It cannot change
+anything: it boots with no built-in tools and nothing the project can inject
+(no `.prime/agent`, `AGENTS.md` or project extension), plus one extension that
+ralphie writes and verifies, whose only tools are those reads. When you or it
+want something changed, it proposes; you approve with `/apply`. The first time,
+it asks before starting, because a resident agent spends tokens. It waits as
+long as the companion is working and shows each look it takes; Ctrl-C stops
+waiting, never the companion, and a late reply is shown at your next message.
+Without `prime-agent`, `tmux` or `python3`, or with `RALPHIE_CHAT_ENGINE=ralphie`,
+chat stays on the stateless console and says so. `chat --stop` ends the
+companion; the run is untouched.
+
+`./ralphie.sh watch` on a terminal shows the live work: the engine's own dialog
+for the current cycle, humanely rendered. It starts and spends nothing.
+`watch --attach` is the companion's own screen. Piped or in CI, `watch` is the
+bounded snapshot. `request TEXT` is how you interject: it reaches the worker at
+its next cycle boundary (the engine call running now is unchanged) and a live
+companion immediately, and the receipt says both.
 
 There is room for **32 retained launch entries**, including old or refused
 launches. Admission refuses at capacity before making another launch spec copy;
@@ -562,12 +567,12 @@ engine's own word; `CONSENSUS_LIMIT=1` acts on a single report.
 ./ralphie.sh                        Open default interactive conversation
 ./ralphie.sh chat "MESSAGE"         One supervisor turn, then exit
 ./ralphie.sh chat --session NAME    Reconnect a named conversation
-./ralphie.sh chat --stop            End the resident engine chat session
+./ralphie.sh chat --stop            End the resident companion
 ./ralphie.sh "what you want done"   Run the loop
 ./ralphie.sh start --once "..."     Launch a background worker
-./ralphie.sh watch [LAUNCH-ID]      Terminal: attach the live steerer; piped: log snapshot
-./ralphie.sh watch --follow [ID]    Live humane tail of the engine's dialog (-f)
-./ralphie.sh watch --attach [ID]    Attach, starting a steerer first if none is live (-a)
+./ralphie.sh watch                  Terminal: the live work; piped: a bounded snapshot
+./ralphie.sh watch LAUNCH-ID        One background launch's snapshot
+./ralphie.sh watch --attach         The resident companion's own screen (may start it)
 ./ralphie.sh run --once "..."       Explicit run; options precede objective text
 ./ralphie.sh discover               Read-only orientation; no checks, engines or writes
 ./ralphie.sh status                 Cycles, gates, budget, open questions
