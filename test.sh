@@ -13888,6 +13888,41 @@ TGAPI
         fi
     fi
 fi
+if want "mission-mvp"; then
+    d="$(new_project)"
+    printf 'Use Kimi model only; if unavailable, stop.\n' > "$d/spec.md"
+    printf 'Keep this reference.\n' > "$d/ref.md"
+    printf 'Choose a deployment target?\n' > "$d/decisions.md"
+    out="$("$RALPHIE" --project "$d" mission preview --name 'Sample Mission' --spec spec.md --reference ref.md --open-decisions decisions.md --cycles 1 2>&1)"; rc=$?
+    check_ok 'mission preview succeeds' "$rc"
+    check_contains 'mission preview describes name' 'Sample Mission' "$out"
+    check_contains 'mission preview exposes decisions' 'decisions.md' "$out"
+    if [ ! -e "$d/.ralphie" ]; then ok 'mission preview does not create state'; else no 'mission preview does not create state' 'state created'; fi
+    out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec missing 2>&1)"; rc=$?
+    check_fails 'mission missing spec refused' "$rc"
+    out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec ../spec.md 2>&1)"; rc=$?
+    check_fails 'mission path escape refused' "$rc"
+    out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec spec.md --bogus 2>&1)"; rc=$?
+    check_fails 'mission unknown option refused' "$rc"
+    printf '\000' > "$d/binary.md"
+    out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec binary.md 2>&1)"; rc=$?
+    check_fails 'mission preview rejects binary spec' "$rc"
+    make_mock_engine "$d/mock" nothing
+    export MOCK_LAST_PROMPT="$d/prompt" MOCK_TARGET="$d/target" MOCK_STATUS=blocked
+    out="$(RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 "$RALPHIE" --project "$d" mission start --name 'Sample Mission' --spec spec.md --reference ref.md --open-decisions decisions.md --cycles 1 2>&1)"; rc=$?
+    check_contains 'mission start diagnostics' 'ralphie 4.' "$out"
+    check_contains 'mission start stores named objective' 'Mission: Sample Mission' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
+    check_contains 'mission start snapshots reference' 'Keep this reference.' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
+    check_contains 'mission start keeps open decisions unresolved' 'unresolved; ask the operator' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
+    if [ -e "$d/.ralphie/events.jsonl" ]; then ok 'mission start uses run ledger'; else no 'mission start uses run ledger' 'no ledger'; fi
+    sed 's/^status=.*/status=blocked/' "$d/.ralphie/state" > "$d/.ralphie/state.tmp" && mv "$d/.ralphie/state.tmp" "$d/.ralphie/state"
+    # A blocked previous run requiring a provider cannot be overridden by
+    # mission metadata or --model; fail before run_init changes its state.
+    out="$(RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 "$RALPHIE" --project "$d" mission start --name 'Sample Mission' --spec spec.md --model Other --cycles 1 2>&1)"; rc=$?
+    check_fails 'blocked provider prerequisite refuses mission revision' "$rc"
+    check_contains 'blocked mission refusal reports prerequisite' 'model/provider' "$out"
+    unset MOCK_LAST_PROMPT MOCK_TARGET MOCK_STATUS
+fi
 if [ ! -d "$TALLY" ]; then
     red "BROKEN the tally directory vanished during the run - the result is unknown"
     printf '\n'; exit 1

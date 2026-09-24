@@ -378,6 +378,35 @@ measured. They are unchanged and do not certify this chat implementation.
 
 ---
 
+## Named missions (4.2.3 MVP)
+
+A mission gives one foreground run a name and a set of project documents:
+
+```bash
+./ralphie.sh mission preview --name "Release slice" --spec docs/spec.md \
+  --reference docs/reference.md --backlog docs/backlog.md \
+  --open-decisions docs/questions.md --acceptance docs/acceptance.md \
+  --engine custom --model chosen-model --cycles 2 --minutes 30
+./ralphie.sh mission start --name "Release slice" --spec docs/spec.md \
+  --reference docs/reference.md --backlog docs/backlog.md \
+  --open-decisions docs/questions.md --acceptance docs/acceptance.md \
+  --engine custom --model chosen-model --cycles 2 --minutes 30
+```
+
+`preview` validates the paths and prints the plan without creating `.ralphie/`,
+calling an engine, running gates, or taking a lock. It does not preview the
+contents or approve the mission. `start` is the explicit, spending foreground
+run. It snapshots each document into the normal `.ralphie/OBJECTIVE.md`, then
+uses the existing run ledger, lock, blocked-prerequisite checks, and gates.
+Paths must be readable, plain-text, project-relative files, at most 1 MiB each;
+symlinks and paths outside the project are refused. The open-decisions file
+remains unresolved input, not answers or defaults. The acceptance file is
+context, not a shell command or proof of completion: pass `--accept CMD` only
+when you explicitly choose a check. `--cycles 0` and `--minutes 0` retain the
+normal unlimited limits. The mission name is a label, not a persisted mission
+registry or a separate run status. Existing `run`, `start`, `chat`, and `--spec`
+interfaces are unchanged.
+
 ## Start from a specification
 
 Plant `ralphie.sh` in a blank directory or an existing project, then run:

@@ -13877,8 +13877,11 @@ USAGE
   ./ralphie.sh [options] ["what you want done"]
   ./ralphie.sh run [options] ["what you want done"]
   ./ralphie.sh <command> [args]
+  ./ralphie.sh mission preview|start --name NAME --spec FILE [mission options]
 
 COMMANDS
+  mission        Preview a named mission without writing, or explicitly start
+                 a foreground run. See MISSION below.
   chat [MESSAGE] Talk to this project's resident companion: one prime-agent
                  that remembers the conversation, receives every run event,
                  and can READ the run and the project -- but cannot change
@@ -14005,6 +14008,20 @@ OPTIONS
                          and each cycle's verdict survive it. Opposite of -v.
   -h, --help             This screen.
       --                 Everything after this is the objective.
+
+MISSION
+  mission preview|start --name NAME --spec FILE [--reference FILE]
+      [--backlog FILE] [--open-decisions FILE] [--acceptance FILE]
+      [--engine NAME] [--model ID] [--cycles N] [--minutes N]
+      [--accept CMD]
+  All FILEs are readable project-relative plain text (max 1 MiB each).
+  Preview validates paths and prints a plan; it never writes, runs a gate,
+  starts an engine, or resolves open decisions. Start snapshots all documents
+  into OBJECTIVE.md, then uses the ordinary run lock, ledger, gates, and blocked
+  model/provider guard. Acceptance FILE is evidence, NOT an executable gate;
+  use --accept CMD only when you explicitly choose a verification command.
+  Open decisions remain questions for the operator, never implicit approval.
+  Start is foreground only; zero limits mean unlimited. No network reads.
 
 GATE DISCOVERY
   Discovery reads the root manifests and scripts, and then the WORKSPACE:
@@ -15909,6 +15926,104 @@ load_spec() {
     return 0
 }
 
+# A mission is an explicit, single-run envelope around the existing run engine.
+# Preview runs before project binding/ledger repair and must never make decisions.
+mission_prepare() {
+    local action="${REST[0]:-}" name='' spec='' reference='' backlog='' decisions='' acceptance='' arg value path label
+    local n=0 m=0
+    case "$action" in preview|start) ;; *) err 'mission requires preview or start'; return 1;; esac
+    [ "$MAX_CYCLES" = 0 ] && [ "$MAX_MINUTES" = 0 ] || { err "mission budgets must follow the mission verb"; return 1; }
+    local idx=1
+    while [ "$idx" -lt "${#REST[@]}" ]; do
+        arg="${REST[$idx]}"; idx=$((idx+1))
+        case "$arg" in
+            --name|--spec|--reference|--backlog|--open-decisions|--acceptance|--engine|--model|--cycles|--minutes|--accept)
+                [ "$idx" -lt "${#REST[@]}" ] || { err "$arg needs a value"; return 1; }
+                value="${REST[$idx]}"; idx=$((idx+1))
+                [ -n "$value" ] && [[ "$value" != *"$RALPHIE_NL"* ]] && [[ "$value" != *$'\r'* ]] || { err "invalid $arg value"; return 1; }
+                case "$arg" in
+                    --name) [ -z "$name" ] || { err 'duplicate --name'; return 1; }; name="$value";;
+                    --spec) [ -z "$spec" ] || { err 'duplicate --spec'; return 1; }; spec="$value";;
+                    --reference) [ -z "$reference" ] || { err 'duplicate --reference'; return 1; }; reference="$value";;
+                    --backlog) [ -z "$backlog" ] || { err 'duplicate --backlog'; return 1; }; backlog="$value";;
+                    --open-decisions) [ -z "$decisions" ] || { err 'duplicate --open-decisions'; return 1; }; decisions="$value";;
+                    --acceptance) [ -z "$acceptance" ] || { err 'duplicate --acceptance'; return 1; }; acceptance="$value";;
+                    --engine) [ -z "$ENGINE" ] || { err 'duplicate --engine'; return 1; }; ENGINE="$value"; ENGINE_EXPLICIT=1;;
+                    --model) [ -z "$MODEL" ] || { err 'duplicate --model'; return 1; }; MODEL="$value";;
+                    --cycles) is_int "$value" || { err '--cycles needs a number'; return 1; }; n="$value"; MAX_CYCLES="$value";;
+                    --minutes) is_int "$value" || { err '--minutes needs a number'; return 1; }; m="$value"; MAX_MINUTES="$value";;
+                    --accept) [ "$ACCEPT_EXPLICIT" = 0 ] && [ -n "${value//[[:space:]]/}" ] || { err 'invalid or duplicate --accept'; return 1; }; ACCEPT_ARG="$value"; ACCEPT_EXPLICIT=1;;
+                esac;;
+            *) err "unknown mission option: $arg"; return 1;;
+        esac
+    done
+    [ -n "$name" ] && [ -n "$spec" ] || { err 'mission requires --name and --spec'; return 1; }
+    # Values are data in the objective, never shell commands. Keep headings on
+    # one line; embedded controls must not become directives or terminal escapes.
+    case "$name" in *[!a-zA-Z0-9._\ -]*|'') err 'mission name allows only letters, digits, spaces, dot, underscore and hyphen'; return 1;; esac
+    local root
+    root="$(cd -- "$PROJECT" 2>/dev/null && pwd -P)" || { err "cannot access project directory: $PROJECT"; return 1; }
+    for label in spec reference backlog decisions acceptance; do
+        path="${!label}"
+        [ -n "$path" ] || continue
+        # Project-relative only: never fetch remote resources or trust an
+        # external path which might change independently of the project.
+        case "$path" in /*|.*|*'/../'*|../*|*/..|*'/./'*|./*|*$'\t'*|*'\'*|*[$'\001'-$'\037']*) err "invalid $label path: $path"; return 1;; esac
+        [ -f "$root/$path" ] && [ ! -L "$root/$path" ] && [ -r "$root/$path" ] || { err "$label needs a readable regular project file: $path"; return 1; }
+        local resolved_dir
+        if [ "$path" = "${path##*/}" ]; then resolved_dir="$root"
+        else resolved_dir="$(cd -- "${root}/${path%/*}" 2>/dev/null && pwd -P)" || return 1; fi
+        case "$resolved_dir/" in "$root/"*) ;; *) err "$label escapes project: $path"; return 1;; esac
+        [ "$(wc -c < "$root/$path" | tr -d ' ')" -le 1048576 ] || { err "$label exceeds 1 MiB"; return 1; }
+        local checked='' has_nul=0
+        IFS= read -r -d '' -n 1048577 checked < "$root/$path" && has_nul=1
+        [ "$has_nul" = 0 ] || { err "$label must be plain text (NUL byte)"; return 1; }
+        if printf '%s' "$checked" | tr -d '\011\012\015' | grep '[[:cntrl:]]' >/dev/null; then
+            err "$label contains control bytes"; return 1
+        fi
+    done
+    printf 'mission %s: %s\n  project: %s\n  spec: %s\n  reference: %s\n  backlog: %s\n  open decisions: %s\n  acceptance: %s\n  engine: %s\n  model: %s\n  limits: %s cycles, %s minutes\n' "$action" "$name" "$root" "$spec" "${reference:-(none)}" "${backlog:-(none)}" "${decisions:-(none)}" "${acceptance:-(none)}" "${ENGINE:-(existing selection)}" "${MODEL:-(existing selection)}" "$n" "$m"
+    if [ "$action" = preview ]; then
+        printf '%s\n' 'Read-only preview. No checks, engine, admission, defaults for open decisions, or approval.'
+        return 0
+    fi
+    SPEC_FILE="$root/$spec"
+    CMD=run
+    REST=()
+    load_spec || return 1
+    SPEC_FILE=""
+    # A full copy of the spec remains in OBJECTIVE.md: the existing blocked
+    # prerequisite scanner must see its model/provider requirements, not just
+    # a summary or file name. The mission envelope has its own byte identity.
+    OBJECTIVE="Mission: $name
+The specification below is authoritative. Read linked project files before work.
+Reference: ${reference:-(none)}
+Backlog: ${backlog:-(none)}
+Open decisions: ${decisions:-(none)} (unresolved; ask the operator, never infer defaults)
+Acceptance evidence: ${acceptance:-(none)} (not an executable gate)
+Specification ($spec):
+$OBJECTIVE"
+    # Snapshot linked documents into the stored objective too. This makes
+    # prerequisite scans and audit evidence cover exactly the bytes used by
+    # this run, even if someone later edits a source document.
+    local text complete
+    for label in reference backlog decisions acceptance; do
+        path="${!label}"
+        [ -n "$path" ] || continue
+        text=''; complete=0
+        IFS= read -r -d '' -n 1048577 text < "$root/$path" && complete=1
+        [ "$complete" = 0 ] && [ "${#text}" -le 1048576 ] || { err "$label must be plain text <= 1 MiB"; return 1; }
+        if printf '%s' "$text" | tr -d '\011\012\015' | grep '[[:cntrl:]]' >/dev/null; then
+            err "$label contains control bytes"; return 1
+        fi
+        OBJECTIVE="$OBJECTIVE
+--- $label ($path; snapshot, not a decision or executable gate) ---
+$text"
+    done
+    OBJECTIVE_EXPLICIT=1
+    return 0
+}
+
 parse_args() {
     local a run_selected=0 argc="$#" consumed=0
     local original=( "$@" )
@@ -15922,6 +16037,7 @@ parse_args() {
             OBJECTIVE_EXPLICIT=1; OBJECTIVE="$*"; break
         fi
         case "$a" in
+            mission) CMD=mission; shift; REST=( "$@" ); break;;
             chat) CMD=chat; CHAT_LAUNCH_ARGS=( "${original[@]:0:$consumed}" ); shift; REST=( "$@" ); break;;
             start) START_REQUEST=1; CMD=run; run_selected=1; shift;;
             run) CMD=run; run_selected=1; shift;;
@@ -16486,7 +16602,12 @@ main() {
         WORKER_ID="${2:-}"; shift 2
     fi
     parse_args "$@"
-    load_spec
+    if [ "$CMD" = mission ]; then
+        mission_prepare || exit 1
+        [ "$CMD" = run ] || exit 0
+    else
+        load_spec
+    fi
 
     # These answer before ledger repair, traps or update, including in a
     # directory Ralphie cannot write to. Discovery never starts a run.

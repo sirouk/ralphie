@@ -5,6 +5,16 @@ the two interfaces a script can depend on: **exit codes** and `status --json`.
 
 ## 4.2.3 — 2026-09-24
 
+**Named mission MVP.** `mission preview` validates a named, bounded set of
+project-local documents without writing or calling an engine. `mission start`
+explicitly runs in the foreground and snapshots the spec, reference, backlog,
+open decisions, and acceptance context into the ordinary stored objective.
+Engine/model, cycle/minute budgets, and optional `--accept CMD` are explicit
+per-invocation inputs. The existing ledger, lock, gates, and blocked-provider
+refusal remain authoritative; acceptance documents are not executable gates,
+and open decisions are not silently answered. Hermetic mission tests added.
+
+
 **Blocked model/provider requirements fail before spending.** Direct `run` and detached
 `start` now check a saved blocked objective before resetting run state, admitting
 a worker, or calling an engine. ASK.md answers, `--model`, and `--no-resume`
