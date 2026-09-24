@@ -7085,17 +7085,20 @@ if want "engine-opinion-not-an-outcome"; then
 fi
 
 if want "typo-multiword"; then
-    # The guard must only fire when the WHOLE command line is that one word.
-    # Reading `$#` inside the function was always 1, so an ordinary unquoted
-    # objective had its FIRST word judged: six in eight were turned away.
+    # Bare multiword argv is command-shaped and must refuse before spending.
+    # Explicit run preserves ordinary unquoted objective sentences, including
+    # first words that resemble verbs.
     d="$(new_project)"
     # A mock that refuses to do anything, so even an accidental loop is free.
     printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "no\\n\\n<<<RALPHIE\\nstatus: blocked\\nsummary: x\\nlesson: -\\nask: -\\nRALPHIE>>>\\n"\n' > "$d/never"
     chmod +x "$d/never"
     for o in "asks for input" "gate the pipeline" "logging is broken" "runs too slowly" "helper needs a test"; do
         # Deliberately unquoted: this is how an operator really types it.
-        out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom $o 2>&1 )"
-        check_lacks "an ordinary objective is not refused: $o" "unknown command" "${out}"
+        out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom $o 2>&1 )"; rc=$?
+        check_fails "an implicit multiword objective refuses before spending: $o" "$rc"
+        check_contains "multiword refusal gives explicit syntax: $o" 'use run, --, or -o' "$out"
+        out="$( cd "$d" && env RALPHIE_ENGINE_CMD="$d/never" RALPHIE_ENGINE_CAPS="" ./ralphie.sh --once --engine custom run $o 2>&1 )"
+        check_lacks "explicit run permits an ordinary objective: $o" "unknown command" "$out"
     done
     # ALWAYS --engine custom with a mock. Without it these two lines selected the
     # real installed engine and started an unbounded, BILLED run: `./ralphie.sh ""`
@@ -9536,7 +9539,7 @@ printf 'complete\n' > outcome.txt
 printf '<<<RALPHIE\nstatus: done\nsummary: target reached\nlesson: -\nask: -\nRALPHIE>>>\n'
 MOCK
     chmod +x "$pd/mock"
-    out="$(cd "$pd/caller" && RALPHIE_PROJECT='../actual target' RALPHIE_ENGINE_CMD="$pd/mock" MOCK_LAST_PROMPT="$pd/prompt" "$pd/installed/ralphie.sh" --once --no-commit --no-update --gate 'test -f outcome.txt' 'reach the selected project' 2>&1)"; rc=$?
+    out="$(cd "$pd/caller" && RALPHIE_PROJECT='../actual target' RALPHIE_ENGINE_CMD="$pd/mock" MOCK_LAST_PROMPT="$pd/prompt" "$pd/installed/ralphie.sh" --once --no-commit --no-update --gate 'test -f outcome.txt' run 'reach the selected project' 2>&1)"; rc=$?
     check_ok "project-target relative environment completes real loop" "$rc"
     check "project-target engine cwd" "$target" "$(cat "$target/engine-cwd.txt" 2>/dev/null)"
     check "project-target engine receives canonical environment" "$target" "$(cat "$target/engine-project.txt" 2>/dev/null)"
@@ -9770,7 +9773,7 @@ printf '<<<RALPHIE\nstatus: progress\nsummary: unfinished\nlesson: -\nask: -\nRA
 MOCK
     chmod +x "$d/mock"
     (cd "$d" && git add value.txt mock ralphie.sh && git commit -qm baseline)
-    out="$(cd "$d" && env GATE_RETRIES=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --cycles 5 --no-update 'fix value' 2>&1)"
+    out="$(cd "$d" && env GATE_RETRIES=0 RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --cycles 5 --no-update run 'fix value' 2>&1)"
     check "completion-proof unchanged red owned work stalls" 3 $?
     check "completion-proof unchanged red work keeps streak" 3 "$(sed -n 's/^nochange_streak=//p' "$d/.ralphie/state")"
     check "completion-proof only changed red cycle counts progress" 1 "$(sed -n 's/^fail_count=//p' "$d/.ralphie/state")"
@@ -9780,7 +9783,7 @@ MOCK
     printf 'if [ -e attack ]; then rm -f .ralphie/gates; fi; true\n' > "$d/.ralphie/gates"
     make_mock_engine "$d/mock" nothing
     (cd "$d" && git add ralphie.sh mock && git commit -qm baseline)
-    out="$(cd "$d" && env MOCK_LAST_PROMPT="$d/.ralphie/mock-prompt" MOCK_STATUS=done RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update 'complete objective' 2>&1)"
+    out="$(cd "$d" && env MOCK_LAST_PROMPT="$d/.ralphie/mock-prompt" MOCK_STATUS=done RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update run 'complete objective' 2>&1)"
     check "completion-proof observe control first reaches done" done "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
     touch "$d/attack"
     out="$(cd "$d" && env MOCK_LAST_PROMPT="$d/.ralphie/mock-prompt" MOCK_STATUS=done RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_ENGINE_CAPS='' ./ralphie.sh --once --no-update --done-when-green 2>&1)"
