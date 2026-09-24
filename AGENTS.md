@@ -75,7 +75,10 @@ engine already does this", delete it and add a capability instead.
 7. **Explicit operator choices are honoured**, including `--engine`. A free-text
    ASK.md answer does not rewrite a saved model/provider requirement. A blocked
    `/continue` is bound to the saved objective bytes, run, engine and model;
-   typed `/apply ID` is required before a new worker is admitted.
+   typed `/apply ID` is required before a new worker is admitted. Direct
+   `run` and `start` refuse an unchanged blocked model/provider prerequisite
+   before engine use or worker admission. An explicit replacement objective
+   must remove it; a different model flag, ASK answer, or `--no-resume` does not.
 8. **Untrusted reviews cannot certify themselves.** Panel-written commands are
    unverified proposals unless explicitly run. `PANEL_RUN_CHECKS=1` can execute
    writing project scripts; it is not a read-only sandbox. Timeouts are UNKNOWN,

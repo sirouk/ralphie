@@ -123,7 +123,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.2.2"
+VERSION="4.2.3"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -8666,19 +8666,30 @@ chat_request_target() {
     return 0
 }
 
-# A blocked continuation is not a replacement objective. The saved objective
-# remains authoritative, and a model/provider clause in it outranks any later
-# free-text ASK.md answer. This narrow check is intentionally conservative: it
-# cannot establish provider availability from local evidence. Any model or
-# provider clause means revision by the operator, not a paid retry.
+# grep -c consumes ALL input, so an early model hit followed by a long
+# objective cannot SIGPIPE its producer under pipefail. Exit 0 means a known
+# requirement; 1 means no match; 2 means unreadable/failed scan (fail closed).
+objective_has_model_requirement() {
+    local hits rc pattern
+    pattern='(^|[^[:alnum:]_])(chutes|kimi|gpt-[[:alnum:]_.-]+|openai|claude|anthropic|gemini|grok|sonnet)([^[:alnum:]_]|$)|(^|[[:space:]])(requires?|must|only|use|using)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?(model|provider)([[:space:]:=]|$)|(^|[[:space:]])(model|provider)[[:space:]]*[:=]|(^|[[:space:]])(model|provider)[[:space:]]+(is|must[[:space:]]+be|should[[:space:]]+be)[[:space:]]+[^[:space:]]+'
+    if [ "$#" -eq 0 ]; then
+        [ ! -L "$OBJECTIVE_FILE" ] && [ -f "$OBJECTIVE_FILE" ] && [ -r "$OBJECTIVE_FILE" ] || return 2
+        hits="$(LC_ALL=C grep -Eic "$pattern" "$OBJECTIVE_FILE")"; rc=$?
+    else
+        hits="$(printf '%s' "$1" | LC_ALL=C grep -Eic "$pattern")"; rc=$?
+    fi
+    case "$rc:$hits" in 0:*) [ "$hits" -gt 0 ] && return 0;; 1:0) return 1;; esac
+    return 2
+}
+
+# Chat has no authority to revise any model/provider clause. Keep its broad
+# historical heuristic, but treat a failed scan as refusal, never permission.
 chat_continue_requirement() {
     [ ! -L "$OBJECTIVE_FILE" ] && [ -f "$OBJECTIVE_FILE" ] && [ -r "$OBJECTIVE_FILE" ] || return 1
-    # Conservative by design: names, aliases, negatives ("not gpt-6-sol"),
-    # provider prefixes and availability cannot be verified by grep. Scan the
-    # WHOLE objective (specs can be 1 MiB), not a truncated excerpt.
-    if LC_ALL=C tr '[:upper:]' '[:lower:]' < "$OBJECTIVE_FILE" |
-        grep -Eq 'model|provider|chutes|kimi|claude|gpt-|openai'; then return 1; fi
-    return 0
+    objective_has_model_requirement; case "$?" in 0|2) return 1;; esac
+    local hits rc
+    hits="$(LC_ALL=C grep -Eic 'model|provider|chutes|kimi|claude|gpt-|openai' "$OBJECTIVE_FILE")"; rc=$?
+    [ "$rc" = 1 ] && [ "$hits" = 0 ]
 }
 
 chat_continue_ready() {
@@ -16109,10 +16120,87 @@ fresh_start() {
     return 0
 }
 
+# A final blocked run's saved model/provider requirement is not amended by an
+# ASK.md answer or by changing --model. Refuse until an explicit, byte-different
+# objective no longer asserts a recognizable provider/model prerequisite.
+# This does not claim that the newly requested model actually is available.
+blocked_model_resume_preflight() {
+    [ "$(state_get status '')" = blocked ] || return 0
+    local LC_ALL=C saved current old_id legacy_text='' proposed_id req_rc
+    [ ! -L "$OBJECTIVE_FILE" ] && [ -f "$OBJECTIVE_FILE" ] && [ -r "$OBJECTIVE_FILE" ] || {
+        err 'blocked objective is missing or unsafe; no run was started'; return 1;
+    }
+    current="$(sha_of < "$OBJECTIVE_FILE")"
+    saved="$(state_get objective_bytes_hash '')"
+    old_id="$(state_get objective_hash '')"
+    if [ -z "$saved" ]; then
+        # Legacy CLI objective_hash omits the single presentation newline;
+        # legacy --spec hashes the exact input. Check both without `$(cat)`,
+        # which discards ALL trailing newlines. NUL prevents a trustworthy read.
+        if IFS= read -r -d '' legacy_text < "$OBJECTIVE_FILE"; then
+            err 'blocked objective has a NUL byte; no run was started'; return 1
+        fi
+        if [ -z "$old_id" ] || {
+            [ "$(printf '%s' "$legacy_text" | sha_of)" != "$old_id" ] &&
+            [ "$(printf '%s' "${legacy_text%"$RALPHIE_NL"}" | sha_of)" != "$old_id" ];
+        }; then
+            # A changed legacy file may have erased the model requirement.
+            # Never infer its old contents from the now-edited file.
+            saved='unknown-legacy-objective'
+        else
+            # Legacy objective_hash confirms these exact bytes for CLI text or
+            # --spec; use today's byte hash as a verified local witness.
+            saved="$current"
+        fi
+    fi
+    if [ -n "$saved" ] && [ "$current" != "$saved" ]; then
+        [ -n "$OBJECTIVE" ] &&
+        { [ "${OBJECTIVE_EXPLICIT:-0}" = 1 ] || [ -n "$SPEC_FILE" ]; } || {
+            err 'blocked objective differs from its saved identity; supply an explicitly revised objective'; return 1;
+        }
+        proposed_id="$(printf '%s' "$OBJECTIVE" | sha_of)"
+        [ "$proposed_id" != "$old_id" ] || {
+            err 'unchanged saved objective is not a revision; no run was started'; return 1;
+        }
+    fi
+    objective_has_model_requirement; req_rc=$?
+    case "$req_rc" in
+        1) if [ "$saved" != unknown-legacy-objective ] && [ "$current" = "$saved" ]; then
+               return 0
+           fi;;
+        2) err 'blocked objective could not be scanned; no run was started'; return 1;;
+    esac
+    [ -n "$OBJECTIVE" ] &&
+    { [ "${OBJECTIVE_EXPLICIT:-0}" = 1 ] || [ -n "$SPEC_FILE" ]; } || {
+        err 'blocked objective has a model/provider requirement; an ASK.md answer cannot revise it';
+        err '  Supply an explicitly revised objective (--objective or --spec)'; return 1;
+    }
+    # The exact CLI text gets one final newline; --spec retains exact bytes.
+    if [ -n "$SPEC_FILE" ]; then
+        if printf '%s' "$OBJECTIVE" | cmp -s - "$OBJECTIVE_FILE"; then
+            err 'unchanged blocked objective is not a revision'; return 1
+        fi
+    else
+        if printf '%s%s' "$OBJECTIVE" "$RALPHIE_NL" | cmp -s - "$OBJECTIVE_FILE"; then
+            err 'unchanged blocked objective is not a revision'; return 1
+        fi
+    fi
+    [ -z "$old_id" ] || [ "$(printf '%s' "$OBJECTIVE" | sha_of)" != "$old_id" ] || {
+        err 'unchanged saved objective is not a revision'; return 1;
+    }
+    objective_has_model_requirement "$OBJECTIVE"; req_rc=$?
+    case "$req_rc" in
+        1) return 0;;
+        0) err 'revised objective still requires a model/provider; no run was started'; return 1;;
+        *) err 'could not inspect revised objective; no run was started'; return 1;;
+    esac
+}
+
 run_prepare() {
     # Everything that must be true before the first cycle. Ordered by what
     # depends on what, and nothing here is allowed to be silent.
     lock_matches || lock_acquire || return 1
+    blocked_model_resume_preflight || return 1
     # The chat shortcut carries only a bound witness, never authority to
     # replace the objective or model. Recheck after taking the worker lock,
     # before run_init resets run_id/status. Failure leaves the saved run intact.
@@ -16483,7 +16571,12 @@ main() {
     if [ "$CMD" = stop ] && { [ "${#REST[@]}" -gt 0 ] || worker_regular "$LOCK_FILE/launch"; }; then
         worker_stop "${REST[@]+"${REST[@]}"}"; exit $?
     fi
-    if [ "$START_REQUEST" = 1 ] && [ -z "$WORKER_ID" ]; then worker_launch "$@"; exit $?; fi
+    if [ "$START_REQUEST" = 1 ] && [ -z "$WORKER_ID" ]; then
+        # Before admission/detachment: deny unsafe blocked resumes without
+        # creating a worker receipt. The worker checks again under the lock.
+        blocked_model_resume_preflight || exit 1
+        worker_launch "$@"; exit $?
+    fi
     if [ -n "$WORKER_ID" ]; then
         worker_paths "$WORKER_ID" || die "invalid worker launch directory"
         [ "$CMD" = run ] || die "worker requires run options"

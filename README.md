@@ -156,7 +156,11 @@ of that block is `/apply ID`, typing `yes` (or `y`, `ok`, `go`, `proceed`,
 A blocked-run continuation is stricter: `yes` drafts the proposal, but a second
 `yes` only redisplays it. Type `/apply ID` to start a new worker bound to the
 same saved objective, run, engine and model. An ASK.md answer does not revise a
-saved model/provider requirement; edit the objective explicitly first.
+saved model/provider requirement. Direct `run` and `start` also refuse an unchanged
+blocked model/provider requirement before an engine call or worker admission.
+To start new work, explicitly supply a different objective that removes the
+requirement; changing only `--model`, answering ASK.md or using `--no-resume`
+is not a revision. Ralphie does not prove provider availability from text.
 `n` (or `no`, `nope`, `skip`, `later`, `not yet`) declines.
 
 A bare **Enter** takes the default only when that default is safe. An option

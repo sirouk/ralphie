@@ -3,6 +3,21 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.2.3 — 2026-09-24
+
+**Blocked model/provider requirements fail before spending.** Direct `run` and detached
+`start` now check a saved blocked objective before resetting run state, admitting
+a worker, or calling an engine. ASK.md answers, `--model`, and `--no-resume`
+do not revise it. An explicit, byte-different replacement objective must remove
+the model/provider prerequisite; Ralphie does not infer provider availability
+from the replacement text. Legacy objective identity is checked when a byte
+hash is unavailable. Missing or unsafe saved objectives fail closed.
+
+The blocked-chat requirement check now consumes the whole objective: an early
+model clause followed by a long tail can no longer turn a SIGPIPE into a false
+negative. Mock regressions cover Kimi versus Max, unfamiliar model names,
+`run`/`start`, revisions, legacy state, and the long-tail case.
+
 ## 4.2.2 — 2026-09-24
 
 **Blocked work stays stopped until its saved requirements can be verified.**

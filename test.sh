@@ -559,6 +559,164 @@ CHAT_PARTIAL_EOF
     ) || no "chat-terminal-ux group completed"
 fi
 
+if want "blocked-model-resume-preflight"; then
+    # Run the actual CLI against a local mock. A regression may start it, but
+    # cannot reach a billable provider. The marker proves the guard's ordering.
+    d="$(new_project)"
+    make_mock_engine "$TMPROOT/blocked-model-engine" nothing
+    ( load_lib "$d"
+      ledger_init
+      state_set status blocked; state_set run_id prior-run
+      state_set reason 'model unavailable'
+      printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n' > "$OBJECTIVE_FILE"
+      state_set objective_hash saved-goal
+      state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+      # Closed ASK.md answers are not revisions to the saved objective.
+      printf '## Q1  [answered]  ts\nUse another provider?\n\n> yes, gpt-6-sol\n' > "$ASK_FILE"
+      true ) || no 'blocked-model fixture completed'
+    blocked_hash="$(sha_sum_of "$d/.ralphie/OBJECTIVE.md")"
+    blocked_ask_hash="$(sha_sum_of "$d/.ralphie/ASK.md")"
+    blocked_id="$(sed -n 's/^run_id=//p' "$d/.ralphie/state")"
+    run_blocked_model() {
+        ( cd "$d" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+            MOCK_LAST_PROMPT="$d/engine-started" \
+            ./ralphie.sh --no-update --engine custom --model gpt-6-sol --once "$@" 2>&1 )
+    }
+    out="$(run_blocked_model run)"; rc=$?
+    check_fails 'bare blocked Kimi objective refuses before any paid call' "$rc"
+    check_contains 'refusal requests an explicitly revised objective' 'revised objective' "$out"
+    check 'bare resume never starts mock engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    check 'bare refusal preserves run ID before run_init' "$blocked_id" "$(sed -n 's/^run_id=//p' "$d/.ralphie/state")"
+    check 'bare refusal preserves objective bytes' "$blocked_hash" "$(sha_sum_of "$d/.ralphie/OBJECTIVE.md")"
+    check 'bare refusal preserves ASK.md answer' "$blocked_ask_hash" "$(sha_sum_of "$d/.ralphie/ASK.md")"
+    check 'bare refusal preserves blocked verdict' blocked "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+    out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$d/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once start 2>&1)"; rc=$?
+    check_fails 'start preflight refuses unchanged blocked Kimi before worker admission' "$rc"
+    check 'start refusal creates no worker admission artifacts' no "$([ -d "$d/.ralphie/workers" ] && echo yes || echo no)"
+    check 'start refusal starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    # Unknown model names require grammar, not a hard-coded vendor list.
+    dunknown="$(new_project)"
+    ( load_lib "$dunknown"
+      ledger_init; state_set status blocked; state_set run_id unknown-provider-run
+      printf '%s\n' 'Before work, confirm the active model is acme/fast; if not, stop.' > "$OBJECTIVE_FILE"
+      state_set objective_hash "$(printf '%s' 'Before work, confirm the active model is acme/fast; if not, stop.' | sha_of)"
+      state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+      true ) || no 'unknown model fixture completed'
+    out="$(cd "$dunknown" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$dunknown/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+    check_fails 'unknown provider in model-is clause refuses unchanged blocked run' "$rc"
+    check 'unknown model clause starts no engine' no "$([ -e "$dunknown/engine-started" ] && echo yes || echo no)"
+    out="$(cd "$dunknown" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$dunknown/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once run \
+        'Before work, confirm the active model is acme/fast; if not, stop. Run tests.' 2>&1)"; rc=$?
+    check_fails 'changed objective retaining unknown model-is clause refuses' "$rc"
+    check 'changed unknown model clause starts no engine' no "$([ -e "$dunknown/engine-started" ] && echo yes || echo no)"
+    out="$(run_blocked_model --no-resume run)"; rc=$?
+    check_fails '--no-resume does not launder unchanged requirement' "$rc"
+    out="$(run_blocked_model run 'Requires Chutes Kimi K3 model, not gpt-6-sol.')"; rc=$?
+    check_fails 'same explicit text bytes do not count as revision' "$rc"
+    check 'identical text starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n' > "$d/identical-spec"
+    out="$(run_blocked_model --spec "$d/identical-spec" run)"; rc=$?
+    check_fails 'same --spec bytes do not count as revision' "$rc"
+    check 'identical spec starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    # Removing the requirement by editing the stored file is not an explicit
+    # new invocation. Use the saved byte witness, not the now-edited text.
+    printf 'Do unrelated work.\n' > "$d/.ralphie/OBJECTIVE.md"
+    out="$(run_blocked_model run)"; rc=$?
+    check_fails 'edited stored objective cannot bypass the saved byte witness' "$rc"
+    check 'stored-file edit starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    out="$(run_blocked_model --spec "$d/identical-spec" run)"; rc=$?
+    check_fails 'candidate matching saved bytes is not a revision even if current file differs' "$rc"
+    check 'saved-byte match starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    # The requirement is at byte zero; an old tr|grep -q predicate could let
+    # SIGPIPE overwrite the match when followed by a long spec tail.
+    { printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n';
+      awk 'BEGIN{for(i=0;i<200000;i++) printf "x"; print ""}'; } > "$d/.ralphie/OBJECTIVE.md"
+    ( load_lib "$d"
+      state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+      objective_has_model_requirement
+      check_ok 'early requirement plus long tail is detected' "$?"
+      true ) || no 'long-spec preflight fixture completed'
+    out="$(run_blocked_model run)"; rc=$?
+    check_fails 'early clause plus long tail blocks direct resume' "$rc"
+    check 'early clause plus long tail starts no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    # Old state with no objective_bytes_hash must not permit unchanged resume.
+    ( load_lib "$d"; state_set objective_bytes_hash ''; true ) || no 'legacy preflight fixture completed'
+    out="$(run_blocked_model run)"; rc=$?
+    check_fails 'legacy blocked run without byte hash still refuses unchanged Kimi objective' "$rc"
+    check 'legacy unchanged objective never starts engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    ( load_lib "$d"; state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"; true ) || no 'legacy preflight fixture reset completed'
+    # A changed suffix is not permission to ignore the still-present clause.
+    out="$(run_blocked_model run 'Requires Chutes Kimi K3 model, not gpt-6-sol. Also run tests.')"; rc=$?
+    check_fails 'revised words retaining unavailable Kimi clause are refused' "$rc"
+    check 'revised words retaining Kimi start no engine' no "$([ -e "$d/engine-started" ] && echo yes || echo no)"
+    printf 'Requires Chutes Kimi K3 model, not gpt-6-sol. Also run tests.\n' > "$d/retained-spec"
+    out="$(run_blocked_model --spec "$d/retained-spec" run)"; rc=$?
+    check_fails 'revised spec retaining Kimi clause is refused' "$rc"
+    printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n' > "$d/.ralphie/OBJECTIVE.md"
+    ( load_lib "$d"; state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"; true ) || no 'restored preflight fixture completed'
+    out="$(run_blocked_model run 'Build accessible dashboard and tests.')"; rc=$?
+    check_ok 'different explicit objective bytes can run' "$rc"
+    check 'revised run reached only the local mock' yes "$([ -s "$d/engine-started" ] && echo yes || echo no)"
+    check 'revised objective written verbatim with CLI newline' 'Build accessible dashboard and tests.' "$(cat "$d/.ralphie/OBJECTIVE.md")"
+    # An ordinary blocked run must not be caught merely because it discusses a
+    # data model; the preflight is for model/provider requirements, not words.
+    d2="$(new_project)"
+    ( load_lib "$d2"
+      ledger_init; state_set status blocked; state_set run_id ordinary-run
+      printf 'Refactor the data model and tests.\n' > "$OBJECTIVE_FILE"
+      state_set objective_hash ordinary-goal
+      state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+      true ) || no 'ordinary-blocked fixture completed'
+    out="$(cd "$d2" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$d2/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+    check_ok 'ordinary blocked resume remains allowed' "$rc"
+    check 'ordinary blocked resume reaches mock' yes "$([ -s "$d2/engine-started" ] && echo yes || echo no)"
+    dlegacy="$(new_project)"
+    ( load_lib "$dlegacy"
+      ledger_init; state_set status blocked; state_set run_id legacy-ordinary
+      printf 'Refactor the data model and tests.\n' > "$OBJECTIVE_FILE"
+      state_set objective_hash "$(printf '%s' 'Refactor the data model and tests.' | sha_of)"
+      state_set objective_bytes_hash ''
+      true ) || no 'ordinary legacy fixture completed'
+    out="$(cd "$dlegacy" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$dlegacy/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+    check_ok 'ordinary legacy blocked objective resumes with matching identity' "$rc"
+    check 'ordinary legacy resume reaches mock' yes "$([ -s "$dlegacy/engine-started" ] && echo yes || echo no)"
+    d3="$(new_project)"
+    ( load_lib "$d3"
+      ledger_init; state_set status blocked; state_set run_id legacy-run
+      printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n' > "$OBJECTIVE_FILE"
+      # Historical CLI identity omits the final presentation newline.
+      state_set objective_hash "$(printf '%s' 'Requires Chutes Kimi K3 model, not gpt-6-sol.' | sha_of)"
+      state_set objective_bytes_hash ''
+      true ) || no 'legacy hash fixture completed'
+    printf 'Do unrelated work.\n' > "$d3/.ralphie/OBJECTIVE.md"
+    out="$(cd "$d3" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+        MOCK_LAST_PROMPT="$d3/engine-started" \
+        ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+    check_fails 'legacy objective_hash detects an edited file erasing Kimi' "$rc"
+    check 'legacy edited file starts no engine' no "$([ -e "$d3/engine-started" ] && echo yes || echo no)"
+    check 'legacy refusal preserves original blocked run ID' legacy-run "$(sed -n 's/^run_id=//p' "$d3/.ralphie/state")"
+    ( load_lib "$d3"
+      # A missing or symlinked objective is not a negative scan result.
+      old_objective="$OBJECTIVE_FILE"
+      OBJECTIVE_FILE="$d3/nonexistent-objective"
+      objective_has_model_requirement; check 'missing objective scan returns distinct error' 2 "$?"
+      blocked_model_resume_preflight >/dev/null 2>&1
+      check_fails 'missing saved objective fails closed' "$?"
+      OBJECTIVE_FILE="$old_objective"
+      true ) || no 'unreadable objective guard group completed'
+    unset -f run_blocked_model
+fi
+
 if want "blocked-chat-continue"; then
     d="$(new_project)"
     ( load_lib "$d"
@@ -624,6 +782,14 @@ if want "blocked-chat-continue"; then
       check_fails 'answered question cannot override Kimi K3 requirement' "$rc"
       check_contains 'operator told saved objective still wins' 'does not revise an objective' "$out"
       check 'refusal starts no second worker' 1 "$(grep -c -- '^--continue-from$' "$HOME_DIR/launched" || true)"
+      # An early hit also needs the whole stream consumed: tr|grep -q under
+      # pipefail used to return 141 and falsely permit /continue.
+      { printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n';
+        awk 'BEGIN{for(i=0;i<200000;i++) printf "x"; print ""}'; } > "$OBJECTIVE_FILE"
+      state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+      out="$(chat_input /continue 2>&1)"; rc=$?
+      check_fails 'early Kimi clause and long tail cannot pass chat continuation' "$rc"
+      check 'long-tail refusal starts no second worker' 1 "$(grep -c -- '^--continue-from$' "$HOME_DIR/launched" || true)"
       # A long spec can hide a model requirement after the 4 KiB excerpt.
       { awk 'BEGIN{for(i=0;i<4300;i++) printf "x"}'; printf '\nRequires Chutes Kimi K3\n'; } > "$OBJECTIVE_FILE"
       state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
