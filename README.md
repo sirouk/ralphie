@@ -375,11 +375,15 @@ code. When you or the companion want something changed, it proposes; you
 approve with `/apply`. The first boot asks before spending tokens. Ctrl-C
 stops waiting, not the companion; a late reply appears at your next message.
 Without `prime-agent`, `tmux` or `python3`, or with `RALPHIE_CHAT_ENGINE=ralphie`,
-chat stays on the stateless console and says so. `chat --stop` ends the
-companion; the run is untouched.
+chat stays on the stateless console and says so. `chat MESSAGE` joins an
+already-live resident companion when available. It never boots one or prompts
+to start one; without a live companion it states the stateless fallback.
+`chat --stop` ends the companion; the run is untouched.
 
 `./ralphie.sh watch` on a terminal shows the live work: the engine's own dialog
-for the current cycle, humanely rendered. It starts and spends nothing.
+for the current cycle, humanely rendered. It starts and spends nothing. The
+live `watch --follow` view exits after one hour without new displayable output,
+including when the transcript file stops growing.
 `watch --attach` is the companion's own screen. Piped or in CI, `watch` is the
 bounded snapshot. `request TEXT` is how you interject: it reaches the worker at
 its next cycle boundary (the engine call running now is unchanged) and a live

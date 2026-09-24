@@ -10106,6 +10106,15 @@ chat_command_main() {
     trap 'exit 129' HUP
     if [ "$#" -gt 0 ]; then
         [ -n "${*//[[:space:]]/}" ] || { err 'ralphie: chat MESSAGE must not be empty.'; return 2; }
+        # One-shot messages may JOIN an existing fenced companion, but never
+        # start one. No consent prompt, tmux boot or paid engine boot in a pipe.
+        CHAT_COMPANION=""
+        if [ "${RALPHIE_CHAT_ENGINE:-engine}" != ralphie ]; then
+            companion_connect_live || true
+        fi
+        if [ -z "$CHAT_COMPANION" ]; then
+            dim "  (no live resident companion selected; this one-shot turn uses the stateless supervisor)"
+        fi
         rc=0; chat_input "$*" || rc=$?; [ "$rc" -ne 10 ] || rc=0
         # One MESSAGE is still a turn, so it still ends on the one next action.
         rail_render
@@ -11274,6 +11283,22 @@ chat_companion_turn() {
     fi
     printf '%s\n' "$answer" | chat_text
     chat_history Companion "$answer" || true
+    return 0
+}
+
+companion_connect_live() {
+    # Read-only selection of this project's already-live, fenced companion.
+    # Unlike companion_connect, this MUST NOT call steerer_start or offer boot.
+    local name impl
+    CHAT_COMPANION=""
+    rails_on || return 1
+    impl="$(steerer_impl 2>/dev/null || printf '')"
+    [ "$impl" = prime-agent ] && have python3 || return 1
+    name="$(steerer_read name 2>/dev/null || printf '')"
+    [ -n "$name" ] && steerer_name_valid "$name" || return 1
+    steerer_pa_id "$name" >/dev/null 2>&1 || return 1
+    CHAT_COMPANION="$name"
+    dim "  (one-shot turn joined the live resident companion: $name)"
     return 0
 }
 
@@ -13888,7 +13913,9 @@ COMMANDS
                  anything. It proposes; you approve with /apply. The first
                  time, it asks before starting (it spends tokens). With no
                  prime-agent, tmux or python3 it falls back to the stateless
-                 supervisor and says so. MESSAGE gives one turn and exits.
+                 supervisor and says so. MESSAGE gives one turn and exits:
+                 it joins an already-live companion if available, but never
+                 starts one; otherwise it states the stateless fallback.
   chat --stop    End the resident companion. The run is untouched.
                   On a blocked run, /continue proposes the same saved objective
                   and recorded model. /apply ID alone starts a new worker.
@@ -15333,10 +15360,10 @@ watch_follow_cli() {
     #   RALPHIE_DIALOG_TAIL_BYTES   backfill on first attach  (default 65536)
     have python3 || { err 'python3 is required to render the dialog; showing the console log is the fallback for now.'; return 1; }
     [ -d "$RUN_DIR/sessions" ] || { err 'no engine session transcripts for this project yet.'; return 1; }
-    local f out off rendered size off_line stop idle f2
+    local f out off rendered size off_line stop idle_since f2
     stop="${RALPHIE_DIALOG_TAIL_BYTES:-65536}"
     f="$(watch_follow_newest_transcript)" || { err 'no engine session transcripts found yet for this project.'; return 1; }
-    off=0; idle=0; rendered=''
+    off=0; idle_since=$SECONDS; rendered=''
     chat_say "Following the engine's live dialog. Ctrl-C to exit."
     chat_say "  transcript: ${f#$RUN_DIR/sessions/}"
     # First paint: a bounded backfill, so the viewer lands in context.
@@ -15358,9 +15385,15 @@ watch_follow_cli() {
         printf '%s\n' "$rendered" | chat_text
     fi
     while :; do
+        # Check elapsed idleness BEFORE every early continue. A transcript at
+        # the same size (the common idle case) must not bypass the bound.
+        if [ "$((SECONDS - idle_since))" -ge 3600 ]; then
+            dim '  (idle for one hour; exiting follow)'
+            break
+        fi
         f2="$(watch_follow_newest_transcript)" || f2=''
         if [ -n "$f2" ] && [ "$f2" != "$f" ]; then
-            f="$f2"; off=0
+            f="$f2"; off=0; idle_since=$SECONDS
             chat_say "  transcript: ${f#$RUN_DIR/sessions/} (new session)"
         fi
         size="$(file_bytes "$f" 2>/dev/null)" || { sleep 1; continue; }
@@ -15378,8 +15411,7 @@ watch_follow_cli() {
         [ -n "$rendered" ] && printf '%s\n' "$rendered" | chat_text
         # The bound is on IDLENESS, so a busy follow is never cut off: any new
         # output resets it. Counting ticks retired a live view after an hour.
-        if [ -n "$rendered" ]; then idle=0; else idle=$((idle+1)); fi
-        [ "$idle" -lt 3600 ] || { dim '  (idle for one hour; exiting follow)'; break; }
+        if [ -n "$rendered" ]; then idle_since=$SECONDS; fi
         sleep 1
     done
 }

@@ -11687,8 +11687,19 @@ if want "follow-sanitized"; then
     [ "$n" -ge 2 ]; check_ok "the watch follow sanitizes every chunk it prints" "$?"
     bad="$(printf '%s\n' "$body" | grep -nE "printf '%s\\\\n' \"\\\$rendered\"\$" || true)"
     check "no raw print of engine text survives in the watch follow" "" "$bad"
-    # The idle bound must measure idleness, not elapsed ticks.
-    case "$body" in *'idle=0'*) ok "new output resets the idle bound";; *) no "new output resets the idle bound";; esac
+    # The idle bound must measure idleness, including the unchanged-size path.
+    case "$body" in *'idle_since=$SECONDS'*) ok "new output resets the idle bound";; *) no "new output resets the idle bound";; esac
+    d="$(new_project)"; ( load_lib "$d"
+      RUN_DIR="$d/.ralphie/run"; mkdir -p "$RUN_DIR/sessions"
+      f="$RUN_DIR/sessions/live.jsonl"; printf 'x' > "$f"
+      watch_follow_newest_transcript() { printf '%s' "$RUN_DIR/sessions/live.jsonl"; }
+      dialog_render() { printf '1\n'; }
+      file_bytes() { printf '1\n'; }
+      sleep() { SECONDS=3601; }
+      out="$(watch_follow_cli 2>&1)"; rc=$?
+      check_ok "unchanged transcript exits after idle limit" "$rc"
+      check_contains "unchanged transcript reports idle limit" 'idle for one hour' "$out"
+      true ) || no 'watch follow idle group completed'
 fi
 
 if want "engine-chat-boot-scan"; then
@@ -12070,6 +12081,26 @@ if want "companion-wait"; then
     case "$tbody" in *'companion_pending_reply'*) ok "a late reply is shown at the next turn";; *) no "a late reply is shown at the next turn";; esac
     bad="$(printf '%s\n' "$body" | grep -nE '\| *head( |$)' || true)"
     check "the wait path has no early-exit pipe reader" "" "$bad"
+fi
+
+if want "companion-oneshot"; then
+    # One-shot joins only an already-live prime companion. Never ask or boot.
+    d="$(new_project)"; ( load_lib "$d"
+      mkdir -p "$HOME_DIR/steerer"
+      printf 'ralphie-steerer-test\n' > "$HOME_DIR/steerer/name"
+      rails_on() { return 0; }
+      steerer_impl() { printf 'prime-agent'; }
+      steerer_name_valid() { [ "$1" = ralphie-steerer-test ]; }
+      steerer_pa_id() { [ "${live:-0}" = 1 ]; }
+      steerer_start() { no "one-shot must never boot a companion"; return 1; }
+      live=1; companion_connect_live >/dev/null
+      check "one-shot joins an already-live companion" ralphie-steerer-test "$CHAT_COMPANION"
+      live=0; companion_connect_live >/dev/null; rc=$?
+      check_fails "dead companion cannot be joined" "$rc"
+      check "dead companion leaves stateless routing" "" "$CHAT_COMPANION"
+      true ) || no 'companion one-shot group completed'
+    body="$(sed -n '/^chat_command_main()/,/^}/p' "$RALPHIE")"
+    case "$body" in *'companion_connect_live || true'*) ok "one-shot uses the non-booting connector";; *) no "one-shot uses the non-booting connector";; esac
 fi
 
 if want "companion-proposals"; then
