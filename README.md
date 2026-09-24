@@ -30,6 +30,67 @@ Ralphie; the engine and the project's own build/test tools must be installed.
 
 ---
 
+## Explicit review checkpoints (optional, independent of the loop)
+
+```bash
+./ralphie.sh --project DIR checkpoint prepare --kind plan --input docs/plan.md
+./ralphie.sh --project DIR checkpoint show ID
+# Review the exact selected files and prompt in DIR/.ralphie/checkpoints/ID/.
+# The next command MAY SPEND: only when you explicitly request a provider.
+./ralphie.sh --project DIR checkpoint run ID --engine prime-agent --model MODEL --seats 2 --spend
+./ralphie.sh --project DIR checkpoint show ID
+./ralphie.sh --project DIR checkpoint record ID --finding F-ID --disposition needs-proof --reason "Reproduce before deciding"
+```
+
+`prepare` also accepts `--kind graph` or `--kind release` and repeatable
+`--input PATH`. Pick 1–6 existing regular, non-symlink, allowlisted **local
+project** text files. Each is limited to 24,000 bytes, the set to 48,000 bytes,
+the displayed release diff to 24,000 bytes and the complete prompt to 80,000
+bytes. Large scope is **rejected**, never silently truncated. Release packets
+also bind committed HEAD, branch, whole tracked diff hash and tracked/untracked
+worktree status outside `.ralphie`; only selected files and their diff are *shown*
+to seats. Other
+files and the content of untracked files remain **unexamined**. `show` makes no
+state writes; `prepare` and `record` write only under `.ralphie/checkpoints/`.
+No checkpoint operation writes run state, objective, ledger, gate or commit.
+
+Only a separately typed `checkpoint run ID --engine prime-agent|claude
+--spend` can start provider processes. Default is one seat; `--seats` caps at
+three. Each gets the same frozen prompt in an isolated tool-free, no-session CLI
+invocation. No automatic engine selection, provider fallback or retries. Each
+attempt has a 120-second timeout. **This is not an OS sandbox or money cap.**
+A provider might charge for a call that times out. Test these CLI flags with
+`engine-doctor` before running if the installed tool changes. Requested model
+and model names written in answers are not proof of the actually served model;
+this MVP records `actual_model=unconfirmed`, provider usage `unavailable`.
+A missing executable is a refusal, not a silent substitute. `run` does not
+repeat an existing run intent; inspect partial receipts rather than retrying
+without explicit new preparation. An isolated packet is same-user mutable and
+its hashes detect ordinary drift, not tampering by an attacker with your account.
+
+A valid seat response uses `{"claims":[{"type":"DEFECT","title":"...",
+"where":"selected/path:line","why":"...","check":"operator proposal"}]}`.
+Claims stay separate per seat. Empty claims do not mean approval. Malformed
+answers are preserved but **unparsed**. `record` requires a specific finding,
+reason and disposition (`accept`, `reject`, `defer`, or `needs-proof`); it logs
+`local-operator`, not authenticated identity. Record refuses stale input.
+Records are separate exclusive files, but same-user replacements are possible.
+Proposed checks are **never run** by checkpoints. To test a claim, run a check
+you have reviewed yourself; only project gates, not checkpoints or a model's
+answer, decide Ralphie's verified completion. A changed snapshot needs a new
+checkpoint. You select source files: **this is not a secret scanner**; check
+selected files before invoking a paid model. Packet retention is manual and
+separate from Ralphie's run logs. The optional command needs Python 3; the
+normal loop does not.
+
+The default argv guard refuses unknown *bare single words* rather than turning
+a mistyped command into a paid run. To run a real one-word objective, use
+`./ralphie.sh -- WORD`, `-o WORD`, or explicitly select `--engine NAME`.
+Multiword objectives and explicit `run` remain unchanged, except command-shaped
+`checkp*` typos and checkpoint-only flags are refused; use `--` for literal text.
+
+---
+
 ## Supervisor chat
 
 ```bash
