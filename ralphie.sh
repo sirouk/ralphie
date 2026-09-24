@@ -14015,8 +14015,10 @@ MISSION
       [--engine NAME] [--model ID] [--cycles N] [--minutes N]
       [--accept CMD]
   All FILEs are readable project-relative plain text (max 1 MiB each).
-  Preview validates paths and prints a plan; it never writes, runs a gate,
-  starts an engine, or resolves open decisions. Start snapshots all documents
+  Only --project may precede mission; put all mission flags after preview|start.
+  Preview validates content and paths, quotes the executable --accept command,
+  and labels unknown engine/model defaults unresolved. It never writes, probes,
+  runs a gate, starts an engine, or resolves open decisions. Start snapshots all documents
   into OBJECTIVE.md, then uses the ordinary run lock, ledger, gates, and blocked
   model/provider guard. Acceptance FILE is evidence, NOT an executable gate;
   use --accept CMD only when you explicitly choose a verification command.
@@ -15875,8 +15877,15 @@ looks_like_typo() {
     [ -n "$a" ] || return 0                          # `case "run" in ""*)` matches
     case "$a" in *[!a-z-]*) return 0;; esac          # not a bare lowercase word
     [ "$argc" -eq 1 ] || return 0                    # a sentence, not a command
+    # "misson" is an omitted internal letter, not a prefix spelling. Keep the
+    # exception explicit rather than broadening the guard to arbitrary words.
+    if [ "$a" = misson ]; then
+        err "unknown command: $a   (did you mean 'mission'?)"
+        dim "  to use it as an objective instead:  $ME -- \"$a\""
+        exit 1
+    fi
     for c in run start watch discover status doctor gates ask answer request memory log stop update version help forget \
-             steerer engine-doctor connect chat; do
+             steerer engine-doctor connect chat mission; do
         # BOTH directions: `stat` is a prefix of `status`, and `statuss` has
         # `status` as a prefix. Checking only one caught the first and let the
         # second through to a paid engine call.
@@ -15927,10 +15936,38 @@ load_spec() {
 }
 
 # A mission is an explicit, single-run envelope around the existing run engine.
-# Preview runs before project binding/ledger repair and must never make decisions.
+# Preview reads project settings, but runs before ledger repair and never probes.
+# One content reader is used for preview AND for the exact start snapshot. This
+# prevents a green preview for content that start would refuse or later discard.
+mission_read_document() {
+    local label="$1" path="$2" root="$3" complete=0 LC_ALL=C scan_rc
+    MISSION_TEXT=''
+    [ "$(wc -c < "$root/$path" | tr -d ' ')" -le 1048576 ] || { err "$label exceeds 1 MiB"; return 1; }
+    IFS= read -r -d '' -n 1048577 MISSION_TEXT < "$root/$path" && complete=1
+    [ "$complete" = 0 ] || { err "$label must be plain text (NUL byte)"; return 1; }
+    local filtered stripped
+    filtered="$(printf '%s' "$MISSION_TEXT" | tr -d '\011\012\015')" || {
+        err "$label could not be checked for control bytes"; return 1;
+    }
+    # No early-exit pipe: grep reads the whole bounded string and a failed
+    # transform cannot masquerade as a clean no-match under pipefail.
+    grep '[[:cntrl:]]' <<< "$filtered" >/dev/null
+    scan_rc=$?
+    case "$scan_rc" in
+        0) err "$label contains control bytes"; return 1;;
+        1) ;; # no controls.
+        *) err "$label could not be checked for control bytes"; return 1;;
+    esac
+    stripped="$(printf '%s' "$MISSION_TEXT" | tr -d '[:space:]')" || {
+        err "$label could not be checked for nonempty text"; return 1;
+    }
+    [ -n "$stripped" ] || { err "$label must not be empty or whitespace-only"; return 1; }
+    return 0
+}
+
 mission_prepare() {
     local action="${REST[0]:-}" name='' spec='' reference='' backlog='' decisions='' acceptance='' arg value path label
-    local n=0 m=0
+    local n=0 m=0 model_seen=0 root resolved_dir text spec_text='' snapshots='' MISSION_TEXT='' preview_engine preview_model
     case "$action" in preview|start) ;; *) err 'mission requires preview or start'; return 1;; esac
     [ "$MAX_CYCLES" = 0 ] && [ "$MAX_MINUTES" = 0 ] || { err "mission budgets must follow the mission verb"; return 1; }
     local idx=1
@@ -15949,7 +15986,7 @@ mission_prepare() {
                     --open-decisions) [ -z "$decisions" ] || { err 'duplicate --open-decisions'; return 1; }; decisions="$value";;
                     --acceptance) [ -z "$acceptance" ] || { err 'duplicate --acceptance'; return 1; }; acceptance="$value";;
                     --engine) [ -z "$ENGINE" ] || { err 'duplicate --engine'; return 1; }; ENGINE="$value"; ENGINE_EXPLICIT=1;;
-                    --model) [ -z "$MODEL" ] || { err 'duplicate --model'; return 1; }; MODEL="$value";;
+                    --model) [ "$model_seen" = 0 ] || { err 'duplicate --model'; return 1; }; MODEL="$value"; model_seen=1;;
                     --cycles) is_int "$value" || { err '--cycles needs a number'; return 1; }; n="$value"; MAX_CYCLES="$value";;
                     --minutes) is_int "$value" || { err '--minutes needs a number'; return 1; }; m="$value"; MAX_MINUTES="$value";;
                     --accept) [ "$ACCEPT_EXPLICIT" = 0 ] && [ -n "${value//[[:space:]]/}" ] || { err 'invalid or duplicate --accept'; return 1; }; ACCEPT_ARG="$value"; ACCEPT_EXPLICIT=1;;
@@ -15961,7 +15998,6 @@ mission_prepare() {
     # Values are data in the objective, never shell commands. Keep headings on
     # one line; embedded controls must not become directives or terminal escapes.
     case "$name" in *[!a-zA-Z0-9._\ -]*|'') err 'mission name allows only letters, digits, spaces, dot, underscore and hyphen'; return 1;; esac
-    local root
     root="$(cd -- "$PROJECT" 2>/dev/null && pwd -P)" || { err "cannot access project directory: $PROJECT"; return 1; }
     for label in spec reference backlog decisions acceptance; do
         path="${!label}"
@@ -15970,28 +16006,39 @@ mission_prepare() {
         # external path which might change independently of the project.
         case "$path" in /*|.*|*'/../'*|../*|*/..|*'/./'*|./*|*$'\t'*|*'\'*|*[$'\001'-$'\037']*) err "invalid $label path: $path"; return 1;; esac
         [ -f "$root/$path" ] && [ ! -L "$root/$path" ] && [ -r "$root/$path" ] || { err "$label needs a readable regular project file: $path"; return 1; }
-        local resolved_dir
         if [ "$path" = "${path##*/}" ]; then resolved_dir="$root"
         else resolved_dir="$(cd -- "${root}/${path%/*}" 2>/dev/null && pwd -P)" || return 1; fi
         case "$resolved_dir/" in "$root/"*) ;; *) err "$label escapes project: $path"; return 1;; esac
-        [ "$(wc -c < "$root/$path" | tr -d ' ')" -le 1048576 ] || { err "$label exceeds 1 MiB"; return 1; }
-        local checked='' has_nul=0
-        IFS= read -r -d '' -n 1048577 checked < "$root/$path" && has_nul=1
-        [ "$has_nul" = 0 ] || { err "$label must be plain text (NUL byte)"; return 1; }
-        if printf '%s' "$checked" | tr -d '\011\012\015' | grep '[[:cntrl:]]' >/dev/null; then
-            err "$label contains control bytes"; return 1
+        mission_read_document "$label" "$path" "$root" || return 1
+        text="$MISSION_TEXT"
+        if [ "$label" = spec ]; then spec_text="$text"
+        else
+            snapshots="$snapshots
+--- $label ($path; snapshot, not a decision or executable gate) ---
+$text"
         fi
     done
-    printf 'mission %s: %s\n  project: %s\n  spec: %s\n  reference: %s\n  backlog: %s\n  open decisions: %s\n  acceptance: %s\n  engine: %s\n  model: %s\n  limits: %s cycles, %s minutes\n' "$action" "$name" "$root" "$spec" "${reference:-(none)}" "${backlog:-(none)}" "${decisions:-(none)}" "${acceptance:-(none)}" "${ENGINE:-(existing selection)}" "${MODEL:-(existing selection)}" "$n" "$m"
+    # Project settings are read without ledger repair or engine probing. A
+    # selected engine/model can be named; auto-selection and engine defaults
+    # cannot be resolved without changing the preview's no-probe promise.
+    project_bind "$root"
+    if [ -n "$ENGINE" ]; then preview_engine="$ENGINE (selected; availability not checked)"
+    elif [ -n "${RALPHIE_ENGINE_CMD:-}" ]; then preview_engine='custom (RALPHIE_ENGINE_CMD; availability not checked)'
+    else preview_engine='unresolved (automatic engine selection at start)'; fi
+    if [ -n "$MODEL" ]; then preview_model="$MODEL (selected; engine resolution not checked)"
+    else preview_model='unresolved (engine default at start)'; fi
+    printf 'mission %s: %s\n  project: %s\n  spec: %s\n  reference: %s\n  backlog: %s\n  open decisions: %s\n  acceptance: %s\n  engine: %s\n  model: %s\n  limits: %s cycles, %s minutes\n' "$action" "$name" "$root" "$spec" "${reference:-(none)}" "${backlog:-(none)}" "${decisions:-(none)}" "${acceptance:-(none)}" "$preview_engine" "$preview_model" "$n" "$m"
+    if [ "$ACCEPT_EXPLICIT" = 1 ]; then
+        printf '  executable --accept command (shell-quoted, NOT run in preview): %q\n' "$ACCEPT_ARG"
+    else
+        printf '%s\n' '  executable --accept command: (none; acceptance FILE is evidence only)'
+    fi
     if [ "$action" = preview ]; then
         printf '%s\n' 'Read-only preview. No checks, engine, admission, defaults for open decisions, or approval.'
         return 0
     fi
-    SPEC_FILE="$root/$spec"
     CMD=run
     REST=()
-    load_spec || return 1
-    SPEC_FILE=""
     # A full copy of the spec remains in OBJECTIVE.md: the existing blocked
     # prerequisite scanner must see its model/provider requirements, not just
     # a summary or file name. The mission envelope has its own byte identity.
@@ -16002,35 +16049,31 @@ Backlog: ${backlog:-(none)}
 Open decisions: ${decisions:-(none)} (unresolved; ask the operator, never infer defaults)
 Acceptance evidence: ${acceptance:-(none)} (not an executable gate)
 Specification ($spec):
-$OBJECTIVE"
-    # Snapshot linked documents into the stored objective too. This makes
-    # prerequisite scans and audit evidence cover exactly the bytes used by
-    # this run, even if someone later edits a source document.
-    local text complete
-    for label in reference backlog decisions acceptance; do
-        path="${!label}"
-        [ -n "$path" ] || continue
-        text=''; complete=0
-        IFS= read -r -d '' -n 1048577 text < "$root/$path" && complete=1
-        [ "$complete" = 0 ] && [ "${#text}" -le 1048576 ] || { err "$label must be plain text <= 1 MiB"; return 1; }
-        if printf '%s' "$text" | tr -d '\011\012\015' | grep '[[:cntrl:]]' >/dev/null; then
-            err "$label contains control bytes"; return 1
-        fi
-        OBJECTIVE="$OBJECTIVE
---- $label ($path; snapshot, not a decision or executable gate) ---
-$text"
-    done
+$spec_text$snapshots"
+    # Content was read once above, before the preview, and these are the same
+    # validated bytes start saves and scans. No second read may bypass preview.
+
     OBJECTIVE_EXPLICIT=1
     return 0
 }
 
 parse_args() {
-    local a run_selected=0 argc="$#" consumed=0
+    local a run_selected=0 argc="$#" consumed=0 mission_prefix_bad=''
     local original=( "$@" )
     CHAT_LAUNCH_ARGS=()
     [ "$#" -gt 0 ] || CMD=chat
     while [ "$#" -gt 0 ]; do
         a="$1"
+        # Only --project is meaningful before the mission verb. Other run flags
+        # would otherwise be silently inherited, ignored, or misreported by its
+        # read-only preview (for example a pre-verb --objective or --spec).
+        if [ "$run_selected" = 0 ]; then
+            case "$a" in
+                mission) [ -z "$mission_prefix_bad" ] || die "mission options must follow mission preview|start (pre-verb $mission_prefix_bad is not supported)";;
+                --project) ;;
+                -*) [ -n "$mission_prefix_bad" ] || mission_prefix_bad="$a";;
+            esac
+        fi
         # Once run is selected, command-looking words are objective text.
         # Options still parse normally, just as they do for an implicit run.
         if [ "$run_selected" = 1 ] && [[ "$a" != -* ]]; then

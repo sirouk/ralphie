@@ -330,6 +330,7 @@ make_mock_engine() {
 #!/usr/bin/env bash
 prompt="\$(cat)"
 printf '%s\n' "\$prompt" > "\$MOCK_LAST_PROMPT"
+if [ -n "\${MOCK_CALL_LOG:-}" ]; then printf 'call\n' >> "\$MOCK_CALL_LOG"; fi
 case "$behaviour" in
   fix)      printf 'def add(a, b):\n    return a + b\n' > "\$MOCK_TARGET" ;;
   nothing)  : ;;
@@ -13897,6 +13898,23 @@ if want "mission-mvp"; then
     check_ok 'mission preview succeeds' "$rc"
     check_contains 'mission preview describes name' 'Sample Mission' "$out"
     check_contains 'mission preview exposes decisions' 'decisions.md' "$out"
+    check_contains 'mission preview names unresolved engine' 'engine: unresolved (automatic engine selection at start)' "$out"
+    check_contains 'mission preview names unresolved model' 'model: unresolved (engine default at start)' "$out"
+    check_contains 'mission preview distinguishes acceptance evidence' 'executable --accept command: (none; acceptance FILE is evidence only)' "$out"
+    accept_cmd="printf '%s' \$(whoami); touch '$d/preview-accept-ran'"
+    quoted_cmd="$(printf '%q' "$accept_cmd")"
+    out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec spec.md --accept "$accept_cmd" --acceptance ref.md 2>&1)"; rc=$?
+    check_ok 'mission preview with executable acceptance succeeds without executing it' "$rc"
+    check_contains 'mission preview quotes exact executable acceptance' "executable --accept command (shell-quoted, NOT run in preview): $quoted_cmd" "$out"
+    check 'mission preview never executes acceptance' no "$([ -e "$d/preview-accept-ran" ] && echo yes || echo no)"
+    out="$(env RALPHIE_ENGINE=custom RALPHIE_MODEL=Inherited "$RALPHIE" --project "$d" mission preview --name Sample --spec spec.md --model Explicit 2>&1)"; rc=$?
+    check_ok 'mission explicit CLI model overrides inherited env in preview' "$rc"
+    check_contains 'mission preview shows selected engine without probing' 'engine: custom (selected; availability not checked)' "$out"
+    check_contains 'mission preview shows CLI model, not inherited env' 'model: Explicit (selected; engine resolution not checked)' "$out"
+    check_lacks 'mission preview does not show superseded model' 'model: Inherited' "$out"
+    out="$(env RALPHIE_MODEL=Inherited "$RALPHIE" --project "$d" mission preview --name Sample --spec spec.md --model A --model B 2>&1)"; rc=$?
+    check_fails 'mission duplicate typed models refused even with env model' "$rc"
+    check_contains 'mission duplicate typed model has useful error' 'duplicate --model' "$out"
     if [ ! -e "$d/.ralphie" ]; then ok 'mission preview does not create state'; else no 'mission preview does not create state' 'state created'; fi
     out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec missing 2>&1)"; rc=$?
     check_fails 'mission missing spec refused' "$rc"
@@ -13907,9 +13925,65 @@ if want "mission-mvp"; then
     printf '\000' > "$d/binary.md"
     out="$("$RALPHIE" --project "$d" mission preview --name Sample --spec binary.md 2>&1)"; rc=$?
     check_fails 'mission preview rejects binary spec' "$rc"
+    # Every rejected invocation is routed to a local mock and MUST leave it
+    # untouched. This guards both the stdout plan and the worker admission.
     make_mock_engine "$d/mock" nothing
     export MOCK_LAST_PROMPT="$d/prompt" MOCK_TARGET="$d/target" MOCK_STATUS=blocked
+    export MOCK_CALL_LOG="$d/mock-calls"
+    for bad_kind in empty blank control nul linked-nul linked-control linked-empty escape; do
+        case "$bad_kind" in
+            empty) : > "$d/bad-content.md"; bad_opt=(--spec bad-content.md);;
+            blank) printf ' \t\n' > "$d/bad-content.md"; bad_opt=(--spec bad-content.md);;
+            control) printf 'ok\033bad\n' > "$d/bad-content.md"; bad_opt=(--spec bad-content.md);;
+            nul) printf 'ok\000bad\n' > "$d/bad-content.md"; bad_opt=(--spec bad-content.md);;
+            linked-nul) printf 'ok\000bad\n' > "$d/bad-content.md"; bad_opt=(--reference bad-content.md);;
+            linked-control) printf 'ok\033bad\n' > "$d/bad-content.md"; bad_opt=(--backlog bad-content.md);;
+            linked-empty) : > "$d/bad-content.md"; bad_opt=(--open-decisions bad-content.md);;
+            escape) bad_opt=(--acceptance ../spec.md);;
+        esac
+        for verb in preview start; do
+            out="$(env RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 \
+                MOCK_LAST_PROMPT="$d/prompt" MOCK_CALL_LOG="$d/mock-calls" \
+                "$RALPHIE" --project "$d" mission "$verb" --name Sample --spec spec.md "${bad_opt[@]}" --cycles 1 2>&1)"; rc=$?
+            check_fails "mission $verb refuses $bad_kind document" "$rc"
+            check 'rejected mission makes zero mock calls' no "$([ -e "$MOCK_CALL_LOG" ] && echo yes || echo no)"
+            check 'rejected mission admits no worker' no "$([ -d "$d/.ralphie/workers" ] && echo yes || echo no)"
+        done
+    done
+    out="$(env RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 \
+        "$RALPHIE" --project "$d" mission preview --name Sample --spec spec.md --model Stable --model Other 2>&1)"; rc=$?
+    check_fails 'duplicate explicit mission model returns refusal status' "$rc"
+    check 'duplicate model has zero mock calls' no "$([ -e "$MOCK_CALL_LOG" ] && echo yes || echo no)"
+    # Parser tests must source parse_args, not invoke a bare near-command: a
+    # regression would otherwise buy an unbounded run for its typo objective.
+    ( load_lib "$d"
+      for near in missio missions misson; do
+          parsed="$(parse_args "$near" 2>&1)"; parsed_rc=$?
+          check_fails "near-command $near is refused by sourced parser" "$parsed_rc"
+          check_contains "near-command $near names intended verb" 'mission' "$parsed"
+      done
+      parse_args -- misson
+      check 'explicit -- permits true one-word near-command objective' misson "$OBJECTIVE"
+      true ) || no 'mission parser fixture completed'
+    for early in --objective --spec --engine --model --accept --cycles --minutes --thinking --gate --branch --no-commit --no-yolo --once; do
+        ( load_lib "$d"
+          case "$early" in
+              --cycles|--minutes) prefix=("$early" 1);;
+              --no-commit|--no-yolo|--once) prefix=("$early");;
+              *) prefix=("$early" safe);;
+          esac
+          parsed="$(parse_args "${prefix[@]}" --project "$d" mission preview --name Sample --spec spec.md 2>&1)"; parsed_rc=$?
+          check_fails "mission preview refuses pre-verb $early" "$parsed_rc"
+          check_contains "mission pre-verb $early is explained" 'mission options must follow' "$parsed"
+          parsed="$(parse_args --project "$d" "${prefix[@]}" mission start --name Sample --spec spec.md 2>&1)"; parsed_rc=$?
+          check_fails "mission start refuses pre-verb $early" "$parsed_rc"
+          true ) || no "mission parser $early fixture completed"
+    done
+    check 'parser refusals have zero mock calls' no "$([ -e "$MOCK_CALL_LOG" ] && echo yes || echo no)"
+    export MOCK_CALL_LOG="$d/mock-calls"
     out="$(RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 "$RALPHIE" --project "$d" mission start --name 'Sample Mission' --spec spec.md --reference ref.md --open-decisions decisions.md --cycles 1 2>&1)"; rc=$?
+    check_ok 'mission start returns successful run exit status' "$rc"
+    check 'mission start calls mock exactly once' 1 "$(wc -l < "$MOCK_CALL_LOG" | tr -d ' ')"
     check_contains 'mission start diagnostics' 'ralphie 4.' "$out"
     check_contains 'mission start stores named objective' 'Mission: Sample Mission' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
     check_contains 'mission start snapshots reference' 'Keep this reference.' "$(cat "$d/.ralphie/OBJECTIVE.md" 2>/dev/null)"
@@ -13918,10 +13992,29 @@ if want "mission-mvp"; then
     sed 's/^status=.*/status=blocked/' "$d/.ralphie/state" > "$d/.ralphie/state.tmp" && mv "$d/.ralphie/state.tmp" "$d/.ralphie/state"
     # A blocked previous run requiring a provider cannot be overridden by
     # mission metadata or --model; fail before run_init changes its state.
+    calls_before="$(wc -l < "$MOCK_CALL_LOG" | tr -d ' ')"
+    saved_hash="$(sha_sum_of "$d/.ralphie/OBJECTIVE.md")"
+    saved_run="$(sed -n 's/^run_id=//p' "$d/.ralphie/state")"
     out="$(RALPHIE_ENGINE_CMD="$d/mock" RALPHIE_NO_UPDATE=1 "$RALPHIE" --project "$d" mission start --name 'Sample Mission' --spec spec.md --model Other --cycles 1 2>&1)"; rc=$?
     check_fails 'blocked provider prerequisite refuses mission revision' "$rc"
     check_contains 'blocked mission refusal reports prerequisite' 'model/provider' "$out"
-    unset MOCK_LAST_PROMPT MOCK_TARGET MOCK_STATUS
+    check 'blocked mission does not call mock again' "$calls_before" "$(wc -l < "$MOCK_CALL_LOG" | tr -d ' ')"
+    check 'blocked mission has no worker admission' no "$([ -d "$d/.ralphie/workers" ] && echo yes || echo no)"
+    check 'blocked mission keeps saved objective' "$saved_hash" "$(sha_sum_of "$d/.ralphie/OBJECTIVE.md")"
+    check 'blocked mission keeps saved run' "$saved_run" "$(sed -n 's/^run_id=//p' "$d/.ralphie/state")"
+    check 'blocked mission keeps blocked state' blocked "$(sed -n 's/^status=//p' "$d/.ralphie/state")"
+    model_d="$(new_project)"
+    printf 'Build a local feature.\n' > "$model_d/spec.md"
+    make_mock_engine "$model_d/mock" nothing
+    out="$(env RALPHIE_ENGINE_CMD="$model_d/mock" RALPHIE_MODEL=Inherited \
+        RALPHIE_NO_UPDATE=1 MOCK_LAST_PROMPT="$model_d/prompt" \
+        MOCK_CALL_LOG="$model_d/calls" MOCK_STATUS=blocked \
+        "$RALPHIE" --project "$model_d" mission start --name Model --spec spec.md \
+        --model Explicit --cycles 1 2>&1)"; rc=$?
+    check_ok 'mission CLI model overrides env in actual start' "$rc"
+    check 'mission actual start pins CLI model' Explicit "$(sed -n 's/^model=//p' "$model_d/.ralphie/state")"
+    check 'mission CLI model start invokes one mock' 1 "$(wc -l < "$model_d/calls" | tr -d ' ')"
+    unset MOCK_LAST_PROMPT MOCK_TARGET MOCK_STATUS MOCK_CALL_LOG
 fi
 if [ ! -d "$TALLY" ]; then
     red "BROKEN the tally directory vanished during the run - the result is unknown"
