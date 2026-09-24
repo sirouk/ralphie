@@ -10670,7 +10670,7 @@ steerer_write() {
 
 steerer_forget() {
     local f
-    for f in name id engine; do rm -f "$(steerer_file "$f")" 2>/dev/null || true; done
+    for f in name id engine fence-v1; do rm -f "$(steerer_file "$f")" 2>/dev/null || true; done
     return 0
 }
 
@@ -11106,15 +11106,18 @@ companion_ask() {
     # it calls is shown as it happens), and Ctrl-C stops WAITING -- never the
     # companion, whose reply is kept and shown at the start of the next turn.
     #   companion_ask <name> <text> <answer-file>   -> 0 answered, 1 failed, 3 still working
-    local name="$1" text="$2" out="$3" bin row sf receipt mid limit="${RALPHIE_COMPANION_WAIT:-1800}" i=0 got seen=0 n
+    local name="$1" text="$2" out="$3" bin row id sf receipt mid limit="${RALPHIE_COMPANION_WAIT:-1800}" i=0 got seen=0 n
     is_int "$limit" || limit=1800
-    bin="$(steerer_bin prime-agent)" || return 1
-    row="$(steerer_pa_row "$name" || true)"
-    [ -n "$row" ] || return 1
+    # Recheck at the last possible moment, including interactive turns after
+    # the initial join. A name can be rebound between turns; route by the
+    # verified immutable id, not by the reusable display name.
+    row="$(companion_live_row "$name")" || return 1
+    id="$(printf '%s' "$row" | cut -f1)"
     sf="$(printf '%s' "$row" | cut -f5)"
     [ -n "$sf" ] && [ -f "$sf" ] && [ ! -L "$sf" ] || return 1
+    bin="$(steerer_bin prime-agent)" || return 1
     : > "$out" 2>/dev/null || return 1
-    receipt="$(steerer_bounded "$bin" send --json "$name" -- "$text" 2>/dev/null)" || return 1
+    receipt="$(steerer_bounded "$bin" send --json "$id" -- "$text" 2>/dev/null)" || return 1
     # Whole-input reader, never `| head`: an early exit on a pipe is EPIPE under
     # pipefail, the one shape this file forbids everywhere.
     mid="$(printf '%s' "$receipt" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\(agentmsg_[A-Za-z0-9_-]*\)".*/\1/p' | sed -n 1p)"
@@ -11289,14 +11292,12 @@ chat_companion_turn() {
 companion_connect_live() {
     # Read-only selection of this project's already-live, fenced companion.
     # Unlike companion_connect, this MUST NOT call steerer_start or offer boot.
-    local name impl
+    local name
     CHAT_COMPANION=""
-    rails_on || return 1
-    impl="$(steerer_impl 2>/dev/null || printf '')"
-    [ "$impl" = prime-agent ] && have python3 || return 1
+    rails_on && have python3 || return 1
+    [ "$(steerer_impl 2>/dev/null || printf '')" = prime-agent ] || return 1
     name="$(steerer_read name 2>/dev/null || printf '')"
-    [ -n "$name" ] && steerer_name_valid "$name" || return 1
-    steerer_pa_id "$name" >/dev/null 2>&1 || return 1
+    [ -n "$name" ] && companion_live_row "$name" >/dev/null || return 1
     CHAT_COMPANION="$name"
     dim "  (one-shot turn joined the live resident companion: $name)"
     return 0
@@ -11317,10 +11318,16 @@ companion_connect() {
     fi
     have python3 || { dim "  (the resident companion needs python3 to read its replies; using the stateless supervisor)"; return 1; }
     name="$(steerer_read name 2>/dev/null || printf '')"
-    if [ -n "$name" ] && steerer_name_valid "$name" && steerer_pa_id "$name" >/dev/null 2>&1; then
-        CHAT_COMPANION="$name"
-        good "connected to the resident companion ($name). It reads the run; it cannot change it."
-        return 0
+    if [ -n "$name" ]; then
+        if companion_live_row "$name" >/dev/null; then
+            CHAT_COMPANION="$name"
+            good "connected to the resident companion ($name). It reads the run; it cannot change it."
+            return 0
+        fi
+        # Do not start another billing agent on an uncertain old address.
+        # This includes migrated sessions without the new boot-time witness.
+        dim "  (recorded companion cannot be verified as fenced; using the stateless supervisor)"
+        return 1
     fi
     have tmux || { dim "  (the resident companion needs tmux once to boot; using the stateless supervisor)"; return 1; }
     consent_f="$(steerer_file companion-consent)"
@@ -11344,13 +11351,71 @@ companion_connect() {
     fi
     steerer_start >/dev/null 2>&1 || { warn "the resident companion could not start; using the stateless supervisor (details: $ME steerer start)"; return 1; }
     name="$(steerer_read name 2>/dev/null || printf '')"
-    [ -n "$name" ] && steerer_pa_id "$name" >/dev/null 2>&1 || { warn "the resident companion did not come up; using the stateless supervisor"; return 1; }
+    [ -n "$name" ] && companion_live_row "$name" >/dev/null || { warn "the resident companion could not be verified as fenced; using the stateless supervisor"; return 1; }
     CHAT_COMPANION="$name"
     good "the resident companion is live ($name). It reads the run; it cannot change it."
     return 0
 }
 
 companion_ext_path() { printf '%s/ralphie-companion-v%s.ts' "$(companion_home)" "$COMPANION_EXT_VERSION"; }
+
+companion_sha256() {
+    # A fence witness is security-sensitive; sha_of's cksum fallback is not
+    # strong enough here. Without a SHA-256 implementation, stay stateless.
+    if have sha256sum; then sha256sum | awk '{print $1}'
+    elif have shasum; then shasum -a 256 | awk '{print $1}'
+    elif have openssl; then openssl dgst -sha256 | awk '{print $NF}'
+    else return 1
+    fi
+}
+
+companion_fence_witness() {
+    # Mint ONLY after a fenced Prime boot returned an id; verify again before
+    # any reuse. This is a local boot record, not an OS sandbox or an assertion
+    # about legacy sessions. Changes to the broker, flags, project, or id revoke
+    # it. The directory and broker must not resolve through symlinks.
+    local id="$1" ext want got args digest
+    case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    case "$PROJECT" in *$'\n'*|*$'\r'*|*$'\t'*) return 1;; esac
+    [ ! -L "$(companion_home)" ] || return 1
+    ext="$(companion_ext_path)"
+    [ -f "$ext" ] && [ ! -L "$ext" ] && [ -O "$ext" ] && [ -r "$ext" ] || return 1
+    want="$(companion_ext_source | companion_sha256)" || return 1
+    got="$(companion_sha256 < "$ext")" || return 1
+    case "$got" in *[!0-9a-f]*|'') return 1;; esac
+    [ "${#got}" -eq 64 ] && [ "$want" = "$got" ] || return 1
+    args="$(companion_fence_args "$ext")" || return 1
+    digest="$(printf 'ralphie companion boot v1\n%s\n%s\n%s\n%s\n%s\n' \
+        "$id" "$PROJECT" "$ext" "$got" "$args" | companion_sha256)" || return 1
+    case "$digest" in *[!0-9a-f]*|'') return 1;; esac
+    [ "${#digest}" -eq 64 ] || return 1
+    printf 'v1:%s' "$digest"
+}
+
+companion_live_row() {
+    # Read-only admission for chat. Never trust steerer_impl: its env override
+    # can say Prime when the stored session belongs to Claude. Never select on
+    # name alone: the daemon's live id AND exact bound cwd must match our boot
+    # record. A legacy (unfenced) session has no witness and is not joined.
+    local name="$1" id row cwd stored expected
+    steerer_name_valid "$name" || return 1
+    [ "$(steerer_read engine 2>/dev/null || printf '')" = prime-agent ] || return 1
+    id="$(steerer_read id 2>/dev/null || printf '')"
+    case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    [ ! -L "$(steerer_home)" ] || return 1
+    for stored in name id engine fence-v1; do
+        [ -f "$(steerer_file "$stored")" ] && [ ! -L "$(steerer_file "$stored")" ] || return 1
+    done
+    [ "$(steerer_read name 2>/dev/null || printf '')" = "$name" ] || return 1
+    row="$(steerer_pa_row "$name" 2>/dev/null)" || return 1
+    [ -n "$row" ] || return 1
+    [ "$(printf '%s' "$row" | cut -f1)" = "$id" ] || return 1
+    cwd="$(printf '%s' "$row" | cut -f3)"
+    [ "$cwd" = "$PROJECT" ] || return 1
+    expected="$(companion_fence_witness "$id")" || return 1
+    [ "$(steerer_read fence-v1 2>/dev/null || printf '')" = "$expected" ] || return 1
+    printf '%s' "$row"
+}
 
 companion_ext_write() {
     # Regenerated on every boot and then VERIFIED. ralphie stays one file: the
@@ -11821,7 +11886,7 @@ steerer_running() {
 }
 
 steerer_start() {
-    local name impl id
+    local name impl id fence
     impl="$(steerer_impl)" || { err "no steerer engine is installed  (prime-agent or claude)"; return 1; }
     # Liveness is decided by a 5-second bounded call into another program's
     # CLI, so ONE timeout must never be read as "nothing is running". It was:
@@ -11852,8 +11917,16 @@ steerer_start() {
     info "starting a $impl steerer for $PROJECT"
     id="$(steerer_api start "$name")" ||
         { steerer_forget; event steerer failed "$impl could not start a steerer"; return 1; }
-    if ! steerer_write name "$name" || ! steerer_write id "$id"; then
-        err "the steerer started but its address could not be persisted; stopping it again"
+    # No inferred fence for older steerer records. Record it only for a boot
+    # that just returned this id, after hashing the still-current broker and
+    # exact launch flags. If that cannot be verified, do not leave a companion
+    # that chat might later mistake for fenced.
+    if [ "$impl" = prime-agent ]; then
+        fence="$(companion_fence_witness "$id")" || fence=''
+    fi
+    if ! steerer_write name "$name" || ! steerer_write id "$id" ||
+       ! { [ "$impl" != prime-agent ] || { [ -n "$fence" ] && steerer_write fence-v1 "$fence"; }; }; then
+        err "the steerer started but its fence/address could not be persisted; stopping it again"
         steerer_api stop "$name" >/dev/null 2>&1 || true
         steerer_forget
         return 1
@@ -15345,6 +15418,8 @@ if out:
 RALPHIE_DIALOG_PY
 }
 
+watch_follow_clock() { printf '%s' "$SECONDS"; }
+
 watch_follow_cli() {
     # `ralphie.sh watch --follow [ID]` - a live humane tail of the engine's
     # dialog, the same contract as `tail -f`: it keeps printing until Ctrl-C.
@@ -15360,10 +15435,10 @@ watch_follow_cli() {
     #   RALPHIE_DIALOG_TAIL_BYTES   backfill on first attach  (default 65536)
     have python3 || { err 'python3 is required to render the dialog; showing the console log is the fallback for now.'; return 1; }
     [ -d "$RUN_DIR/sessions" ] || { err 'no engine session transcripts for this project yet.'; return 1; }
-    local f out off rendered size off_line stop idle_since f2
+    local f out off rendered size off_line stop idle_since f2 now
     stop="${RALPHIE_DIALOG_TAIL_BYTES:-65536}"
     f="$(watch_follow_newest_transcript)" || { err 'no engine session transcripts found yet for this project.'; return 1; }
-    off=0; idle_since=$SECONDS; rendered=''
+    off=0; idle_since="$(watch_follow_clock)"; rendered=''
     chat_say "Following the engine's live dialog. Ctrl-C to exit."
     chat_say "  transcript: ${f#$RUN_DIR/sessions/}"
     # First paint: a bounded backfill, so the viewer lands in context.
@@ -15387,13 +15462,14 @@ watch_follow_cli() {
     while :; do
         # Check elapsed idleness BEFORE every early continue. A transcript at
         # the same size (the common idle case) must not bypass the bound.
-        if [ "$((SECONDS - idle_since))" -ge 3600 ]; then
+        now="$(watch_follow_clock)"
+        if [ "$((now - idle_since))" -ge 3600 ]; then
             dim '  (idle for one hour; exiting follow)'
             break
         fi
         f2="$(watch_follow_newest_transcript)" || f2=''
         if [ -n "$f2" ] && [ "$f2" != "$f" ]; then
-            f="$f2"; off=0; idle_since=$SECONDS
+            f="$f2"; off=0; idle_since="$now"
             chat_say "  transcript: ${f#$RUN_DIR/sessions/} (new session)"
         fi
         size="$(file_bytes "$f" 2>/dev/null)" || { sleep 1; continue; }
@@ -15411,7 +15487,7 @@ watch_follow_cli() {
         [ -n "$rendered" ] && printf '%s\n' "$rendered" | chat_text
         # The bound is on IDLENESS, so a busy follow is never cut off: any new
         # output resets it. Counting ticks retired a live view after an hour.
-        if [ -n "$rendered" ]; then idle_since=$SECONDS; fi
+        if [ -n "$rendered" ]; then idle_since="$(watch_follow_clock)"; fi
         sleep 1
     done
 }

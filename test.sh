@@ -11688,14 +11688,16 @@ if want "follow-sanitized"; then
     bad="$(printf '%s\n' "$body" | grep -nE "printf '%s\\\\n' \"\\\$rendered\"\$" || true)"
     check "no raw print of engine text survives in the watch follow" "" "$bad"
     # The idle bound must measure idleness, including the unchanged-size path.
-    case "$body" in *'idle_since=$SECONDS'*) ok "new output resets the idle bound";; *) no "new output resets the idle bound";; esac
+    case "$body" in *'idle_since="$(watch_follow_clock)"'*) ok "new output resets the idle bound";; *) no "new output resets the idle bound";; esac
     d="$(new_project)"; ( load_lib "$d"
       RUN_DIR="$d/.ralphie/run"; mkdir -p "$RUN_DIR/sessions"
       f="$RUN_DIR/sessions/live.jsonl"; printf 'x' > "$f"
       watch_follow_newest_transcript() { printf '%s' "$RUN_DIR/sessions/live.jsonl"; }
       dialog_render() { printf '1\n'; }
       file_bytes() { printf '1\n'; }
-      sleep() { SECONDS=3601; }
+      watch_follow_clock() { printf '%s' "$(< "$HOME_DIR/fake-clock")"; }
+      sleep() { printf '3601\n' > "$HOME_DIR/fake-clock"; }
+      printf '0\n' > "$HOME_DIR/fake-clock"
       out="$(watch_follow_cli 2>&1)"; rc=$?
       check_ok "unchanged transcript exits after idle limit" "$rc"
       check_contains "unchanged transcript reports idle limit" 'idle for one hour' "$out"
@@ -12058,6 +12060,10 @@ if want "companion-turns"; then
       check "auth errors are a typed failure with no raw diagnostic" ERROR_AUTH "$(companion_turn_reply "$tr_" agentmsg_AUTH)"
       steerer_bin() { printf '%s' "$d/mock-prime"; }
       steerer_pa_row() { printf 'agent_mock\tlive\t%s\tmock\t%s\n' "$PROJECT" "$tr_"; }
+      mkdir -p "$(steerer_home)"
+      steerer_write name mock; steerer_write id agent_mock; steerer_write engine prime-agent
+      companion_ext_write >/dev/null
+      steerer_write fence-v1 "$(companion_fence_witness agent_mock)"
       steerer_bounded() { printf '%s' '{"id":"agentmsg_AUTH"}'; }
       auth_out="$d/auth-answer"
       companion_ask mock 'status' "$auth_out"; rc=$?
@@ -12084,20 +12090,91 @@ if want "companion-wait"; then
 fi
 
 if want "companion-oneshot"; then
-    # One-shot joins only an already-live prime companion. Never ask or boot.
+    # No Prime calls leave this fixture. Both connectors must fail closed when
+    # a name points outside the bound project, an id changed, or the boot-time
+    # broker witness is absent/tampered. A legitimate fresh boot can join.
     d="$(new_project)"; ( load_lib "$d"
-      mkdir -p "$HOME_DIR/steerer"
-      printf 'ralphie-steerer-test\n' > "$HOME_DIR/steerer/name"
+      mkdir -p "$(steerer_home)"
       rails_on() { return 0; }
-      steerer_impl() { printf 'prime-agent'; }
-      steerer_name_valid() { [ "$1" = ralphie-steerer-test ]; }
-      steerer_pa_id() { [ "${live:-0}" = 1 ]; }
-      steerer_start() { no "one-shot must never boot a companion"; return 1; }
-      live=1; companion_connect_live >/dev/null
-      check "one-shot joins an already-live companion" ralphie-steerer-test "$CHAT_COMPANION"
-      live=0; companion_connect_live >/dev/null; rc=$?
-      check_fails "dead companion cannot be joined" "$rc"
-      check "dead companion leaves stateless routing" "" "$CHAT_COMPANION"
+      have() { [ "$1" = python3 ] && return 0; command -v "$1" >/dev/null 2>&1; }
+      steerer_pa_sessions() { printf '%s\tlive\t%s\t%s\t%s\n' "$mock_id" "$mock_cwd" "$mock_name" "$mock_file"; }
+      steerer_start() { no "selection must not boot a paid agent"; return 1; }
+      steerer_bin() { printf '%s' "$d/mock-prime"; }
+      steerer_bounded() { printf '%s\n' "$*" >> "$d/sends"; printf '%s' '{"id":"agentmsg_test"}'; }
+      mock_name=ralphie-steerer-test
+      mock_id=agent_live
+      mock_cwd="$PROJECT"
+      mock_file="$d/companion.jsonl"
+      printf '%s\n' '{"type":"session"}' > "$mock_file"
+      steerer_write name "$mock_name"; steerer_write id "$mock_id"; steerer_write engine prime-agent
+      companion_ext_write >/dev/null
+      fence="$(companion_fence_witness "$mock_id")"; check_contains "fresh broker produces SHA-256 bound fence" 'v1:' "$fence"
+      steerer_write fence-v1 "$fence"
+      expect_fallback() {
+          local label="$1" rc
+          CHAT_COMPANION=previous
+          companion_connect_live >/dev/null 2>&1; rc=$?
+          check_fails "$label: one-shot rejects session" "$rc"
+          check "$label: one-shot stays stateless" '' "$CHAT_COMPANION"
+          CHAT_COMPANION=previous
+          companion_connect >/dev/null 2>&1; rc=$?
+          check_fails "$label: interactive refuses to join or boot" "$rc"
+          check "$label: interactive stays stateless" '' "$CHAT_COMPANION"
+          check "$label: no send" no "$([ -e "$d/sends" ] && echo yes || echo no)"
+          check "$label: no consent prompt or boot" no "$([ -e "$(steerer_file companion-consent)" ] && echo yes || echo no)"
+      }
+      CHAT_COMPANION=''; companion_connect_live >/dev/null
+      check "live fenced session is joined by one-shot" "$mock_name" "$CHAT_COMPANION"
+      CHAT_COMPANION=''; companion_connect >/dev/null
+      check "live fenced session is joined interactively" "$mock_name" "$CHAT_COMPANION"
+      # Recheck immediately before send. This is a mock receipt, no network;
+      # the target must be immutable id, never the mutable display name.
+      companion_turn_reply() { printf DONEok; }
+      companion_ask "$mock_name" hello "$d/answer" >/dev/null
+      check_contains "message targets the verified id" "send --json $mock_id -- hello" "$(cat "$d/sends")"
+      check_lacks "message never targets reused name" "send --json $mock_name" "$(cat "$d/sends")"
+      : > "$d/sends"; rm -f "$d/sends"
+      mock_cwd="$d/foreign"
+      expect_fallback 'foreign cwd'
+      companion_ask "$mock_name" hello "$d/answer" >/dev/null 2>&1; rc=$?
+      check_fails "foreign cwd cannot reach the send boundary" "$rc"
+      check "foreign cwd sent no message" no "$([ -e "$d/sends" ] && echo yes || echo no)"
+      mock_cwd="$PROJECT"; mock_id=agent_replaced
+      expect_fallback 'stale id'
+      companion_ask "$mock_name" hello "$d/answer" >/dev/null 2>&1; rc=$?
+      check_fails "stale id cannot reach the send boundary" "$rc"
+      check "stale id sent no message" no "$([ -e "$d/sends" ] && echo yes || echo no)"
+      mock_id=agent_live; rm -f "$(steerer_file fence-v1)"
+      expect_fallback 'unfenced legacy'
+      steerer_write fence-v1 "$fence"
+      steerer_write id agent_wrong
+      expect_fallback 'stored id does not match live row'
+      steerer_write id agent_live
+      steerer_write fence-v1 v1:legacy
+      expect_fallback 'old or invented fence does not verify'
+      steerer_write fence-v1 "$fence"
+      ( RALPHIE_STEERER_ENGINE=claude; expect_fallback 'env override cannot turn Prime record into Claude' )
+      steerer_write engine claude
+      ( RALPHIE_STEERER_ENGINE=prime-agent; expect_fallback 'env override cannot turn Claude record into Prime' )
+      steerer_write engine prime-agent
+      printf '%s\n' 'BROKER OVERRIDDEN' > "$(companion_ext_path)"
+      expect_fallback 'tampered broker'
+      companion_ext_write >/dev/null
+      mock_name=ralphie-steerer-other
+      expect_fallback 'reused name'
+      steerer_forget
+      check "forget clears the fence record" no "$([ -e "$(steerer_file fence-v1)" ] && echo yes || echo no)"
+      steerer_impl() { printf prime-agent; }
+      steerer_running() { return 1; }
+      steerer_name_new() { printf ralphie-steerer-fresh; }
+      steerer_api() { case "$1" in start) printf agent_fresh;; stop) :;; *) return 1;; esac; }
+      # Restore only the real implementation after all negative no-boot cases.
+      eval "$(sed -n '/^steerer_start()/,/^}/p' "$d/ralphie.sh")"
+      event() { :; }
+      companion_ext_write >/dev/null
+      steerer_start >/dev/null 2>&1; rc=$?
+      check_ok "fresh Prime boot writes the fence" "$rc"
+      check "fresh boot witness matches current broker and ID" "$(companion_fence_witness agent_fresh)" "$(steerer_read fence-v1)"
       true ) || no 'companion one-shot group completed'
     body="$(sed -n '/^chat_command_main()/,/^}/p' "$RALPHIE")"
     case "$body" in *'companion_connect_live || true'*) ok "one-shot uses the non-booting connector";; *) no "one-shot uses the non-booting connector";; esac

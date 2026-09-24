@@ -376,8 +376,11 @@ approve with `/apply`. The first boot asks before spending tokens. Ctrl-C
 stops waiting, not the companion; a late reply appears at your next message.
 Without `prime-agent`, `tmux` or `python3`, or with `RALPHIE_CHAT_ENGINE=ralphie`,
 chat stays on the stateless console and says so. `chat MESSAGE` joins an
-already-live resident companion when available. It never boots one or prompts
-to start one; without a live companion it states the stateless fallback.
+already-live resident companion only when the saved Prime engine, session ID,
+project cwd, and boot-time SHA-256 broker/fence witness all verify. Older
+companions without this witness are not joined by either chat mode; they use
+the stateless supervisor instead. It never boots one or prompts to start one;
+without a verified companion it states the stateless fallback.
 `chat --stop` ends the companion; the run is untouched.
 
 `./ralphie.sh watch` on a terminal shows the live work: the engine's own dialog
