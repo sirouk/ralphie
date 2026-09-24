@@ -827,20 +827,28 @@ budget.
 
 ## Updating an installed copy
 
-`update` uses `RALPHIE_UPDATE_URL` when set; otherwise it derives a GitHub raw
-URL from the selected project's origin, branch and script filename. For an
-installed copy serving unrelated projects, explicitly set the trusted source:
+`update` uses the published Ralphie script at
+`https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh` by default,
+including from a copy installed in another project. It never infers executable
+code's source from the project's Git remote: that remote may host no script, a
+stale vendored copy, or an unrelated program. To use a fork or private mirror,
+set `RALPHIE_UPDATE_URL` in the operator's environment:
 
 ```bash
-RALPHIE_UPDATE_URL=https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh \
+RALPHIE_UPDATE_URL=https://example.com/trusted/ralphie.sh \
 /path/to/ralphie.sh --project "/path/to/my project" update
 ```
 
+Copies before 4.2.1 still use the old origin rule. Set `RALPHIE_UPDATE_URL` once
+to upgrade one of those copies; afterwards plain `update` uses the published URL.
+The project's `config.env` cannot redirect an update source.
+
 Ralphie checks structure, Bash syntax and literal `VERSION="major.minor.patch"`
-metadata without executing the candidate. Older versions are refused;
-identical bytes are a no-op, and changed bytes at the same version are allowed.
-These checks do not authenticate the publisher. Downloads through curl or wget
-have a 60-second deadline plus watchdog cleanup grace.
+metadata, then runs the staged candidate's `version` and `help` commands in a
+scratch directory before publishing. Older versions are refused; identical
+bytes are a no-op, and changed bytes at the same version are allowed. These
+checks do not authenticate the publisher: use only a source you trust. Downloads
+through curl or wget have a 60-second deadline plus watchdog cleanup grace.
 
 The replacement is staged beside the installed script, preserving its mode and
 entry-point symlinks. An exact previous copy is verified at the selected

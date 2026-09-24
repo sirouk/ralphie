@@ -123,7 +123,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.2.0"
+VERSION="4.2.1"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.
@@ -14171,7 +14171,7 @@ ENVIRONMENT
   RALPHIE_QUIET          1 for --quiet.
   RALPHIE_AUTO_UPDATE    1 to self-update before every run.
   RALPHIE_NO_UPDATE      1 to refuse self-update entirely.
-  RALPHIE_UPDATE_URL     Explicit source for `update`.
+  RALPHIE_UPDATE_URL     Override the published source for `update` (forks/mirrors).
   RALPHIE_PROJECT        Operate on this directory instead of the script's own.
   RALPHIE_LIB            Internal library mode: 1 loads functions without running
                          the CLI. Leave unset for normal use.
@@ -14217,26 +14217,15 @@ RALPHIE_HELP_EOF
 # versions are refused; changed bytes at the same version are allowed.
 # A colony ship cannot afford an update that half-lands.
 
+# The installer publishes this file at this URL. A consumer project's git
+# origin is NOT the script's provenance: it may point to a private repo, a
+# vendored stale copy, or an unrelated project that cannot serve ralphie.sh.
+# Forks and private mirrors choose their own trusted source explicitly in the
+# operator's environment (project config.env cannot set RALPHIE_UPDATE_URL).
+PUBLISHED_UPDATE_URL='https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh'
 update_url() {
     [ -n "${RALPHIE_UPDATE_URL:-}" ] && { printf '%s' "$RALPHIE_UPDATE_URL"; return 0; }
-    local origin branch path
-    origin="$(git -C "$PROJECT" config --get remote.origin.url 2>/dev/null)" || return 1
-    case "$origin" in
-        git@github.com:*) origin="${origin#git@github.com:}";;
-        https://github.com/*) origin="${origin#https://github.com/}";;
-        *) return 1;;
-    esac
-    origin="${origin%.git}"
-    # A repository can set origin to anything. Without this, `a/b/../../../..`
-    # walked the derived URL straight out of the project's namespace.
-    case "$origin" in
-        */*/*|*..*|*@*|*:*|"") warn "refusing an implausible update source derived from origin: $origin"; return 1;;
-        *[!A-Za-z0-9._/-]*)    warn "refusing an update source with unexpected characters: $origin"; return 1;;
-    esac
-    branch="$(git_branch)"
-    case "$branch" in ''|none|*[!A-Za-z0-9._/-]*) branch="master";; esac
-    path="$ME"
-    printf 'https://raw.githubusercontent.com/%s/%s/%s' "$origin" "$branch" "$path"
+    printf '%s' "$PUBLISHED_UPDATE_URL"
 }
 
 update_candidate_runs() {

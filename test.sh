@@ -5110,6 +5110,30 @@ UPDATE_CURL
     check "the CLI publishes the complete installed candidate" "$(sha_sum_of "$update_source")" "$(sha_sum_of "$d/ralphie.sh")"
     check "the selected project retains the previous installed script" "$before" "$(sha_sum_of "$d/target project/.ralphie/ralphie.previous")"
     check "the replaced CLI still executes" "$old_version" "$("$d/ralphie.sh" --version)"
+    # A downstream install has no origin for this script. Capture the REAL
+    # self_update download URL without using the network, then prove the
+    # operator's explicit source above was not required for this to work.
+    sed '1a\
+# second update from the published URL' "$RALPHIE" > "$d/published-candidate.sh"
+    cat > "$d/mock-bin/curl" <<'UPDATE_CURL_DEFAULT'
+#!/usr/bin/env bash
+printf '%s\n' "$4" > "$UPDATE_URL_CAPTURE"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then dest="$2"; shift 2; else shift; fi
+done
+cp "$UPDATE_TEST_SOURCE" "$dest"
+UPDATE_CURL_DEFAULT
+    chmod +x "$d/mock-bin/curl"
+    ( cd "$d/target project" && git init -q -b main &&
+      git remote add origin https://github.com/sirouk/budget-sheet-app.git ) >/dev/null 2>&1
+    out="$(env PATH="$d/mock-bin:$PATH" UPDATE_TEST_SOURCE="$d/published-candidate.sh" \
+        UPDATE_URL_CAPTURE="$d/download-url" \
+        "$d/ralphie.sh" --project "$d/target project" update 2>&1)"; rc=$?
+    check_ok "a downstream CLI updates without an explicit URL" "$rc"
+    check "it fetched the official release, not the project's origin" \
+        'https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh' \
+        "$(cat "$d/download-url" 2>/dev/null)"
+    check "and published the downloaded bytes" "$(sha_sum_of "$d/published-candidate.sh")" "$(sha_sum_of "$d/ralphie.sh")"
 fi
 
 if want "self-update-recovery-alias"; then
@@ -5435,26 +5459,32 @@ if want "secret-redaction"; then
 fi
 
 if want "update-url-safety"; then
-    # A repository can set `origin` to anything, and the update URL is derived
-    # from it. Traversal walked the derived URL out of the project namespace.
+    # The project's git origin is not the provenance of a curl-installed
+    # script. Neither a legitimate-looking fork nor traversal in origin may
+    # redirect an unattended update. Only the operator's environment may.
     d="$(new_project)"
-    for bad in "https://github.com/a/b/../../../../evil" "https://github.com/a/b/c/d" "https://github.com/a b/c"; do
-        ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "$bad" ) >/dev/null 2>&1
-        u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; PROJECT=$PWD; update_url 2>/dev/null' )"
-        # Refusal means an EMPTY url, so emptiness is the pass here -- witnessed
-        # by the final assertion below, which proves update_url still derives a
-        # real url from a sane origin. Without that witness this loop would pass
-        # just as happily if update_url were deleted.
-        case "${u:-}" in
-            "")                            ok "an implausible origin is refused [$bad]";;
-            *..*)                          no "an implausible origin is refused [$bad]" "derived: $u";;
-            *"github.com/a/b/c/d"*)        no "an implausible origin is refused [$bad]" "derived: $u";;
-            *)                             ok "an implausible origin is refused [$bad]";;
-        esac
+    published='https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh'
+    for origin in "https://github.com/sirouk/budget-sheet-app.git" \
+                  "https://github.com/other/ralphie.git" \
+                  "https://github.com/a/b/../../../../evil" \
+                  "https://github.com/a/b/c/d" \
+                  "https://github.com/a b/c"; do
+        ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "$origin" ) >/dev/null 2>&1
+        u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; update_url' )"
+        check "origin cannot redirect an update [$origin]" "$published" "$u"
     done
-    ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "https://github.com/sirouk/ralphie" ) >/dev/null 2>&1
-    u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; PROJECT=$PWD; update_url 2>/dev/null' )"
-    case "$u" in https://raw.githubusercontent.com/sirouk/ralphie/*) ok "a normal origin still derives a usable url";; *) no "a normal origin still derives a usable url" "$u";; esac
+    # Even a committed vendor copy and another branch must not silently become
+    # its own release channel. That was a false 'already current' forever.
+    ( cd "$d" && git add ralphie.sh && git commit -qm vendor && git checkout -qb vendor ) >/dev/null 2>&1
+    u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./ralphie.sh; update_url' )"
+    check "a tracked vendor copy still checks the publisher" "$published" "$u"
+    cp "$d/ralphie.sh" "$d/renamed.sh"
+    u="$( cd "$d" && env RALPHIE_LIB=1 bash -c '. ./renamed.sh; update_url' )"
+    check "a renamed install still checks the published filename" "$published" "$u"
+    u="$( cd "$d" && env RALPHIE_LIB=1 RALPHIE_UPDATE_URL=file:///trusted/release.sh bash -c '. ./ralphie.sh; update_url' )"
+    check "an operator can choose a fork or private mirror" 'file:///trusted/release.sh' "$u"
+    u="$( cd "$d" && env RALPHIE_LIB=1 RALPHIE_PROJECT="$TMPROOT" bash -c '. ./ralphie.sh; update_url' )"
+    check "a separate selected project cannot redirect the update" "$published" "$u"
 fi
 
 if want "unwritable-home"; then

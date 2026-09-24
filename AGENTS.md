@@ -390,9 +390,13 @@ just features. Exit codes and `status --json` are a compatibility contract:
 `--help` promises them "so cron and CI can react without parsing text". Widening
 the meaning of an exit code, or adding a `status` value, is a MAJOR version.
 
-Keep the install URL working: the script self-updates from the GitHub raw URL
-derived from `origin`, the current branch and its own filename, so `ralphie.sh`
-must stay at the repository root under that exact name. `VERSION="major.minor.patch"`
-must remain exactly one literal line — `self_update` parses it with
+Keep the install URL working: the default self-update source is the published
+`https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh`, not the
+selected project's Git remote. A project can contain a stale vendored copy or
+have an unrelated origin. Forks and private mirrors must explicitly set
+`RALPHIE_UPDATE_URL` in the operator environment; project `config.env` cannot
+set it. Keep `ralphie.sh` at the repository root under that exact name.
+`VERSION="major.minor.patch"` must remain exactly one literal line —
+`self_update` parses it with
 `sed -n 's/^VERSION="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p'` and
 refuses any candidate that produces zero or two matches.

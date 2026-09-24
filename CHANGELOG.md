@@ -3,6 +3,19 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.2.1 — 2026-09-23
+
+**An installed copy can update itself from any project.** `update` used the
+selected project's Git origin, branch and script filename as its source. In the
+demo `budget-sheet-app` that produced an HTTP 404; a committed vendor copy
+could instead return itself forever as "already current". With no explicit
+`RALPHIE_UPDATE_URL`, Ralphie now uses the same published GitHub file as the
+install instructions. A project's Git remote cannot choose executable update
+code. Forks and private mirrors select their source explicitly in the operator
+environment; project config files still cannot set this variable. Existing
+copies need the override **once** to install this fix. The staged candidate's
+version/help execution checks and atomic publication are unchanged.
+
 ## 4.2.0 — 2026-09-23
 
 **Chat is now a real engine on rails, and you can watch the work.** Designed
