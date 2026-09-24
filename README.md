@@ -376,9 +376,16 @@ approve with `/apply`. The first boot asks before spending tokens. Ctrl-C
 stops waiting, not the companion; a late reply appears at your next message.
 Without `prime-agent`, `tmux` or `python3`, or with `RALPHIE_CHAT_ENGINE=ralphie`,
 chat stays on the stateless console and says so. `chat MESSAGE` joins an
-already-live resident companion only when the saved Prime engine, session ID,
-project cwd, and boot-time SHA-256 broker/fence witness all verify. Older
-companions without this witness are not joined by either chat mode; they use
+already-live resident companion only when the saved Prime engine, immutable
+session ID, exact project cwd, owned transcript in its private boot directory,
+and v2 SHA-256 self-attestation all verify. A failed daemon snapshot or foreign
+same-name session is not treated as an empty list or a companion. The digest
+covers Ralphie's intended launch flags, broker, model, system/append prompts,
+kickoff, project, boot directory and ID; it does **not** authenticate the daemon's
+actual launch argv. Ralphie trusts the daemon, OS account, installed Prime and
+script. A same-user adversary can forge the saved digest/daemon listing and is
+outside this fence's threat boundary. Older companions without this witness are
+not joined by either chat mode; they use
 the stateless supervisor instead. It never boots one or prompts to start one;
 without a verified companion it states the stateless fallback.
 `chat --stop` ends the companion; the run is untouched.
@@ -872,8 +879,9 @@ return.
 ```
 
 A steerer is a **resident agent session**, not a subprocess of the loop. It
-survives the client that started it, it is addressable by name from any shell,
-and an idle one costs nothing until an event or a person arrives. That is the
+survives the client that started it. Its display name is for people; Prime
+messages address only the freshly verified immutable session ID. An idle one
+costs nothing until an event or a person arrives. That is the
 point: Ralphie never spends a cycle polling for a human, and the human never has
 to be present.
 
@@ -890,8 +898,10 @@ once, to give the agent its first terminal. `claude` has no send verb, so a
 `RALPHIE_STEERER_ENGINE`; the default is the first one installed.
 
 Delivery is bounded by `RALPHIE_STEERER_WAIT` (5 seconds) and can never hold a
-cycle open. A steerer that is wedged, stopped, or that the engine can no longer
-see is reported as not live — never as running.
+cycle open. A steerer that is wedged, stopped, or cannot pass its saved
+ID/project/fence checks is reported as unverified — never as running. It gets
+no Prime event on uncertainty. An uncertain saved Prime address blocks another
+paid boot until an operator verifies it and stops it by ID.
 
 ---
 

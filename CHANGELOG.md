@@ -9,6 +9,26 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.2.4 — 2026-09-24
+
+**Resident companion boot and event routing fail closed.** Prime daemon snapshots
+now distinguish a verified empty list from list failure, malformed JSON and
+ambiguous IDs. A new candidate must have an ID absent before boot, exact project
+cwd, and an owned transcript within the new private `--session-dir`; Ralphie
+never renames an arbitrary same-project session found after a failed list.
+An existing name is not proof of ownership: startup refuses a second paid boot
+if the saved companion cannot be verified. Prime events, manual tells, attaches
+and stops recheck the saved ID/project/fence and route by immutable ID, not by a
+reusable display name. Legacy or uncertain companions fall back to stateless chat.
+
+The v2 SHA-256 record covers the broker bytes, intended flags, model, system
+and append prompts, kickoff, project, boot directory and ID. It is a **local
+self-attestation of Ralphie's intended boot**, *not* authenticated proof of the
+daemon's actual launch flags. Any same-user process can edit the witness and
+broker or spoof local daemon data; the daemon, OS account, installed Prime and
+this script are in the trust base. This CLI fence is not an OS sandbox. No
+network or paid agent is used in the mock regression tests.
+
 ## 4.2.3 — 2026-09-24
 
 **Named mission MVP.** `mission preview` validates a named, bounded set of

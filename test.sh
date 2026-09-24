@@ -11717,20 +11717,23 @@ if want "engine-chat-boot-scan"; then
       check "a second steerer_scratch call empties the first file" "" "$(cat "$(steerer_scratch)" 2>/dev/null)"
       # The shared scan: a fake listing, one live row in this project that was
       # not live before, plus decoys that must never be chosen.
-      steerer_pa_sessions() {
+      boot_dir="$(companion_home)/boot-test"; mkdir -p "$boot_dir"
+      printf 'session\n' > "$boot_dir/new.jsonl"
+      steerer_pa_snapshot() {
           printf 'aaa1\tlive\t%s\tralphie-steerer-old\t-\n' "$PROJECT"
           printf 'bbb2\tdead\t%s\tsomething\t-\n' "$PROJECT"
           printf 'ccc3\tlive\t/somewhere/else\tanother-project\t-\n'
-          printf 'ddd4\tlive\t%s\tthe-new-one\t-\n' "$PROJECT"
+          printf 'ddd4\tlive\t%s\tthe-new-one\t%s\n' "$PROJECT" "$boot_dir/new.jsonl"
           # A second call to the scratch file, exactly as the real one makes.
           : > "$(steerer_scratch)" 2>/dev/null || true
       }
-      check "the scan finds the new live session in this project" ddd4 "$(steerer_pa_new_id " aaa1 ")"
-      check "the scan ignores a session that was already live" ddd4 "$(steerer_pa_new_id " aaa1 ")"
-      check "the scan ignores another project's live session" "" "$(steerer_pa_new_id " aaa1 ddd4 ")"
-      steerer_pa_sessions() { printf 'eee5\tdead\t%s\tnot-live\t-\n' "$PROJECT"; }
-      check "the scan never picks a session that is not live" "" "$(steerer_pa_new_id " ")"
-      unset -f steerer_pa_sessions
+      before="$(printf 'aaa1\tlive\t%s\told\t-\nbbb2\tdead\t%s\tdead\t-\nccc3\tlive\t/somewhere/else\tforeign\t-\n' "$PROJECT" "$PROJECT")"
+      check "the scan finds the new live session in this project" ddd4 "$(steerer_pa_new_id "$before" "$boot_dir")"
+      check "the scan ignores a session that was already live" ddd4 "$(steerer_pa_new_id "$before" "$boot_dir")"
+      check "the scan ignores another project's live session" "" "$(steerer_pa_new_id "$(steerer_pa_snapshot)" "$boot_dir")"
+      steerer_pa_snapshot() { printf 'eee5\tdead\t%s\tnot-live\t-\n' "$PROJECT"; }
+      check "the scan never picks a session that is not live" "" "$(steerer_pa_new_id '' "$boot_dir")"
+      unset -f steerer_pa_snapshot
       true ) || no 'engine chat boot scan group completed'
     # Both boots must use the shared scan. A copy that drifts is the bug.
     n="$(grep -c 'steerer_pa_new_id' "$RALPHIE" || true)"
@@ -11748,7 +11751,7 @@ if want "attach-boundary"; then
     # you to ralphie, whatever status the view exits with -- and ralphie never
     # says it attached to something it did not attach to.
     d="$(new_project)"; ( load_lib "$d"
-      steerer_pa_id() { printf 'id1\n'; return 0; }
+      companion_live_row() { printf 'id1\tlive\t%s\tsomeone\t%s\n' "$PROJECT" "$d/transcript.jsonl"; }
       printf '#!/usr/bin/env bash\nexit 130\n' > "$d/fake-agent"; chmod +x "$d/fake-agent"
       steerer_bin() { printf '%s' "$d/fake-agent"; }
       out="$(steerer_pa_attach_tui someone 2>&1)"; rc=$?
@@ -11766,7 +11769,7 @@ if want "attach-boundary"; then
       check_ok "watch attach survives a 130 exit" "$rc"
       check_contains "watch attach says it detached" "detached" "$out"
       # NEVER ATTACHED: no live session of that name.
-      steerer_pa_id() { return 1; }
+      companion_live_row() { return 1; }
       out="$(steerer_pa_attach_tui someone 2>&1)"; rc=$?
       check "a refused attach is distinguishable" 127 "$rc"
       out="$(watch_attach_now someone 2>&1)"; rc=$?
@@ -11776,7 +11779,7 @@ if want "attach-boundary"; then
       # attach may say "attached". That distinction is the whole fix.
       check_lacks "it never claims it attached" "attached to the steerer" "$out"
       check_lacks "and never claims you detached" "detached. The steerer keeps running" "$out"
-      unset -f steerer_pa_id steerer_bin
+      unset -f companion_live_row steerer_bin
       true ) || no 'attach boundary group completed'
     # `chat` must never be ended by the companion: its connection is an offer,
     # guarded at the call site, and the console carries on without it.
@@ -11898,6 +11901,83 @@ if want "watch-flags"; then
     check_contains "a launch id still means that launch" "launch" "$out"
 fi
 
+if want "companion-boot-fence"; then
+    # No real Prime, tmux, daemon or provider. Exercise the actual boot and
+    # delivery paths against controlled fixtures, including failed snapshots.
+    d="$(new_project)"; ( load_lib "$d"
+      mkdir -p "$d/bin" "$(steerer_home)"
+      steerer_bin() { printf '%s' "$d/bin/mock-prime"; }
+      cat > "$d/bin/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_CALLS"
+MOCK
+      chmod +x "$d/bin/tmux"
+      MOCK_CALLS="$d/tmux-calls"; export MOCK_CALLS
+      STEERER_BOOT_SECONDS=1
+      steerer_pa_snapshot() { return 1; }
+      ( PATH="$d/bin:$PATH"; steerer_pa_start ralphie-steerer-test >/dev/null 2>&1 ); rc=$?
+      check_fails "list failure refuses boot" "$rc"
+      check "list failure never starts tmux" no "$([ -e "$MOCK_CALLS" ] && echo yes || echo no)"
+      check "list failure never records a boot directory" no "$([ -e "$(steerer_file boot-dir)" ] && echo yes || echo no)"
+      # Even with a successful *empty* initial list, a foreign same-project
+      # session cannot become our fresh candidate without our private file.
+      steerer_pa_snapshot() { printf 'foreign1\tlive\t%s\tother\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      printf 'foreign session\n' > "$d/foreign.jsonl"
+      before="$(steerer_pa_snapshot)"
+      boot_dir="$(companion_home)/boot-fake"; mkdir -p "$boot_dir"
+      check "foreign preexisting ID never selected" '' "$(steerer_pa_new_id "$before" "$boot_dir")"
+      steerer_pa_snapshot() { printf 'foreign1\tlive\t%s\tother\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      steerer_pa_new_id '' "$boot_dir" >/dev/null; rc=$?
+      check "foreign new ID outside private boot dir is ambiguous" 2 "$rc"
+      steerer_pa_snapshot() { return 1; }
+      steerer_pa_new_id '' "$boot_dir" >/dev/null; rc=$?
+      check "post-boot daemon failure is distinct from no candidate" 3 "$rc"
+      steerer_pa_snapshot() { printf 'foreign1\tlive\t%s\tother\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      ( PATH="$d/bin:$PATH"; steerer_pa_start ralphie-steerer-test >/dev/null 2>&1 ); rc=$?
+      check_fails "candidate outside private boot directory refuses boot" "$rc"
+      # A display-name collision must never be a successful rejoin, nor send
+      # an event, nor claim to have notified an agent. Pin the immutable ID.
+      steerer_write name ralphie-steerer-test
+      steerer_write id owner1
+      steerer_write engine prime-agent
+      steerer_pa_snapshot() { printf 'foreign1\tlive\t%s\tralphie-steerer-test\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      steerer_running >/dev/null 2>&1; rc=$?
+      check_fails "foreign same-name session is not already ours" "$rc"
+      steerer_start >/dev/null 2>&1; rc=$?
+      check_fails "foreign same-name session refuses a new paid boot" "$rc"
+      check "foreign collision retains original recorded ID" owner1 "$(steerer_read id)"
+      STEERER_BUSY=0
+      steerer_event_wanted() { return 0; }
+      steerer_notify cycle started 'sensitive evidence' >/dev/null 2>&1; rc=$?
+      check_fails "foreign collision refuses event delivery" "$rc"
+      steerer_pa_tell ralphie-steerer-test secret >/dev/null 2>&1; rc=$?
+      check_fails "foreign collision refuses direct send" "$rc"
+      check "foreign collision never calls Prime send" no "$([ -e "$d/sends" ] && echo yes || echo no)"
+      # A valid fenced resident's events route ONLY to its immutable ID, even
+      # if a daemon might later rebound the human-readable name.
+      mock_dir="$(companion_home)/boot-sent"; mkdir -p "$mock_dir"
+      mock_file="$mock_dir/live.jsonl"; printf 'session\n' > "$mock_file"
+      steerer_pa_snapshot() { printf 'owner1\tlive\t%s\tralphie-steerer-test\t%s\n' "$PROJECT" "$mock_file"; }
+      steerer_write boot-dir "$mock_dir"
+      companion_ext_write >/dev/null
+      steerer_write fence-v2 "$(companion_fence_witness owner1)"
+      steerer_bounded() { printf '%s\n' "$*" >> "$d/sends"; printf '%s' '{"deliveryStatus":"queued"}'; }
+      check "fenced event queued" queued "$(steerer_pa_tell ralphie-steerer-test 'safe event')"
+      check_contains "event addresses immutable owner ID" 'send --json owner1 -- safe event' "$(cat "$d/sends")"
+      check_lacks "event does not address a reusable name" 'send --json ralphie-steerer-test' "$(cat "$d/sends")"
+      : > "$d/sends"
+      steerer_write id foreign1
+      steerer_pa_tell ralphie-steerer-test 'sensitive after replacement' >/dev/null 2>&1; rc=$?
+      check_fails "stored ID change blocks another event" "$rc"
+      check "stored ID change sends no event" 0 "$(wc -l < "$d/sends" | tr -d ' ')"
+      steerer_write id owner1
+      steerer_pa_snapshot() { return 1; }
+      steerer_pa_tell ralphie-steerer-test 'during daemon outage' >/dev/null 2>&1; rc=$?
+      check_fails "daemon list outage blocks event" "$rc"
+      check "daemon list outage sends no event" 0 "$(wc -l < "$d/sends" | tr -d ' ')"
+      true ) || no 'companion boot fence group completed'
+fi
+
 if want "companion-units"; then
     # 4.2: the ONE resident companion. What a hermetic suite can prove is the
     # rail itself -- the flags it boots with, the broker it may call, the role it
@@ -11963,7 +12043,7 @@ MOCK_TMUX
       chmod +x "$d/bin/tmux"
       MOCK_COMPANION_CMD="$d/boot-argv"; export MOCK_COMPANION_CMD
       steerer_bin() { printf '%s' "$d/bin/mock-prime-agent"; }
-      steerer_pa_live_ids() { :; }
+      steerer_pa_snapshot() { printf '%s' ''; }
       steerer_pa_new_id() { printf '%s' 'agent_mock'; }
       steerer_bounded() { :; }
       steerer_pa_id() { printf '%s' 'agent_mock'; }
@@ -12059,11 +12139,14 @@ if want "companion-turns"; then
       printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"UNTRUSTED AUTH BODY"}],"stopReason":"error","errorMessage":"No API key for provider: test PRIVATE_AUTH_TOKEN"}}' >> "$tr_"
       check "auth errors are a typed failure with no raw diagnostic" ERROR_AUTH "$(companion_turn_reply "$tr_" agentmsg_AUTH)"
       steerer_bin() { printf '%s' "$d/mock-prime"; }
-      steerer_pa_row() { printf 'agent_mock\tlive\t%s\tmock\t%s\n' "$PROJECT" "$tr_"; }
-      mkdir -p "$(steerer_home)"
+      mkdir -p "$(steerer_home)" "$(companion_home)/boot-test"
+      mv "$tr_" "$(companion_home)/boot-test/session.jsonl"
+      tr_="$(companion_home)/boot-test/session.jsonl"
+      steerer_pa_snapshot() { printf 'agent_mock\tlive\t%s\tmock\t%s\n' "$PROJECT" "$tr_"; }
+      steerer_write boot-dir "$(companion_home)/boot-test"
       steerer_write name mock; steerer_write id agent_mock; steerer_write engine prime-agent
       companion_ext_write >/dev/null
-      steerer_write fence-v1 "$(companion_fence_witness agent_mock)"
+      steerer_write fence-v2 "$(companion_fence_witness agent_mock)"
       steerer_bounded() { printf '%s' '{"id":"agentmsg_AUTH"}'; }
       auth_out="$d/auth-answer"
       companion_ask mock 'status' "$auth_out"; rc=$?
@@ -12097,19 +12180,22 @@ if want "companion-oneshot"; then
       mkdir -p "$(steerer_home)"
       rails_on() { return 0; }
       have() { [ "$1" = python3 ] && return 0; command -v "$1" >/dev/null 2>&1; }
-      steerer_pa_sessions() { printf '%s\tlive\t%s\t%s\t%s\n' "$mock_id" "$mock_cwd" "$mock_name" "$mock_file"; }
+      steerer_pa_snapshot() { printf '%s\tlive\t%s\t%s\t%s\n' "$mock_id" "$mock_cwd" "$mock_name" "$mock_file"; }
       steerer_start() { no "selection must not boot a paid agent"; return 1; }
       steerer_bin() { printf '%s' "$d/mock-prime"; }
       steerer_bounded() { printf '%s\n' "$*" >> "$d/sends"; printf '%s' '{"id":"agentmsg_test"}'; }
       mock_name=ralphie-steerer-test
       mock_id=agent_live
       mock_cwd="$PROJECT"
-      mock_file="$d/companion.jsonl"
+      mock_dir="$(companion_home)/boot-test"
+      mkdir -p "$mock_dir"
+      steerer_write boot-dir "$mock_dir"
+      mock_file="$mock_dir/companion.jsonl"
       printf '%s\n' '{"type":"session"}' > "$mock_file"
       steerer_write name "$mock_name"; steerer_write id "$mock_id"; steerer_write engine prime-agent
       companion_ext_write >/dev/null
-      fence="$(companion_fence_witness "$mock_id")"; check_contains "fresh broker produces SHA-256 bound fence" 'v1:' "$fence"
-      steerer_write fence-v1 "$fence"
+      fence="$(companion_fence_witness "$mock_id")"; check_contains "fresh broker produces SHA-256 bound fence" 'v2:' "$fence"
+      steerer_write fence-v2 "$fence"
       expect_fallback() {
           local label="$1" rc
           CHAT_COMPANION=previous
@@ -12133,6 +12219,10 @@ if want "companion-oneshot"; then
       companion_ask "$mock_name" hello "$d/answer" >/dev/null
       check_contains "message targets the verified id" "send --json $mock_id -- hello" "$(cat "$d/sends")"
       check_lacks "message never targets reused name" "send --json $mock_name" "$(cat "$d/sends")"
+      ( RALPHIE_STEERER_MODEL=other-model; companion_live_row "$mock_name" >/dev/null 2>&1 ); rc=$?
+      check_fails "model change revokes boot self-attestation" "$rc"
+      ( RALPHIE_STEERER_PROMPT='different role'; companion_live_row "$mock_name" >/dev/null 2>&1 ); rc=$?
+      check_fails "role change revokes boot self-attestation" "$rc"
       : > "$d/sends"; rm -f "$d/sends"
       mock_cwd="$d/foreign"
       expect_fallback 'foreign cwd'
@@ -12144,15 +12234,15 @@ if want "companion-oneshot"; then
       companion_ask "$mock_name" hello "$d/answer" >/dev/null 2>&1; rc=$?
       check_fails "stale id cannot reach the send boundary" "$rc"
       check "stale id sent no message" no "$([ -e "$d/sends" ] && echo yes || echo no)"
-      mock_id=agent_live; rm -f "$(steerer_file fence-v1)"
+      mock_id=agent_live; rm -f "$(steerer_file fence-v2)"
       expect_fallback 'unfenced legacy'
-      steerer_write fence-v1 "$fence"
+      steerer_write fence-v2 "$fence"
       steerer_write id agent_wrong
       expect_fallback 'stored id does not match live row'
       steerer_write id agent_live
-      steerer_write fence-v1 v1:legacy
+      steerer_write fence-v2 v1:legacy
       expect_fallback 'old or invented fence does not verify'
-      steerer_write fence-v1 "$fence"
+      steerer_write fence-v2 "$fence"
       ( RALPHIE_STEERER_ENGINE=claude; expect_fallback 'env override cannot turn Prime record into Claude' )
       steerer_write engine claude
       ( RALPHIE_STEERER_ENGINE=prime-agent; expect_fallback 'env override cannot turn Claude record into Prime' )
@@ -12163,18 +12253,24 @@ if want "companion-oneshot"; then
       mock_name=ralphie-steerer-other
       expect_fallback 'reused name'
       steerer_forget
-      check "forget clears the fence record" no "$([ -e "$(steerer_file fence-v1)" ] && echo yes || echo no)"
+      check "forget clears the fence record" no "$([ -e "$(steerer_file fence-v2)" ] && echo yes || echo no)"
       steerer_impl() { printf prime-agent; }
       steerer_running() { return 1; }
       steerer_name_new() { printf ralphie-steerer-fresh; }
       steerer_api() { case "$1" in start) printf agent_fresh;; stop) :;; *) return 1;; esac; }
+      steerer_pa_snapshot() { printf 'agent_fresh\tlive\t%s\tralphie-steerer-fresh\t%s\n' "$PROJECT" "$mock_file"; }
+      steerer_pa_row() { steerer_pa_snapshot; }
+      # This older unit mocks the engine bootstrap, not the boot verifier.
+      companion_live_row() { steerer_pa_snapshot; }
+      steerer_write boot-dir "$mock_dir"
+      steerer_write fence-v2 "$fence"
       # Restore only the real implementation after all negative no-boot cases.
       eval "$(sed -n '/^steerer_start()/,/^}/p' "$d/ralphie.sh")"
       event() { :; }
       companion_ext_write >/dev/null
       steerer_start >/dev/null 2>&1; rc=$?
       check_ok "fresh Prime boot writes the fence" "$rc"
-      check "fresh boot witness matches current broker and ID" "$(companion_fence_witness agent_fresh)" "$(steerer_read fence-v1)"
+      check "fresh boot witness matches current broker and ID" "$(companion_fence_witness agent_fresh)" "$(steerer_read fence-v2)"
       true ) || no 'companion one-shot group completed'
     body="$(sed -n '/^chat_command_main()/,/^}/p' "$RALPHIE")"
     case "$body" in *'companion_connect_live || true'*) ok "one-shot uses the non-booting connector";; *) no "one-shot uses the non-booting connector";; esac
@@ -12242,7 +12338,7 @@ if want "watch-attach-units"; then
       steerer_forget
       watch_attach_live_name >/dev/null 2>&1; check_fails "no recorded steerer means nothing to attach to" "$?"
       steerer_write name ralphie-steerer-test-0002 >/dev/null
-      steerer_pa_id() { return 1; }
+      companion_live_row() { return 1; }
       watch_attach_live_name >/dev/null 2>&1; check_fails "a recorded but dead steerer is not attachable" "$?"
       # A dead steerer must not be resurrected by a bare watch: no boot, and
       # the operator is told the exact command that would spend.
@@ -12251,9 +12347,9 @@ if want "watch-attach-units"; then
       check_lacks "a bare watch never starts a steerer" "BOOTED" "$out"
       check_contains "a bare watch names the command that would" "steerer start" "$out"
       check_contains "a bare watch says starting one spends" "spends tokens" "$out"
-      steerer_pa_id() { printf 'abc123\n'; return 0; }
+      companion_live_row() { printf 'abc123\tlive\t%s\tralphie-steerer-test-0002\t%s\n' "$PROJECT" "$d/transcript.jsonl"; }
       check "a live steerer is attachable by name" ralphie-steerer-test-0002 "$(watch_attach_live_name)"
-      unset -f steerer_pa_id cmd_steerer
+      unset -f companion_live_row cmd_steerer
       true ) || no 'watch attach unit group completed'
 fi
 
@@ -12414,7 +12510,34 @@ JSON
       steerer_pa_id a-draft >/dev/null 2>&1; check_fails "a draft session is not a live steerer" "$?"
       steerer_pa_id nobody   >/dev/null 2>&1; check_fails "an unknown name is not resolved" "$?"
       python="$rows"
-      # AGENTS.md forbids assuming python3: the awk reader must agree with it.
+      cp "$fixture" "$fixture.good"
+      # The strict admission reader MUST distinguish a valid zero-session list
+      # from malformed data and daemon failure. The legacy reader may display
+      # partial rows, but cannot authorise a boot, chat join or event send.
+      check "strict snapshot parses the two sessions" 2 "$(steerer_pa_snapshot | awk 'END {print NR}')"
+      printf '{"sessions":[]}\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_ok "valid empty daemon snapshot succeeds" "$rc"
+      printf '{"sessions":[{"id":"x"}]\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "truncated daemon snapshot fails closed" "$rc"
+      printf '{"sessions":[{"id":"dup"},{"id":"dup"}]}\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "duplicate daemon ID fails closed" "$rc"
+      printf '{"sessions":[{"id":"x","sessionName":"same"},{"id":"y","sessionName":"same"}]}\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "duplicate daemon name fails closed" "$rc"
+      printf 'not JSON\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "malformed daemon snapshot fails closed" "$rc"
+      printf '%s' '{"sessions":[]}' > "$fixture"
+      steerer_bounded() { return 70; }
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "daemon list failure cannot masquerade as empty" "$rc"
+      steerer_bounded() { cat "$fixture"; }
+      # AGENTS.md forbids assuming python3: the display awk reader must agree
+      # with the Python display reader, though strict admission requires Python.
+      cp "$fixture.good" "$fixture"
       have() { case "$1" in python3) return 1;; *) command -v "$1" >/dev/null 2>&1;; esac; }
       check "the awk reader agrees with the python reader" "$python" "$(steerer_pa_sessions)"
       unset -f have
