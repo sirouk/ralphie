@@ -15948,12 +15948,17 @@ def selected(project, name, kind):
         refuse("input must use valid UTF-8 (no lossy prompt decoding)")
     return p.as_posix(), data
 
-def git(project, *args):
+def git(project, *args, literal=False):
     # Bound stdout WHILE git produces it; rejecting a 24 KB diff only after
     # subprocess.run has captured several GB is not a real cap. Never execute
-    # an external diff driver and do not refresh the project index.
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
-    p = subprocess.Popen(["git", "-C", str(project), *args], stdout=subprocess.PIPE,
+    # a repo-configured filesystem monitor or external diff driver, and do not
+    # refresh the project index. Git's -c wins over repository config.
+    # Only the selected-file probe takes caller-derived pathspecs. Keep the
+    # trusted whole-tree exclusion magic usable in the other two probes.
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0",
+           "GIT_LITERAL_PATHSPECS": "1" if literal else "0"}
+    p = subprocess.Popen(["git", "-c", "core.fsmonitor=false",
+                          "-c", "core.untrackedCache=false", "-C", str(project), *args], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, env=env, start_new_session=True)
     data = bytearray()
     with selectors.DefaultSelector() as sel:
@@ -15984,7 +15989,7 @@ def release_state(project, names):
         branch = git(project, "symbolic-ref", "--quiet", "--short", "HEAD").decode("utf-8").strip()
     except ValueError:
         branch = "(detached)"
-    diff = git(project, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", *names)
+    diff = git(project, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", *names, literal=True)
     if len(diff) > MAX_DIFF:
         refuse("selected release diff exceeds 24,000 bytes; trim inputs/scope")
     if b"\x00" in diff:
@@ -16429,21 +16434,14 @@ need_value() {
 }
 
 looks_like_review_typo() {
-    # Unknown command-shaped argv must not fall through to the paid objective.
-    # Keep ordinary multi-word objectives intact; checkpoint-only options and
-    # close spellings of the checkpoint verb have no legitimate run meaning.
-    local first="${1:-}" word
-    shift || true
-    case "$first" in
-        checkp*|chekp*|checpoint*|ckpoint*)
-            die "unknown command: $first (did you mean checkpoint? use -- for a literal objective)";;
-    esac
-    for word in "$@"; do
-        case "$word" in
-            --kind|--input|--spend|--seats|--finding|--disposition)
-                die "unknown command: $first (checkpoint options cannot become a paid objective; use -- to run a literal objective)";;
-        esac
-    done
+    # An implicit multiword argv might be a misspelled subcommand plus its
+    # arguments. No finite spelling list can make that safe before a paid run.
+    # Require an explicit run, --, or -o for any multiword objective. This
+    # guard runs before project setup and before any engine invocation.
+    local first="${1:-}"
+    if [ "$#" -gt 1 ]; then
+        die "unknown command or implicit multiword objective: $first (use run, --, or -o for an objective)"
+    fi
     return 0
 }
 

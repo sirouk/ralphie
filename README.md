@@ -86,8 +86,10 @@ normal loop does not.
 The default argv guard refuses unknown *bare single words* rather than turning
 a mistyped command into a paid run. To run a real one-word objective, use
 `./ralphie.sh -- WORD`, `-o WORD`, or explicitly select `--engine NAME`.
-Multiword objectives and explicit `run` remain unchanged, except command-shaped
-`checkp*` typos and checkpoint-only flags are refused; use `--` for literal text.
+Multiword positional text must also use explicit `run`, `--`, or `-o`. An
+unknown multiword command could be a typo such as `chckpoint show ID`; it must
+not become an implicit paid objective. Explicit `run` still accepts ordinary
+multiword objectives and command-looking text.
 
 ---
 

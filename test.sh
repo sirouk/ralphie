@@ -6835,6 +6835,44 @@ REVIEW_FAIL
     printf 'WIP\n' > "$d/elsewhere.md"  # untracked pathname drift, not displayed content
     out="$(cd "$d" && ./ralphie.sh checkpoint show "$release_id" 2>&1)"
     check_contains "untracked release scope drift is stale" 'STALE' "$out"
+    # A filename that is itself Git pathspec magic must select only its own
+    # bytes. The unrelated dirty marker must never enter the provider packet.
+    magic=':(glob)*.md'
+    printf 'MAGIC_SELECTED_MARKER\n' > "$d/$magic"
+    printf 'UNRELATED_DIRTY_LEAK_MARKER\n' > "$d/other.md"
+    (cd "$d" && git --literal-pathspecs add -- "$magic" other.md && git commit -qm magic-baseline) >/dev/null 2>&1
+    printf 'MAGIC_CHANGED_MARKER\n' >> "$d/$magic"
+    printf 'UNRELATED_DIRTY_LEAK_MARKER_CHANGED\n' >> "$d/other.md"
+    out="$(cd "$d" && ./ralphie.sh checkpoint prepare --kind release --input "$magic" 2>&1)"; rc=$?
+    check_ok "release accepts a literal magic-looking filename" "$rc"
+    magic_id="${out%% *}"
+    if [ "$rc" -eq 0 ]; then
+        packet="$(cat "$d/.ralphie/checkpoints/$magic_id/selected.diff")"
+        check_contains "release selected diff contains its literal named file" 'MAGIC_CHANGED_MARKER' "$packet"
+        check_lacks "release selected diff excludes unrelated dirty file" 'UNRELATED_DIRTY_LEAK_MARKER_CHANGED' "$packet"
+        out="$(cd "$d" && ./ralphie.sh checkpoint show "$magic_id" 2>&1)"; rc=$?
+        check_ok "show can read magic-looking release packet" "$rc"
+        check_contains "magic-looking release packet remains current" 'snapshot current' "$out"
+    fi
+    # Git normally executes core.fsmonitor while inspecting this dirty tree.
+    # A canary in repo config proves every release probe overrides that config,
+    # including the repeated stale check during prepare and read-only show.
+    cat > "$d/mock-bin/fsmonitor-canary" <<'REVIEW_MONITOR'
+#!/bin/sh
+printf 'CALLED\n' >> "$RALPHIE_FSMONITOR_CANARY"
+exit 0
+REVIEW_MONITOR
+    chmod +x "$d/mock-bin/fsmonitor-canary"
+    git -C "$d" config core.fsmonitor "$d/mock-bin/fsmonitor-canary"
+    (cd "$d" && RALPHIE_FSMONITOR_CANARY="$d/fsmonitor-calls" git status --porcelain >/dev/null 2>&1)
+    [ -s "$d/fsmonitor-calls" ] && ok "fsmonitor canary is live on an unprotected Git probe" || no "fsmonitor canary is live on an unprotected Git probe" "no calls"
+    monitor_calls="$(wc -l < "$d/fsmonitor-calls" | tr -d ' ')"
+    out="$(cd "$d" && env RALPHIE_FSMONITOR_CANARY="$d/fsmonitor-calls" ./ralphie.sh checkpoint prepare --kind release --input plan.md 2>&1)"; rc=$?
+    check_ok "release prepare runs with repo fsmonitor disabled" "$rc"
+    monitor_id="${out%% *}"
+    out="$(cd "$d" && env RALPHIE_FSMONITOR_CANARY="$d/fsmonitor-calls" ./ralphie.sh checkpoint show "$monitor_id" 2>&1)"; rc=$?
+    check_ok "release show runs with repo fsmonitor disabled" "$rc"
+    check "release probes never execute repository fsmonitor" "$monitor_calls" "$(wc -l < "$d/fsmonitor-calls" | tr -d ' ')"
     out="$(cd "$d" && ./ralphie.sh checkpoint prepare --kind plan --input .env 2>&1)"; rc=$?
     check_fails "sensitive path is refused" "$rc"
     out="$(cd "$d" && ./ralphie.sh checkpoint prepare --kind plan --input ../elsewhere.md 2>&1)"; rc=$?
@@ -6851,10 +6889,15 @@ REVIEW_FAIL
     check_contains "unknown objective guard describes override" 'as an objective, use:' "$out"
     out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock-bin/prime-agent" ./ralphie.sh blargh 2>&1)"; rc=$?
     check_fails "inherited engine env cannot turn unknown word into paid run" "$rc"
-    out="$(cd "$d" && ./ralphie.sh checkpont prepare --kind plan --input plan.md 2>&1)"; rc=$?
-    check_fails "misspelled review verb plus args cannot become a paid objective" "$rc"
-    check_contains "multiword review typo is classified as unknown command" 'unknown command' "$out"
+    before_calls="$(wc -l < "$d/mock-invocations" | tr -d ' ')"
+    for cmd in 'checkpont prepare --kind plan --input plan.md' 'chckpoint show ck-deadbeef' \
+               'checpoint prepare --kind plan --input plan.md'; do
+        out="$(cd "$d" && env RALPHIE_ENGINE_CMD="$d/mock-bin/prime-agent" PATH="$d/mock-bin:$PATH" ./ralphie.sh $cmd 2>&1)"; rc=$?
+        check_fails "command-shaped multiword objective requires an explicit run: $cmd" "$rc"
+        check_contains "multiword argv explains explicit objective syntax: $cmd" 'use run, --, or -o' "$out"
+    done
     [ ! -e "$d/.ralphie/state" ] && ok "multiword review typo never initializes run" || no "multiword review typo never initializes run" "state created"
+    check "parser typo never calls a provider" "$before_calls" "$(wc -l < "$d/mock-invocations" | tr -d ' ')"
     mv "$d/plan.md" "$d/plan-saved.md"
     ln -s plan-saved.md "$d/plan.md"
     out="$(cd "$d" && ./ralphie.sh checkpoint show "$new_id" 2>&1)"; rc=$?
