@@ -146,10 +146,17 @@ but nothing runs until you approve the displayed action. Model output is parsed
 as data, never evaluated as shell code, and a command the model writes in its
 reply authorizes nothing.
 
-**`yes` is an approval when a `[Next]` block is on screen.** Every chat turn
-ends with one `[Next]` block, composed locally from project facts. When option 1
+**`yes` is an approval when a `[Next]` block is on screen in the current chat.**
+Every chat turn ends with one `[Next]` block, composed locally from project facts.
+Saved rail commands in `.ralphie/chat/rails` are not replayed across processes:
+the worker can edit that file. Start a new `chat` to see current options, or type
+the explicit slash command. When option 1
 of that block is `/apply ID`, typing `yes` (or `y`, `ok`, `go`, `proceed`,
 `sure`, `continue`, `do it`, or `1`) does exactly what typing `/apply ID` does.
+A blocked-run continuation is stricter: `yes` drafts the proposal, but a second
+`yes` only redisplays it. Type `/apply ID` to start a new worker bound to the
+same saved objective, run, engine and model. An ASK.md answer does not revise a
+saved model/provider requirement; edit the objective explicitly first.
 `n` (or `no`, `nope`, `skip`, `later`, `not yet`) declines.
 
 A bare **Enter** takes the default only when that default is safe. An option
@@ -190,6 +197,7 @@ the supervisor model:
 | `/answer` | List open questions and the exact form to answer them. |
 | `/gates` | Show the checks that decide whether work is saved. Read-only. |
 | `/draft` | Draft an objective for you to approve. One chat call; starts no worker. |
+| `/continue` | Draft a bounded continuation of a blocked run with the same saved objective, engine and model. Refuses unverifiable model/provider requirements; does not start work. |
 | `/help` | Show the grouped command guide. |
 | `/quit` or `/exit` | Leave chat without stopping the worker. |
 
@@ -286,13 +294,19 @@ shell or engine input. Worker engine logs and ledger evidence are separate.
 prime-agent that remembers the conversation, receives every run event, and can
 READ the run -- status, the ledger, the gates, open questions, the engine's live
 dialog, queued requests, and any text file in the project. It cannot change
-anything: it boots with no built-in tools and nothing the project can inject
-(no `.prime/agent`, `AGENTS.md` or project extension), plus one extension that
-ralphie writes and verifies, whose only tools are those reads. When you or it
-want something changed, it proposes; you approve with `/apply`. The first time,
-it asks before starting, because a resident agent spends tokens. It waits as
-long as the companion is working and shows each look it takes; Ctrl-C stops
-waiting, never the companion, and a late reply is shown at your next message.
+anything through its exposed tools: it boots with `--no-builtin-tools`,
+no discovered extensions or project context files, and an explicit controlled
+`--system-prompt` **and** `--append-system-prompt` (Prime 0.9.5 otherwise
+loads project `.prime/agent/SYSTEM.md`/`APPEND_SYSTEM.md`). Only Ralphie's
+verified read broker is passed with `-e`. Prime still runs explicitly loaded
+extensions despite `--no-extensions`, so Ralphie does not pass *any* global
+provider extension as an authentication fallback. If the chosen provider needs
+one, the companion says authentication is unavailable and takes no action.
+This CLI fence is **not an OS sandbox**: Prime, Ralphie, or other host processes
+can still write where the OS permits, and Ralphie's broker itself runs host
+code. When you or the companion want something changed, it proposes; you
+approve with `/apply`. The first boot asks before spending tokens. Ctrl-C
+stops waiting, not the companion; a late reply appears at your next message.
 Without `prime-agent`, `tmux` or `python3`, or with `RALPHIE_CHAT_ENGINE=ralphie`,
 chat stays on the stateless console and says so. `chat --stop` ends the
 companion; the run is untouched.
@@ -865,6 +879,13 @@ executable bytes becoming visible; it does not guarantee persistence through
 power loss or coordinate simultaneous updates from different projects.
 
 ## Safety
+
+Panel checks written by a model are **unverified proposals** by default. The
+panel cannot approve completion. Prime/Claude panel seats use tool-free flags
+and fixed prompts; custom/Codex seats do not run. Setting `PANEL_RUN_CHECKS=1`
+explicitly executes allowlisted forms of model-written commands in the live
+project. Test runners can write files or use the network: this is not an OS
+sandbox. A timed-out or unavailable check is UNKNOWN, not a red veto.
 
 **When gates exist, nothing is committed unless they pass.** When a project has
 no gate at all, Ralphie may commit unverified work. It says so, does not call the

@@ -72,7 +72,16 @@ engine already does this", delete it and add a capability instead.
    Chat must have separate locks, history and cleanup; closing it must not stop
    the worker. This exception does not permit prompts in any worker phase.
 6. **Never waste a token** on something a shell command can determine.
-7. **Explicit operator choices are honoured**, including `--engine`.
+7. **Explicit operator choices are honoured**, including `--engine`. A free-text
+   ASK.md answer does not rewrite a saved model/provider requirement. A blocked
+   `/continue` is bound to the saved objective bytes, run, engine and model;
+   typed `/apply ID` is required before a new worker is admitted.
+8. **Untrusted reviews cannot certify themselves.** Panel-written commands are
+   unverified proposals unless explicitly run. `PANEL_RUN_CHECKS=1` can execute
+   writing project scripts; it is not a read-only sandbox. Timeouts are UNKNOWN,
+   not vetoes. The companion loads only Ralphie's generated read broker and
+   fixed prompts, never global extension code as an auth fallback. CLI tool
+   restrictions are not an operating-system sandbox.
 
 ## Portability rules
 
@@ -329,8 +338,11 @@ flag as missing.
 
 The `[Next]` block is composed LOCALLY from project facts (`rail_probe`), never
 from model text, and matched by local string comparison on the whole trimmed
-lowercased line. That is the whole safety argument, and it is also why rails cost
-no tokens.
+lowercased line. Only an option printed in the *current process* can be taken:
+`.ralphie/chat/rails` is worker-writable, and its binding proves freshness, not
+integrity. Replaying saved commands in a new process would let a worker replace
+`/status` with `/answer`, `/cancel` or `/apply`. Such saved rails are refused.
+Current-process matching and refusal cost no tokens.
 
 Two rules you may not relax:
 

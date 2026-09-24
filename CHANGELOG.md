@@ -3,6 +3,36 @@
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to
 the two interfaces a script can depend on: **exit codes** and `status --json`.
 
+## 4.2.2 — 2026-09-24
+
+**Blocked work stays stopped until its saved requirements can be verified.**
+`/continue` only drafts a new worker for the same saved objective, engine and
+model, with a bound run ID and full objective-byte digest. A second `yes` never
+starts it; `/apply ID` is required. An objective with a model or provider clause
+is refused rather than using an ASK.md answer as an implicit override. Revise
+that objective explicitly before any new run.
+
+**Approval and review evidence are narrower.**
+
+- Quiet rails after two declines still show open human questions and the exact
+  answer form. Declining suggestions must not hide a human decision.
+- Saved `.ralphie/chat/rails` commands are no longer replayed across chat
+  processes. Workers can edit the file, including its stored binding; no
+  worker-writable self-check can prove that a command is the one printed.
+  Same-process shortcuts still work, and a fresh chat shows current options.
+- A printed proposal key becomes stale if its proposal ID changes before it
+  is taken, even when the proposal body and all other settings are unchanged.
+- Panel seats use tool-free Prime/Claude CLI flags and fixed system prompts;
+  custom and Codex seats fail closed. Their model-written checks are UNVERIFIED
+  proposals by default, not executed red evidence. `PANEL_RUN_CHECKS=1` explicitly
+  runs potentially writing project scripts; timeouts and missing tools are
+  UNKNOWN, not vetoes. Completed nonzero checks alone may veto, never approve.
+- The resident companion loads only Ralphie's generated read broker, not global
+  provider extensions. Explicit system and append prompts replace project
+  `.prime/agent/SYSTEM.md` and `APPEND_SYSTEM.md`. Authentication that depends on
+  a global extension fails closed with a clear message; this CLI fence is not
+  an operating-system sandbox.
+
 ## 4.2.1 — 2026-09-23
 
 **An installed copy can update itself from any project.** `update` used the
@@ -33,15 +63,17 @@ live-verified against the demo project.
   project: asked what the gate runs and whether the last cycle passed it, it
   made 13 reads and answered correctly — and flagged, unprompted, that the
   "gate pass" logged at cycle 7's start was too fast to be a real run.
-- **It is on rails mechanically, not by prompt.** It boots with
-  `--no-builtin-tools` (its only built-in tool was a full Python REPL),
-  `--no-extensions --no-context-files --no-skills --no-prompt-templates
-  --no-themes` (so nothing the project contains — `.prime/agent/SYSTEM.md`,
-  `AGENTS.md`, a planted extension — can rewrite its rules), and ONE extension
-  that ralphie writes, hash-verifies and loads by path, exposing only read verbs
-  that each run a fixed argv. It cannot edit a file, run a command, or start,
-  stop or change a run. Asked to delete a file and queue a request "yourself",
-  it said it could not, and turned the request into a proposal.
+- **It is on rails through its exposed tools, not an OS sandbox.** It boots
+  with `--no-builtin-tools --no-extensions --no-context-files --no-skills
+  --no-prompt-templates --no-themes`. Prime 0.9.5 *still* loads explicit `-e`
+  extensions, so Ralphie passes only its hash-verified read broker, **not**
+  global provider extensions (which can run host code and register write tools).
+  `--no-context-files` omits `AGENTS.md`, but *not* project
+  `.prime/agent/SYSTEM.md`/`APPEND_SYSTEM.md`: explicit controlled
+  `--system-prompt` and `--append-system-prompt` replace those sources. An
+  extension-dependent provider may therefore be unavailable; Ralphie reports
+  that failure without a false success or automatic extension replay. Prime,
+  Ralphie, or other processes with host permissions can still modify files.
 - **Everything it wants to change is a proposal you approve with `/apply`**,
   validated by exactly the same code as before.
 - **The first boot asks, with one key.** A resident agent spends tokens, so a
