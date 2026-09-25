@@ -12502,6 +12502,7 @@ if want "steerer-hook"; then
       # A recorded steerer, with the transport stubbed: no engine is invoked.
       steerer_api() { case "$1" in tell) printf 'stubbed'; return 0;; id) return 0;; *) return 0;; esac; }
       steerer_write name ralphie-steerer-test-0002 >/dev/null
+      steerer_write engine claude >/dev/null  # valid legacy engine; Prime requires an ID/fence
       event cycle fail "the gate went red"; check_ok "an event with a steerer still succeeds" "$?"
       wait_for 20 test -s "$box"
       check "a wanted event reaches the steerer" 1 "$(count_of cat "$box")"
