@@ -123,7 +123,7 @@ set -euo pipefail
 # `test.sh` enforces this mechanically; a new early-exit reader in a pipeline
 # fails the suite unless the line carries an `epipe-ok:` justification.
 
-VERSION="4.3.0"
+VERSION="4.3.1"
 # The layout version of everything Ralphie keeps in .ralphie/. VERSION says what
 # the CODE is; STATE_SCHEMA says what the DATA on disk is, and only this second
 # number decides whether a build may touch a directory another build wrote.

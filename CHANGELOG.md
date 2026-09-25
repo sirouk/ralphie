@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.3.1 — 2026-09-25
+
+- Allow the reviewed Prime Agent 0.9.6 one-shot chat adapter alongside 0.9.5; later versions still fail closed. This does not unblock an existing project run or validate a live provider.
+- Make owner-only saved-file mode checks portable across GNU and BSD `stat` for Linux/macOS CI.
+
 ## 4.3.0 — 2026-09-24
 
 **Explicit review checkpoints.** Added a separate, hash-bound `checkpoint
