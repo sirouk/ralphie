@@ -12462,6 +12462,86 @@ if want "companion-stop"; then
       true ) || no 'companion stop group completed'
 fi
 
+if want "companion-stop-race"; then
+    # Two Bash processes share the on-disk record. All daemon calls are mocks;
+    # one process waits at an exact seam while the other records agent_new.
+    d="$(new_project)"; ( load_lib "$d"
+      old_name=ralphie-steerer-race
+      boot_dir="$(companion_home)/boot-race"
+      mkdir -p "$boot_dir"
+      transcript="$boot_dir/companion.jsonl"
+      printf '%s\n' '{"type":"session"}' > "$transcript"
+      steerer_write boot-dir "$boot_dir"
+      steerer_write engine prime-agent
+      companion_ext_write >/dev/null
+      companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)" || no 'mock launch record'
+      old_fence="$(companion_fence_witness agent_old)"
+      new_fence="$(companion_fence_witness agent_new)"
+      check_ok "two distinct mock IDs have distinct valid fences" "$([ "$old_fence" != "$new_fence" ] && [ -n "$old_fence" ] && [ -n "$new_fence" ]; echo $?)"
+      race_stop() {
+          local phase="$1" worker rc out
+          steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
+          (
+              load_lib "$d"
+              steerer_pa_row() { printf 'agent_old\tlive\t%s\t%s\t%s\n' "$PROJECT" "$old_name" "$transcript"; }
+              steerer_bin() {
+                  if [ "$phase" = before ]; then
+                      : > "$d/$phase.ready"
+                      wait_for 8 test -f "$d/$phase.go" || return 1
+                  fi
+                  printf mock-prime
+              }
+              steerer_bounded() {
+                  # The third argv word is the target ID: no Prime call occurs.
+                  printf '%s\n' "$3" > "$d/$phase.target"
+                  if [ "$phase" = during ]; then
+                      : > "$d/$phase.ready"
+                      wait_for 8 test -f "$d/$phase.go" || return 1
+                  fi
+              }
+              event() {
+                  if [ "$phase" = after ]; then
+                      : > "$d/$phase.ready"
+                      wait_for 8 test -f "$d/$phase.go" || return 1
+                  fi
+              }
+              steerer_tmux_kill() { printf '%s\n' "$1" > "$d/$phase.tmux-killed"; }
+              steerer_stop_cmd > "$d/$phase.output" 2>&1
+              printf '%s\n' "$?" > "$d/$phase.result"
+          ) & worker=$!
+          wait_for 8 test -f "$d/$phase.ready"; rc=$?
+          check_ok "$phase: stop process reached the planned seam" "$rc"
+          # Rebind under the same name. Neither comparing just the name nor
+          # reading the ID again may authorize stopping or erasing agent_new.
+          steerer_write id agent_new; steerer_write fence-v2 "$new_fence"
+          : > "$d/$phase.go"
+          wait "$worker"
+          rc="$(cat "$d/$phase.result" 2>/dev/null || printf 1)"
+          out="$(cat "$d/$phase.output" 2>/dev/null || printf '')"
+          check_ok "$phase: confirmed stop exits successfully" "$rc"
+          check "${phase}: stop targeted the validated old ID" agent_old "$(cat "$d/$phase.target" 2>/dev/null || printf missing)"
+          check "${phase}: new ID remains recorded" agent_new "$(steerer_read id 2>/dev/null || printf missing)"
+          check "${phase}: new fence remains recorded" "$new_fence" "$(steerer_read fence-v2 2>/dev/null || printf missing)"
+          check "${phase}: tmux is not allowed to kill the rebound name" no "$([ -e "$d/$phase.tmux-killed" ] && echo yes || echo no)"
+          check_contains "$phase: the changed address is disclosed" 'changed record was retained' "$out"
+      }
+      # Before: the old bug re-read id after validation and stopped agent_new.
+      # During/after: even a correctly targeted stop must not erase a new
+      # address when the daemon reply or the stopped event arrives.
+      race_stop before
+      race_stop during
+      race_stop after
+      steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
+      companion_live_row() { printf 'agent;unsafe\tlive\t%s\t%s\t%s\n' "$PROJECT" "$old_name" "$transcript"; }
+      steerer_bin() { printf mock-prime; }
+      steerer_bounded() { : > "$d/unsafe-stop-called"; }
+      steerer_stop_cmd > "$d/unsafe.output" 2>&1; rc=$?
+      check_fails "unsafe row ID cannot reach the mock stop boundary" "$rc"
+      check "unsafe ID retains the recorded address" agent_old "$(steerer_read id 2>/dev/null || printf missing)"
+      check "unsafe ID made no stop call" no "$([ -e "$d/unsafe-stop-called" ] && echo yes || echo no)"
+      true ) || no 'companion stop race group completed'
+fi
+
 if want "watch-attach-units"; then
     # The whole ethics of the new default watch: it may NEVER start a resident
     # agent by itself, because starting one spends tokens. Only the explicit

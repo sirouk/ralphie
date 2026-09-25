@@ -12257,18 +12257,41 @@ steerer_stop_cmd() {
     name="$(steerer_read name 2>/dev/null || printf '')"
     [ -n "$name" ] || { dim "no steerer is recorded here"; return 0; }
     if [ "$(steerer_read engine 2>/dev/null || printf '')" = prime-agent ]; then
-        companion_live_row "$name" >/dev/null 2>&1 || {
+        local prime_bin prime_id row fence
+        # Keep the fence from BEFORE validation. The record may be replaced
+        # while the daemon is answering; a later file read is not the identity
+        # companion_live_row proved, even if the new session is also live.
+        fence="$(steerer_read fence-v2 2>/dev/null)" || return 1
+        row="$(companion_live_row "$name" 2>/dev/null)" || {
             err "the recorded Prime companion cannot be verified; refusing to stop a possibly foreign session by name (record retained)"
             return 1
         }
-        local prime_bin prime_id
+        prime_id="${row%%$'\t'*}"
+        case "$prime_id" in
+            ''|*[!A-Za-z0-9_-]*) err "the verified companion returned an unsafe ID; address retained"; return 1;;
+        esac
+        [ "$(steerer_read fence-v2 2>/dev/null || printf '')" = "$fence" ] || {
+            err "the companion record changed during verification; address retained"
+            return 1
+        }
         prime_bin="$(steerer_bin prime-agent)" || return 1
-        prime_id="$(steerer_read id)" || return 1
+        # Stop ONLY the immutable ID from the verified daemon row. Never
+        # re-read steerer/id here: another start can replace it meanwhile.
         steerer_bounded "$prime_bin" stop "$prime_id" --json >/dev/null 2>&1 || {
             err "the daemon did not confirm stopping the verified ID; address retained"
             return 1
         }
         event steerer stopped "$name"
+        # A new companion may have started while stop was in flight. Its
+        # address (and tmux session if the name was reused) is not ours to
+        # remove. Treat the confirmed stop as success but keep its record.
+        if [ "$(steerer_read name 2>/dev/null || printf '')" != "$name" ] ||
+           [ "$(steerer_read id 2>/dev/null || printf '')" != "$prime_id" ] ||
+           [ "$(steerer_read engine 2>/dev/null || printf '')" != prime-agent ] ||
+           [ "$(steerer_read fence-v2 2>/dev/null || printf '')" != "$fence" ]; then
+            good "the companion $name ($prime_id) stopped; a changed record was retained"
+            return 0
+        fi
         steerer_tmux_kill "$name"
         steerer_forget
         good "the companion $name stopped"
