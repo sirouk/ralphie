@@ -1,9 +1,18 @@
 # Changelog
 
-## Unreleased — explicit review checkpoint MVP
+## 4.3.0 — 2026-09-24
 
-- Added separate, hash-bound `checkpoint prepare/show/record/run` evidence lane. Only `run ID --engine prime-agent|claude --spend` starts up to three one-shot tool-free model attempts; no model selection or fallback. All provider identities remain unconfirmed absent trusted receipts; no approval or gate promotion.
-- Refuse unknown bare single-word argv as paid objectives unless explicitly selected; `-- WORD` and `-o WORD` remain valid.
+**Explicit review checkpoints.** Added a separate, hash-bound `checkpoint
+prepare/show/record/run` evidence lane for selected local files. Only `run ID
+--engine prime-agent|claude --spend` starts up to three one-shot tool-free
+model attempts. There is no automatic model selection or fallback. Provider
+identities remain unconfirmed without trusted receipts; findings never approve
+work or promote a gate. This new public CLI is additive; on-disk run schema and
+`status --json` are unchanged.
+
+Unknown bare single-word argv is now refused rather than interpreted as a paid
+objective. `-- WORD` and `-o WORD` remain valid explicit alternatives. Unknown
+multiword command-like argv is also refused; use `run` for a real objective.
 
 
 All notable changes to `ralphie.sh`. Versions follow semantic versioning applied to

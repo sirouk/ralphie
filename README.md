@@ -321,7 +321,12 @@ survivors. It does not signal a whole process group.
 Force can interrupt edits, gates and commits. Retained files and receipts support
 recovery, but **interrupted work is not promised saved or committed**. Inspect the
 working tree, ledger and gates before resuming. A stale PID alone cannot authorize
-force. These identity checks are best effort: same-user metadata tampering and
+force. A stop request is not a lock: it is noticed only at a worker boundary.
+After an untrappable exit, a stale or ambiguous run lock may require manual
+recovery. Stop all launchers and workers, verify they exited, and inspect the
+retained launch receipts and worktree before moving or removing lock metadata;
+do not treat a stale PID as proof that descendants or remote calls have ended.
+These identity checks are best effort: same-user metadata tampering and
 the race between checking a PID and signaling it remain limitations. Escaped or
 new descendants and accepted remote requests may continue; remote cancellation
 and stopped billing are not guaranteed.
