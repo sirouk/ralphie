@@ -12016,6 +12016,7 @@ MOCK
       steerer_pa_snapshot() { printf 'owner1\tlive\t%s\tralphie-steerer-test\t%s\n' "$PROJECT" "$mock_file"; }
       steerer_write boot-dir "$mock_dir"
       companion_ext_write >/dev/null
+      companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
       steerer_write fence-v2 "$(companion_fence_witness owner1)"
       steerer_bounded() { printf '%s\n' "$*" >> "$d/sends"; printf '%s' '{"deliveryStatus":"queued"}'; }
       check "fenced event queued" queued "$(steerer_pa_tell ralphie-steerer-test 'safe event')"
@@ -12109,7 +12110,20 @@ MOCK_TMUX
       check_ok "mock companion boot succeeds without a provider" "$rc"
       check "mock companion id is returned" agent_mock "$out"
       check "mock tmux captured boot argv" yes "$([ -s "$d/boot-argv" ] && echo yes || echo no)"
+      check "owner-only saved boot settings" 600 "$(stat -f %Lp "$(steerer_file launch-v2)" 2>/dev/null || stat -c %a "$(steerer_file launch-v2)")"
       if [ -s "$d/boot-argv" ]; then
+          saved_matches="$(python3 - "$d/boot-argv" "$(steerer_file launch-v2)" <<'PY'
+import pathlib, shlex, sys
+argv = shlex.split(pathlib.Path(sys.argv[1]).read_text())
+record = pathlib.Path(sys.argv[2]).read_bytes()
+values = [s.decode() for s in record[:-1].split(b'\0')] if record.endswith(b'\0') else []
+actual = [argv[argv.index('--model') + 1] if '--model' in argv else '',
+          argv[argv.index('--system-prompt') + 1],
+          argv[argv.index('--append-system-prompt') + 1], argv[-1]]
+print('yes' if values == actual else 'no')
+PY
+)"
+          check "saved launch selections equal the exact boot argv" yes "$saved_matches"
           boot="$(cat "$d/boot-argv")"
           check_contains "actual boot uses explicit controlled --system-prompt" '--system-prompt' "$boot"
           check_contains "actual boot overrides project APPEND_SYSTEM.md" '--append-system-prompt' "$boot"
@@ -12202,6 +12216,7 @@ if want "companion-turns"; then
       steerer_write boot-dir "$(companion_home)/boot-test"
       steerer_write name mock; steerer_write id agent_mock; steerer_write engine prime-agent
       companion_ext_write >/dev/null
+      companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
       steerer_write fence-v2 "$(companion_fence_witness agent_mock)"
       steerer_bounded() { printf '%s' '{"id":"agentmsg_AUTH"}'; }
       auth_out="$d/auth-answer"
@@ -12250,6 +12265,7 @@ if want "companion-oneshot"; then
       printf '%s\n' '{"type":"session"}' > "$mock_file"
       steerer_write name "$mock_name"; steerer_write id "$mock_id"; steerer_write engine prime-agent
       companion_ext_write >/dev/null
+      companion_launch_write pinned-boot-model "$(steerer_role pinned-boot-role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
       fence="$(companion_fence_witness "$mock_id")"; check_contains "fresh broker produces SHA-256 bound fence" 'v2:' "$fence"
       steerer_write fence-v2 "$fence"
       expect_fallback() {
@@ -12275,10 +12291,42 @@ if want "companion-oneshot"; then
       companion_ask "$mock_name" hello "$d/answer" >/dev/null
       check_contains "message targets the verified id" "send --json $mock_id -- hello" "$(cat "$d/sends")"
       check_lacks "message never targets reused name" "send --json $mock_name" "$(cat "$d/sends")"
-      ( RALPHIE_STEERER_MODEL=other-model; companion_live_row "$mock_name" >/dev/null 2>&1 ); rc=$?
-      check_fails "model change revokes boot self-attestation" "$rc"
-      ( RALPHIE_STEERER_PROMPT='different role'; companion_live_row "$mock_name" >/dev/null 2>&1 ); rc=$?
-      check_fails "role change revokes boot self-attestation" "$rc"
+      ( RALPHIE_STEERER_MODEL=other-model; RALPHIE_STEERER_PROMPT='different role';
+        MODEL=another-model; companion_live_row "$mock_name" >/dev/null 2>&1 ); rc=$?
+      check_ok "model and role env drift retain the saved boot selection" "$rc"
+      ( RALPHIE_STEERER_MODEL=other-model; RALPHIE_STEERER_PROMPT='different role';
+        steerer_pa_stop "$mock_name" >/dev/null 2>&1 ); rc=$?
+      check_ok "verified ID stop survives env drift" "$rc"
+      check_contains "env-drift stop targets verified ID" "stop $mock_id --json" "$(cat "$d/sends")"
+      : > "$d/sends"
+      ( RALPHIE_STEERER_MODEL=other-model; RALPHIE_STEERER_PROMPT='different role';
+        steerer_bounded() { printf '%s\n' "$*" >> "$d/sends"; printf '%s' '{"deliveryStatus":"queued"}'; }
+        steerer_pa_tell "$mock_name" 'drift event' >/dev/null 2>&1 ); rc=$?
+      check_ok "verified ID event survives env drift" "$rc"
+      check_contains "env-drift tell targets verified ID" "send --json $mock_id -- drift event" "$(cat "$d/sends")"
+      ( RALPHIE_STEERER_MODEL=other-model; RALPHIE_STEERER_PROMPT='different role';
+        steerer_tmux_kill() { :; }; event() { :; }
+        steerer_stop_cmd >/dev/null 2>&1 ); rc=$?
+      check_ok "ordinary verified-ID stop survives later environment changes" "$rc"
+      check_contains "ordinary stop addresses saved immutable ID" "stop $mock_id --json" "$(cat "$d/sends")"
+      check "ordinary stop removes boot launch record" no "$([ -e "$(steerer_file launch-v2)" ] && echo yes || echo no)"
+      steerer_write name "$mock_name"; steerer_write id "$mock_id"; steerer_write engine prime-agent
+      steerer_write boot-dir "$mock_dir"
+      companion_launch_write pinned-boot-model "$(steerer_role pinned-boot-role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
+      steerer_write fence-v2 "$(companion_fence_witness "$mock_id")"
+      cp "$(steerer_file launch-v2)" "$d/launch-good"
+      companion_launch_write 'other-valid-model' "$(steerer_role pinned-boot-role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
+      companion_live_row "$mock_name" >/dev/null 2>&1; rc=$?
+      check_fails "valid but changed saved model mismatches original witness" "$rc"
+      cp "$d/launch-good" "$(steerer_file launch-v2)"
+      printf 'tampered\0' > "$(steerer_file launch-v2)"
+      companion_live_row "$mock_name" >/dev/null 2>&1; rc=$?
+      check_fails "invalid saved launch choices refuse admission" "$rc"
+      cp "$d/launch-good" "$(steerer_file launch-v2)"
+      rm -f "$(steerer_file launch-v2)"
+      companion_live_row "$mock_name" >/dev/null 2>&1; rc=$?
+      check_fails "missing launch selections refuse admission" "$rc"
+      cp "$d/launch-good" "$(steerer_file launch-v2)"
       : > "$d/sends"; rm -f "$d/sends"
       mock_cwd="$d/foreign"
       expect_fallback 'foreign cwd'
@@ -12310,6 +12358,7 @@ if want "companion-oneshot"; then
       expect_fallback 'reused name'
       steerer_forget
       check "forget clears the fence record" no "$([ -e "$(steerer_file fence-v2)" ] && echo yes || echo no)"
+      check "forget clears saved boot selection" no "$([ -e "$(steerer_file launch-v2)" ] && echo yes || echo no)"
       steerer_impl() { printf prime-agent; }
       steerer_running() { return 1; }
       steerer_name_new() { printf ralphie-steerer-fresh; }
@@ -12321,6 +12370,7 @@ if want "companion-oneshot"; then
       # The previous boot witness was discarded by steerer_forget. The mocked
       # start records its new boot directory only after the no-recovery guard.
       steerer_write fence-v2 "$fence"
+      companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
       # Restore only the real implementation after all negative no-boot cases.
       eval "$(sed -n '/^steerer_start()/,/^}/p' "$d/ralphie.sh")"
       event() { :; }
@@ -12364,6 +12414,31 @@ if want "companion-proposals"; then
       out="$(chat_companion_turn 'x' 2>&1)"
       check_lacks "companion text is sanitized before it reaches the terminal" "$(printf '\033[2J')" "$out"
       true ) || no 'companion proposal group completed'
+fi
+
+if want "companion-legacy-stop-race"; then
+    # A missing first lookup is NOT proof of final absence. No real daemon.
+    d="$(new_project)"; ( load_lib "$d"
+      mkdir -p "$HOME_DIR/chat"
+      legacy="$HOME_DIR/chat/session-name"
+      printf 'ralphie-chat-old\n' > "$legacy"
+      steerer_pa_id() { return 1; }
+      steerer_pa_snapshot() { printf 'owner1\tlive\t%s\tralphie-chat-old\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      legacy_chat_session_stop >/dev/null 2>&1; rc=$?
+      check_fails "legacy name appearing on final snapshot blocks removal" "$rc"
+      check "newly live legacy address retained" yes "$([ -f "$legacy" ] && echo yes || echo no)"
+      steerer_pa_snapshot() { printf 'owner1\tstopped\t%s\tralphie-chat-old\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      legacy_chat_session_stop >/dev/null 2>&1; rc=$?
+      check_fails "reserved legacy name cannot be cleared as absent" "$rc"
+      check "reserved legacy address retained" yes "$([ -f "$legacy" ] && echo yes || echo no)"
+      steerer_pa_snapshot() { return 1; }
+      legacy_chat_session_stop >/dev/null 2>&1; rc=$?
+      check_fails "failed final legacy snapshot retains address" "$rc"
+      steerer_pa_snapshot() { printf 'owner1\tlive\t%s\tother\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
+      legacy_chat_session_stop >/dev/null 2>&1; rc=$?
+      check_ok "verified exact legacy name absence removes stale address" "$rc"
+      check "stale legacy address cleared only after final absence" no "$([ -e "$legacy" ] && echo yes || echo no)"
+      true ) || no 'legacy stop race group completed'
 fi
 
 if want "companion-stop"; then
