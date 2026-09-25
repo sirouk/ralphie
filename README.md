@@ -12,14 +12,23 @@ cost figures are read from the engine's own records when it keeps them. Without
 any of them Ralphie still observes, decides, acts, verifies, commits and learns.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh | bash -s -- "make the tests pass"
+curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh | bash -s -- version
+```
+
+This installs `ralphie.sh` in the current directory and prints its version;
+it does not start the loop. Review the saved script and discover the project
+before explicitly opting in to a run:
+
+```bash
+./ralphie.sh discover                  # read-only; no engine or gate execution
+./ralphie.sh --once run "make the tests pass"  # starts an engine; may cost money
 ```
 
 Or keep one installed copy and select an existing directory:
 
 ```bash
 /path/to/ralphie.sh --project "/path/to/my project" discover
-/path/to/ralphie.sh --project "/path/to/my project" --once "make the tests pass"
+/path/to/ralphie.sh --project "/path/to/my project" --once run "make the tests pass"
 ```
 
 `--project` overrides `RALPHIE_PROJECT`; otherwise the script's directory is
@@ -612,9 +621,15 @@ Ralphie discovers them on first run from root manifests such as `package.json`,
 `pyproject.toml`, `requirements.txt`, `Cargo.toml`, `go.mod`, `Makefile`,
 `deno.json`, `pom.xml`, and `mix.exs`.
 Every candidate is **trial-run before it is accepted**, so a command that cannot
-execute on this machine never becomes a gate. Discovery does not search child
-workspace packages. Use `--gate "your check command"` or add a command to
-`.ralphie/gates` for unsupported layouts. Commands run from the project root.
+execute on this machine never becomes a gate. Gate discovery also searches supported workspace and nested project manifests
+(up to two levels below the root by default; `RALPHIE_WS_DEPTH=0` disables
+this, and 3 is the maximum). It covers npm/pnpm/yarn workspaces, Cargo,
+Go, Python, Maven and Gradle multi-project layouts and plain nested projects.
+Nested Git repositories and submodules are skipped unless
+`RALPHIE_WS_SUBMODULES=1` is set, because work inside them cannot be committed
+by the outer project. A generated workspace gate with no runnable member fails
+its trial; it is not accepted as proof. Use `--gate "your check command"` or
+add a command to `.ralphie/gates` for unsupported layouts. Commands run from the project root.
 An existing gate file, even an empty one, is kept; use `gates --redetect` after
 adding tools or manifests.
 

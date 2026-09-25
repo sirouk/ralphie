@@ -17294,6 +17294,21 @@ $2"; shift 2;;
 # disturb a loop that is working.
 
 run_simple_command() {
+    # These readers accept no trailing words (except status --json). Check
+    # before cmd_status redirects stderr or any reader emits a success report.
+    case "$CMD" in
+        status)
+            if [ "${#REST[@]}" -gt 1 ] ||
+               { [ "${#REST[@]}" -eq 1 ] && [ "${REST[0]}" != "--json" ]; }; then
+                err "usage: $ME status [--json] (unexpected argument: ${REST[1]:-${REST[0]}})"
+                return 2
+            fi;;
+        doctor|ask)
+            if [ "${#REST[@]}" -gt 0 ]; then
+                err "usage: $ME $CMD (unexpected argument: ${REST[0]})"
+                return 2
+            fi;;
+    esac
     case "$CMD" in
         version) say "ralphie $VERSION";;
         help)    usage;;

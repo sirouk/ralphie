@@ -2023,6 +2023,24 @@ fi
 if want "status"; then
     out="$("$d/ralphie.sh" status 2>&1)"; check_ok "status exits 0 on a fresh project" $?
 fi
+if want "reader-argv"; then
+    d="$(new_project)"
+    for args in 'status --bogus' 'status extra' 'status --json --bogus'                 'status --json extra' 'doctor --bogus' 'doctor extra'                 'ask --bogus' 'ask extra'; do
+        # The fixtures have no paid engine and no runnable gate. Each rejected
+        # reader must exit before reporting success or creating run state.
+        read -r -a argv <<< "$args"
+        out="$(cd "$d" && ./ralphie.sh "${argv[@]}" 2>&1)"; rc=$?
+        check_fails "$args rejects trailing argument" "$rc"
+        check_contains "$args shows usage" "usage:" "$out"
+        check_lacks "$args does not print JSON" '"cycle":' "$out"
+    done
+    for args in 'status' 'status --json' 'doctor' 'ask'; do
+        read -r -a argv <<< "$args"
+        out="$(cd "$d" && ./ralphie.sh "${argv[@]}" 2>&1)"; rc=$?
+        check_ok "$args still succeeds" "$rc"
+    done
+    [ ! -e "$d/.ralphie/runs" ] && ok "readers did not start a run" || no "readers did not start a run" "run directory exists"
+fi
 if want "quiet-flag"; then
     out="$("$d/ralphie.sh" --help 2>&1)"
     check_contains "--help documents --quiet" "-q, --quiet" "$out"
