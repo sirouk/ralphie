@@ -12208,11 +12208,19 @@ steerer_start() {
         err "the steerer started but its fence/address could not be persisted; refusing to address it by reusable name"
         if [ "$impl" = prime-agent ]; then
             local prime_bin
-            prime_bin="$(steerer_bin prime-agent)" && steerer_bounded "$prime_bin" stop "$id" --json >/dev/null 2>&1 || true
+            # The ID came from this private boot, not from the reusable name.
+            # Even a successful stop does not prove the post-boot writes are
+            # intact. Keep the recovery witness until an operator verifies it.
+            prime_bin="$(steerer_bin prime-agent)" || prime_bin=''
+            if [ -n "$prime_bin" ] && steerer_bounded "$prime_bin" stop "$id" --json >/dev/null 2>&1; then
+                warn "the verified ID was stopped, but the boot recovery record is retained under $(steerer_home)"
+            else
+                err "stopping the verified ID was not confirmed; recovery record retained under $(steerer_home) (id=$id)"
+            fi
         else
             steerer_api stop "$name" >/dev/null 2>&1 || true
+            steerer_forget
         fi
-        steerer_forget
         return 1
     fi
     if [ "$impl" = prime-agent ] && ! companion_live_row "$name" >/dev/null; then

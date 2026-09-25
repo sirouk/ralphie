@@ -12383,6 +12383,57 @@ if want "companion-oneshot"; then
     case "$body" in *'companion_connect_live || true'*) ok "one-shot uses the non-booting connector";; *) no "one-shot uses the non-booting connector";; esac
 fi
 
+if want "companion-boot-fence"; then
+    # A post-boot write failure must never erase the only paid-agent address.
+    # Both stop outcomes are mocked; no Prime CLI or network is used.
+    d="$(new_project)"; ( load_lib "$d"
+      mkdir -p "$(steerer_home)"
+      eval "$(sed -n '/^steerer_write()/,/^}/p' "$RALPHIE" | sed '1s/steerer_write()/steerer_write_real()/')"
+      steerer_write() { [ "$1" != "$fail_field" ] && steerer_write_real "$@"; }
+      steerer_impl() { printf prime-agent; }
+      steerer_running() { return 1; }
+      steerer_name_new() { printf ralphie-steerer-write-fail; }
+      steerer_bin() { printf '%s' "$d/mock-prime"; }
+      companion_fence_witness() { printf witness; }
+      steerer_api() {
+          case "$1" in
+              start)
+                  steerer_write boot-dir "$d/private-boot" || return 1
+                  steerer_write launch-v2 'saved-launch' || return 1
+                  printf agent_write_fail;;
+              *) return 1;;
+          esac
+      }
+      event() { :; }
+      steerer_bounded() { printf '%s\n' "$*" >> "$d/stops"; [ "${MOCK_STOP_OK:-0}" = 1 ]; }
+      for fail_field in name id fence-v2; do
+        for stop_ok in 0 1; do
+          MOCK_STOP_OK="$stop_ok"
+          out="$(steerer_start 2>&1)"; rc=$?
+          check_fails "write failure refuses start (stop=$stop_ok)" "$rc"
+          check_contains "write failure addresses verified ID ($fail_field stop=$stop_ok)" 'stop agent_write_fail --json' "$(cat "$d/stops")"
+          if [ "$stop_ok" = 0 ]; then
+              check_contains "failed stop prints ID ($fail_field)" 'id=agent_write_fail' "$out"
+          fi
+          if [ "$fail_field" != name ]; then
+              check "write failure retains name ($fail_field stop=$stop_ok)" ralphie-steerer-write-fail "$(steerer_read name)"
+          fi
+          if [ "$fail_field" = fence-v2 ]; then
+              check "write failure retains ID ($fail_field stop=$stop_ok)" agent_write_fail "$(steerer_read id)"
+          fi
+          check "write failure retains boot directory (stop=$stop_ok)" "$d/private-boot" "$(steerer_read boot-dir)"
+          check "write failure retains launch (stop=$stop_ok)" saved-launch "$(steerer_read launch-v2)"
+          check "write failure retains engine (stop=$stop_ok)" prime-agent "$(steerer_read engine)"
+          steerer_start >/dev/null 2>&1; rc=$?
+          check_fails "retained recovery refuses second paid boot (stop=$stop_ok)" "$rc"
+          check "second boot does not retry stop (stop=$stop_ok)" 1 "$(wc -l < "$d/stops" | tr -d ' ')"
+          steerer_forget
+          : > "$d/stops"
+        done
+      done
+      true ) || no 'post-boot persistence recovery group completed'
+fi
+
 if want "companion-proposals"; then
     # The companion's words go through the SAME validation as the stateless
     # supervisor's: a proposal is only ever PROPOSED, and a bad one is refused.
