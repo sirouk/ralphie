@@ -8671,7 +8671,7 @@ chat_request_target() {
 # requirement; 1 means no match; 2 means unreadable/failed scan (fail closed).
 objective_has_model_requirement() {
     local hits rc pattern
-    pattern='(^|[^[:alnum:]_])(chutes|kimi|gpt-[[:alnum:]_.-]+|openai|claude|anthropic|gemini|grok|sonnet)([^[:alnum:]_]|$)|(^|[[:space:]])(requires?|must|only|use|using)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?(model|provider)([[:space:]:=]|$)|(^|[[:space:]])(model|provider)[[:space:]]*[:=]|(^|[[:space:]])(model|provider)[[:space:]]+(is|must[[:space:]]+be|should[[:space:]]+be)[[:space:]]+[^[:space:]]+'
+    pattern='(^|[^[:alnum:]_])(chutes|kimi|deepseek|gpt-[[:alnum:]_.-]+|openai|claude|anthropic|gemini|grok|sonnet)([^[:alnum:]_]|$)|(^|[[:space:]])(requires?|must|only|use|using)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?(model|provider|k3)([[:space:]:=]|$)|(^|[[:space:]])(model|provider)[[:space:]]*[:=]|(^|[[:space:]])(model|provider)[[:space:]]+(is|must[[:space:]]+be|should[[:space:]]+be)[[:space:]]+[^[:space:]]+'
     if [ "$#" -eq 0 ]; then
         [ ! -L "$OBJECTIVE_FILE" ] && [ -f "$OBJECTIVE_FILE" ] && [ -r "$OBJECTIVE_FILE" ] || return 2
         hits="$(LC_ALL=C grep -Eic "$pattern" "$OBJECTIVE_FILE")"; rc=$?

@@ -616,6 +616,29 @@ if want "blocked-model-resume-preflight"; then
         'Before work, confirm the active model is acme/fast; if not, stop. Run tests.' 2>&1)"; rc=$?
     check_fails 'changed objective retaining unknown model-is clause refuses' "$rc"
     check 'changed unknown model clause starts no engine' no "$([ -e "$dunknown/engine-started" ] && echo yes || echo no)"
+    # Historical provider failures can name K3 or DeepSeek R1 without the
+    # canonical "Chutes Kimi K3" text. Both still bind the blocked objective.
+    for named in 'Use K3 for this task.' 'Requires DeepSeek R1 for this task.'; do
+        dnamed="$(new_project)"
+        ( load_lib "$dnamed"
+          ledger_init; state_set status blocked; state_set run_id named-model-run
+          printf '%s\n' "$named" > "$OBJECTIVE_FILE"
+          state_set objective_hash "$(printf '%s' "$named" | sha_of)"
+          state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+          true ) || no 'named-model fixture completed'
+        out="$(cd "$dnamed" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+            MOCK_LAST_PROMPT="$dnamed/engine-started" \
+            ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+        check_fails "unchanged blocked $named refuses" "$rc"
+        check 'named model refusal preserves blocked status' blocked "$(sed -n 's/^status=//p' "$dnamed/.ralphie/state")"
+        check 'named model refusal preserves run ID' named-model-run "$(sed -n 's/^run_id=//p' "$dnamed/.ralphie/state")"
+        check 'named model starts no engine' no "$([ -e "$dnamed/engine-started" ] && echo yes || echo no)"
+        out="$(cd "$dnamed" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+            MOCK_LAST_PROMPT="$dnamed/engine-started" \
+            ./ralphie.sh --no-update --engine custom --once run "$named Also run tests." 2>&1)"; rc=$?
+        check_fails "revised blocked $named still refuses" "$rc"
+        check 'named revision starts no engine' no "$([ -e "$dnamed/engine-started" ] && echo yes || echo no)"
+    done
     out="$(run_blocked_model --no-resume run)"; rc=$?
     check_fails '--no-resume does not launder unchanged requirement' "$rc"
     out="$(run_blocked_model run 'Requires Chutes Kimi K3 model, not gpt-6-sol.')"; rc=$?
