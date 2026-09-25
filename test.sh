@@ -12554,6 +12554,8 @@ if want "companion-stop-race"; then
       check_ok "two distinct mock IDs have distinct valid fences" "$([ "$old_fence" != "$new_fence" ] && [ -n "$old_fence" ] && [ -n "$new_fence" ]; echo $?)"
       race_stop() {
           local phase="$1" worker rc out
+          steerer_write boot-dir "$boot_dir"; steerer_write engine prime-agent
+          companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
           steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
           (
               load_lib "$d"
@@ -12579,32 +12581,49 @@ if want "companion-stop-race"; then
                       wait_for 8 test -f "$d/$phase.go" || return 1
                   fi
               }
-              steerer_tmux_kill() { printf '%s\n' "$1" > "$d/$phase.tmux-killed"; }
+              steerer_tmux_kill() {
+                  if [ "$phase" = final ]; then
+                      : > "$d/$phase.ready"
+                      wait_for 8 test -f "$d/$phase.go" || return 1
+                  fi
+                  printf '%s\n' "$1" > "$d/$phase.tmux-killed"
+              }
               steerer_stop_cmd > "$d/$phase.output" 2>&1
               printf '%s\n' "$?" > "$d/$phase.result"
           ) & worker=$!
           wait_for 8 test -f "$d/$phase.ready"; rc=$?
           check_ok "$phase: stop process reached the planned seam" "$rc"
-          # Rebind under the same name. Neither comparing just the name nor
-          # reading the ID again may authorize stopping or erasing agent_new.
-          steerer_write id agent_new; steerer_write fence-v2 "$new_fence"
+          # The other Bash process cannot mutate the record while stop owns
+          # the lock, even at the final guard-to-forget seam.
+          ( steerer_with_lock steerer_write id agent_new >/dev/null 2>&1 ); rc=$?
+          check_fails "$phase: concurrent writer cannot acquire lock" "$rc"
+          check "$phase: original ID remains" agent_old "$(steerer_read id 2>/dev/null || printf missing)"
           : > "$d/$phase.go"
           wait "$worker"
           rc="$(cat "$d/$phase.result" 2>/dev/null || printf 1)"
-          out="$(cat "$d/$phase.output" 2>/dev/null || printf '')"
           check_ok "$phase: confirmed stop exits successfully" "$rc"
-          check "${phase}: stop targeted the validated old ID" agent_old "$(cat "$d/$phase.target" 2>/dev/null || printf missing)"
-          check "${phase}: new ID remains recorded" agent_new "$(steerer_read id 2>/dev/null || printf missing)"
-          check "${phase}: new fence remains recorded" "$new_fence" "$(steerer_read fence-v2 2>/dev/null || printf missing)"
-          check "${phase}: tmux is not allowed to kill the rebound name" no "$([ -e "$d/$phase.tmux-killed" ] && echo yes || echo no)"
-          check_contains "$phase: the changed address is disclosed" 'changed record was retained' "$out"
+          check "${phase}: stop targeted validated old ID" agent_old "$(cat "$d/$phase.target" 2>/dev/null || printf missing)"
+          check "${phase}: old address removed" missing "$(steerer_read id 2>/dev/null || printf missing)"
+          check "${phase}: tmux killed only stopped name" yes "$([ -e "$d/$phase.tmux-killed" ] && echo yes || echo no)"
+          steerer_with_lock steerer_write id agent_new >/dev/null
+          steerer_with_lock steerer_write fence-v2 "$new_fence" >/dev/null
+          check "${phase}: next writer can store ID" agent_new "$(steerer_read id 2>/dev/null || printf missing)"
       }
       # Before: the old bug re-read id after validation and stopped agent_new.
       # During/after: even a correctly targeted stop must not erase a new
       # address when the daemon reply or the stopped event arrives.
+      # Start cannot cross a held stop lock into the paid boot boundary.
+      mkdir -p "$(steerer_home)/mutation.lock"
+      ( steerer_impl() { printf prime-agent; }; steerer_api() { : > "$d/unwanted-paid-boot"; }; steerer_start >/dev/null 2>&1 ); rc=$?
+      check_fails "held lock refuses a concurrent paid start" "$rc"
+      check "held lock spawned no paid agent" no "$([ -e "$d/unwanted-paid-boot" ] && echo yes || echo no)"
+      rmdir "$(steerer_home)/mutation.lock" || no "seeded lock could not be removed"
+      check "seeded lock released before race" no "$([ -e "$(steerer_home)/mutation.lock" ] && echo yes || echo no)"
       race_stop before
       race_stop during
       race_stop after
+      race_stop final
+      steerer_write engine prime-agent; steerer_write boot-dir "$boot_dir"
       steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
       companion_live_row() { printf 'agent;unsafe\tlive\t%s\t%s\t%s\n' "$PROJECT" "$old_name" "$transcript"; }
       steerer_bin() { printf mock-prime; }

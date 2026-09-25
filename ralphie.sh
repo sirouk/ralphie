@@ -12129,7 +12129,29 @@ steerer_running() {
     esac
 }
 
-steerer_start() {
+# A mkdir lock is atomic on macOS and Bash does not require GNU flock. Never
+# reclaim a lock on guessed PID liveness: uncertainty must block a paid boot.
+# Keep it in this foreground subshell, not an open fd inherited by the async
+# event-delivery child. All start/stop reads, daemon calls and record mutations
+# stay inside the same critical section, including the final tmux/forget seam.
+steerer_with_lock() (
+    local lock
+    [ -n "${HOME_DIR:-}" ] || { err "steerer home is unknown; refusing mutation"; return 1; }
+    [ ! -L "$(steerer_home)" ] || { err "steerer home is a symlink; refusing mutation"; return 1; }
+    mkdir -p "$(steerer_home)" 2>/dev/null || { err "cannot create steerer home; refusing mutation"; return 1; }
+    lock="$(steerer_home)/mutation.lock"
+    ( umask 077; mkdir -m 700 "$lock" ) 2>/dev/null || {
+        err "steerer mutation is locked or uncertain; refusing start/stop (no paid boot)"
+        return 1
+    }
+    # Bash clears EXIT traps in asynchronous subshells. The delivery child
+    # cannot release this directory or inherit a held lock descriptor.
+    trap 'rmdir "$lock" 2>/dev/null || err "steerer lock could not be released; future mutations will fail closed"' EXIT
+    "$@"
+)
+
+steerer_start() { steerer_with_lock steerer_start_locked "$@"; }
+steerer_start_locked() {
     local name impl id fence
     impl="$(steerer_impl)" || { err "no steerer engine is installed  (prime-agent or claude)"; return 1; }
     # Any recorded Prime boot directory is a recovery claim. A partial write
@@ -12256,7 +12278,8 @@ steerer_logs_cmd() {
     steerer_api logs "$name" "$n"
 }
 
-steerer_stop_cmd() {
+steerer_stop_cmd() { steerer_with_lock steerer_stop_locked "$@"; }
+steerer_stop_locked() {
     # Never claim an effect that did not happen, and never throw away the only
     # handle to an agent that may still be running. This used to clear the
     # record and return 0 whenever the engine did not confirm -- the defect
