@@ -11151,21 +11151,32 @@ companion_read_file() {
     # One text file INSIDE the project: relative, no .., no symlink anywhere on
     # the path, a regular readable file, bounded. Ralphie's own run directory is
     # served through the curated verbs above instead, never raw.
-    local rel="$1" p cur part LC_ALL=C
+    local rel="$1" p cur part rest last LC_ALL=C
     [ -n "$rel" ] && [ "${#rel}" -le 400 ] || { printf 'refused: give a path relative to the project root.\n'; return 0; }
     case "$rel" in
-        /*|*..*|*"$RALPHIE_NL"*) printf 'refused: the path must be relative and stay inside the project.\n'; return 0;;
-        .ralphie|.ralphie/*|./.ralphie|./.ralphie/*|.git|.git/*) printf 'refused: use ralphie_status, ralphie_log, ralphie_gates or ralphie_dialog for run state.\n'; return 0;;
+        /*) printf 'refused: the path must be relative and stay inside the project.\n'; return 0;;
+        *[[:cntrl:]]*) printf 'refused: the path contains control characters.\n'; return 0;;
     esac
-    case "$rel" in *[[:cntrl:]]*) printf 'refused: the path contains control characters.\n'; return 0;; esac
+    # Split lexically, not by shell word splitting (which also expands globs).
+    # Ignore redundant / and . only after checking every real component. Never
+    # let dot segments hide a denied directory, or follow a symlink on the way.
     cur="$PROJECT"
-    local IFS=/
-    for part in $rel; do
-        [ -n "$part" ] && [ "$part" != . ] || continue
-        cur="$cur/$part"
-        [ ! -L "$cur" ] || { printf 'refused: %s is a symbolic link.\n' "$rel"; return 0; }
+    rest="$rel"
+    while :; do
+        last=0
+        case "$rest" in
+            */*) part="${rest%%/*}"; rest="${rest#*/}";;
+            *) part="$rest"; last=1;;
+        esac
+        case "$part" in
+            ..) printf 'refused: the path must be relative and stay inside the project.\n'; return 0;;
+            .ralphie|.git) printf 'refused: use ralphie_status, ralphie_log, ralphie_gates or ralphie_dialog for run state.\n'; return 0;;
+            ''|.) ;;
+            *) cur="$cur/$part"
+               [ ! -L "$cur" ] || { printf 'refused: %s is a symbolic link.\n' "$rel"; return 0; };;
+        esac
+        [ "$last" -eq 0 ] || break
     done
-    unset IFS
     p="$cur"
     [ -f "$p" ] && [ -r "$p" ] || { printf 'not found: %s\n' "$rel"; return 0; }
     if [ "$(file_bytes "$p")" -gt 200000 ]; then

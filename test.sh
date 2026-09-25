@@ -12166,16 +12166,31 @@ if want "companion-read-broker"; then
     # verb is refused before anything runs, and the file verb stays inside the
     # project and away from run state.
     d="$(new_project)"
-    ( cd "$d" && printf 'hello from the project\nsecret=hunter2\n' > notes.txt && ln -s /etc/hosts link.txt ) 2>/dev/null
+    ( cd "$d" && printf 'hello from the project\nsecret=hunter2\n' > notes.txt &&
+      mkdir -p docs .ralphie .git &&
+      printf 'ordinary docs content\n' > docs/guide.txt &&
+      printf 'BROKER_PRIVATE_SENTINEL\n' > .ralphie/private.txt &&
+      printf 'BROKER_GIT_SENTINEL\n' > .git/config &&
+      ln -s /etc/hosts link.txt && ln -s docs alias &&
+      ln -s /etc outside ) 2>/dev/null
     out="$( cd "$d" && ./ralphie.sh companion-read status 2>&1 )"; rc=$?
     check_ok "the status verb answers" "$rc"
     check_contains "and carries the machine-readable status too" '"version"' "$out"
     out="$( cd "$d" && ./ralphie.sh companion-read file notes.txt 2>&1 )"
     check_contains "a project file can be read" "hello from the project" "$out"
     check_lacks "and a secret in it is redacted" "hunter2" "$out"
-    for bad in ../../etc/passwd /etc/passwd .ralphie/state .git/config link.txt; do
+    for good in docs/guide.txt ./docs/guide.txt ././docs//guide.txt; do
+        out="$( cd "$d" && ./ralphie.sh companion-read file "$good" 2>&1 )"
+        check_contains "normal project file $good remains readable" 'ordinary docs content' "$out"
+    done
+    for bad in ../../etc/passwd /etc/passwd .ralphie/private.txt .git/config \
+        ././.ralphie/private.txt ././.git/config docs/../.ralphie/private.txt \
+        docs/./.git/config docs//.ralphie/private.txt docs/.git/config \
+        link.txt alias/guide.txt outside/hosts; do
         out="$( cd "$d" && ./ralphie.sh companion-read file "$bad" 2>&1 )"
-        check_lacks "the file verb refuses $bad" "root:" "$out"
+        check_lacks "the file verb hides private run state for $bad" 'BROKER_PRIVATE_SENTINEL' "$out"
+        check_lacks "the file verb hides git config for $bad" 'BROKER_GIT_SENTINEL' "$out"
+        check_lacks "the file verb hides outside content for $bad" '127.0.0.1' "$out"
         case "$out" in *refused*|*"not found"*) ok "the file verb says why for $bad";; *) no "the file verb says why for $bad" "$out";; esac
     done
     ( cd "$d" && ./ralphie.sh companion-read rm -rf / >/dev/null 2>&1 ); rc=$?
