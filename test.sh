@@ -12213,7 +12213,9 @@ MOCK_TMUX
       check_ok "mock companion boot succeeds without a provider" "$rc"
       check "mock companion id is returned" agent_mock "$out"
       check "mock tmux captured boot argv" yes "$([ -s "$d/boot-argv" ] && echo yes || echo no)"
-      check "owner-only saved boot settings" 600 "$(stat -f %Lp "$(steerer_file launch-v2)" 2>/dev/null || stat -c %a "$(steerer_file launch-v2)")"
+      # GNU stat accepts -f but prints filesystem details, not a file mode.
+      # Try its mode form first; BSD/macOS stat then supplies the fallback.
+      check "owner-only saved boot settings" 600 "$(stat -c %a "$(steerer_file launch-v2)" 2>/dev/null || stat -f %Lp "$(steerer_file launch-v2)" 2>/dev/null)"
       if [ -s "$d/boot-argv" ]; then
           saved_matches="$(python3 - "$d/boot-argv" "$(steerer_file launch-v2)" <<'PY'
 import pathlib, shlex, sys
@@ -14616,7 +14618,7 @@ if want "connect-token-mode"; then
     d="$(new_project)"; ( load_lib "$d"
       tg_write token "$TG_FAKE_TOKEN" >/dev/null
       bin="$d/bin"; mkdir -p "$bin"
-      printf '#!/usr/bin/env bash\ncfg=""; while [ $# -gt 0 ]; do [ "$1" = -K ] && cfg="$2"; shift; done\nstat -f %%Lp "$cfg" 2>/dev/null > "%s/mode" || stat -c %%a "$cfg" > "%s/mode"\nprintf "{\\"ok\\":true}"\n' "$d" "$d" > "$bin/curl"
+      printf '#!/usr/bin/env bash\ncfg=""; while [ $# -gt 0 ]; do [ "$1" = -K ] && cfg="$2"; shift; done\nstat -c %%a "$cfg" 2>/dev/null > "%s/mode" || stat -f %%Lp "$cfg" 2>/dev/null > "%s/mode"\nprintf "{\\"ok\\":true}"\n' "$d" "$d" > "$bin/curl"
       chmod +x "$bin/curl"
       umask 022
       PATH="$bin:$PATH" tg_curl getMe >/dev/null 2>&1 || true
