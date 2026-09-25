@@ -1,0 +1,10 @@
+# Prime Agent 0.9.6 chat adapter compatibility review
+
+Scope: isolated `/tmp/ralphie-prime096-1240152` at base `938a75a`. No provider/model request was made.
+
+- The installed `prime-agent --version` returns `0.9.6`. Its `--help` advertises `--offline`, `--cwd`, `--session-dir`, `--no-tools`, `--no-skills`, `--no-context-files`, `--no-prompt-templates`, and `--no-themes`. Binary `strings` includes `PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND`. A local source checkout (not proved to be the exact 0.9.6 release) routes that gate through `maybeRunOwnedSessionWorkerFrontend`, before daemon startup, and classifies `-p` as an owned print worker. This is supporting evidence, **not** a proof that the installed compiled binary will never use the daemon or invoke extension hooks.
+- Adapter allowlist is **exactly** 0.9.5 and 0.9.6, including their documented name-prefixed version forms. 0.9.7 and other versions fail before inference. Rejected-version diagnostics include the bounded, sanitized installed version.
+- Hermetic test `./test.sh chat-inference-adapter` passes (77 assertions). Both exact versions use a mock executable; tests inspect private cwd, selected legacy frontend env, disabled tool/resource flags, offline flag and private session argument. 0.9.7 mock verifies no inference invocation or answer. No network/provider call was made by these tests.
+- `bash -n ralphie.sh test.sh` and `git diff --check` pass. `shellcheck -S error ralphie.sh test.sh` cannot parse existing `test.sh:10271` (pre-existing malformed shellcheck fixture). Unrestricted shellcheck also reports many pre-existing warnings. This change introduces no new warning in its edited lines.
+
+Limitations: mock checks argument construction and process custody, not live 0.9.6 behavior or a provider transport. Extensions remain enabled for provider registration; `--no-tools` filters registered tools but does not sandbox extension host code or hooks. `--offline` disables startup networking, not provider inference. This adapter is suitable only with trusted local extensions and does not make the supervisor a sandbox.

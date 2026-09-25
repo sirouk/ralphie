@@ -2726,11 +2726,26 @@ CHAT_RECEIPT_PY
         check_ok "chat custom adapter path with spaces executes exactly" $?
         check "chat custom adapter receives only explicit argument pairs" 4 "$(wc -l < "$d/argv" | tr -d ' ')"
         check_contains "chat custom usage is honestly unavailable" unavailable "$(cat "$HOME_DIR/chat/usage.json")"
-        ENGINE=prime-agent; export MOCK_VERSION=0.9.6
+        ENGINE=prime-agent
+        for MOCK_VERSION in 0.9.5 0.9.6; do
+            export MOCK_VERSION
+            printf not-called > "$d/argv"
+            chat_infer "$d/prompt" "$d/answer" > "$d/error" 2>&1
+            check_ok "chat accepts exact Prime $MOCK_VERSION" $?
+            for flag in --mode --offline --cwd --no-tools --no-skills --no-context-files --no-prompt-templates --no-themes --session-dir; do
+                grep -Fxq -- "$flag" "$d/argv" && ok "chat $MOCK_VERSION includes $flag" || no "chat $MOCK_VERSION includes $flag"
+            done
+            check "chat $MOCK_VERSION selects owned frontend" 1 "$(cat "$d/frontend")"
+            check "chat $MOCK_VERSION invokes mocked inference" "$MODEL" "$(cat "$d/provider-visible")"
+            [ -s "$d/answer" ] && ok "chat $MOCK_VERSION produces answer" || no "chat $MOCK_VERSION produces answer"
+        done
+        MOCK_VERSION=0.9.7; export MOCK_VERSION
         printf not-called > "$d/argv"
         chat_infer "$d/prompt" "$d/answer" > "$d/error" 2>&1
-        check "chat rejects unreviewed Prime version" 2 "$?"
-        check "chat unreviewed version performs no inference" not-called "$(cat "$d/argv")"
+        check "chat rejects unreviewed Prime $MOCK_VERSION" 2 "$?"
+        check_contains "chat diagnoses installed Prime $MOCK_VERSION" "installed Prime Agent version $MOCK_VERSION" "$(cat "$d/error")"
+        check "chat $MOCK_VERSION performs no inference" not-called "$(cat "$d/argv")"
+        [ ! -s "$d/answer" ] && ok "chat $MOCK_VERSION exposes no answer" || no "chat $MOCK_VERSION exposes no answer"
         unset MOCK_VERSION
         ln -s "$HOME_DIR/state" "$d/linked-answer"
         chat_infer "$d/prompt" "$d/linked-answer" > "$d/error" 2>&1
