@@ -12623,6 +12623,66 @@ if want "companion-stop-race"; then
       race_stop during
       race_stop after
       race_stop final
+      # Adversarial writer: unlike the cooperative start/stop paths above, an
+      # out-of-band record writer ignores mutation.lock. Keep this separate so
+      # the shared-lock regression is not silently replaced by the old race.
+      hostile_rebind() {
+          local phase="$1" worker rc out
+          steerer_write boot-dir "$boot_dir"; steerer_write engine prime-agent
+          companion_launch_write "$(steerer_model)" "$(steerer_role)" "$(companion_append_prompt)" "$(steerer_kickoff)"
+          steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
+          (
+              load_lib "$d"
+              steerer_pa_row() { printf 'agent_old\tlive\t%s\t%s\t%s\n' "$PROJECT" "$old_name" "$transcript"; }
+              steerer_bin() {
+                  # This runs only after the daemon row and fence were checked.
+                  if [ "$phase" = before ]; then
+                      : > "$d/hostile-$phase.ready"
+                      wait_for 8 test -f "$d/hostile-$phase.go" || return 1
+                  fi
+                  printf mock-prime
+              }
+              steerer_bounded() {
+                  printf '%s\n' "$3" > "$d/hostile-$phase.target"
+                  if [ "$phase" = during ]; then
+                      : > "$d/hostile-$phase.ready"
+                      wait_for 8 test -f "$d/hostile-$phase.go" || return 1
+                  fi
+              }
+              event() {
+                  if [ "$phase" = after ]; then
+                      : > "$d/hostile-$phase.ready"
+                      wait_for 8 test -f "$d/hostile-$phase.go" || return 1
+                  fi
+              }
+              steerer_tmux_kill() { printf '%s\n' "$1" > "$d/hostile-$phase.tmux-killed"; }
+              steerer_stop_cmd > "$d/hostile-$phase.output" 2>&1
+              printf '%s\n' "$?" > "$d/hostile-$phase.result"
+          ) & worker=$!
+          wait_for 8 test -f "$d/hostile-$phase.ready"; rc=$?
+          check_ok "hostile $phase: stop reached post-validation seam" "$rc"
+          # Deliberately bypass the lock: this fixture models a foreign writer,
+          # not another Ralphie start. No paid or network command is invoked.
+          steerer_write id agent_new; steerer_write fence-v2 "$new_fence"
+          : > "$d/hostile-$phase.go"
+          wait "$worker"
+          rc="$(cat "$d/hostile-$phase.result" 2>/dev/null || printf 1)"
+          out="$(cat "$d/hostile-$phase.output" 2>/dev/null || printf '')"
+          check_ok "hostile $phase: confirmed old stop succeeds" "$rc"
+          check "hostile $phase: immutable verified ID stopped" agent_old "$(cat "$d/hostile-$phase.target" 2>/dev/null || printf missing)"
+          check "hostile $phase: changed ID remains" agent_new "$(steerer_read id 2>/dev/null || printf missing)"
+          check "hostile $phase: changed fence remains" "$new_fence" "$(steerer_read fence-v2 2>/dev/null || printf missing)"
+          check "hostile $phase: reused tmux name is not killed" no "$([ -e "$d/hostile-$phase.tmux-killed" ] && echo yes || echo no)"
+          check_contains "hostile $phase: changed record disclosed" 'changed record was retained' "$out"
+      }
+      hostile_rebind before
+      hostile_rebind during
+      hostile_rebind after
+      # Remaining limitation (not a passing safety assertion): a foreign
+      # writer that bypasses mutation.lock between the final record equality
+      # guard and steerer_forget can still lose the rebound record. The three
+      # hostile seams above stop before that guard; do not infer that the lock
+      # protects against arbitrary out-of-band writes at the final seam.
       steerer_write engine prime-agent; steerer_write boot-dir "$boot_dir"
       steerer_write name "$old_name"; steerer_write id agent_old; steerer_write fence-v2 "$old_fence"
       companion_live_row() { printf 'agent;unsafe\tlive\t%s\t%s\t%s\n' "$PROJECT" "$old_name" "$transcript"; }
