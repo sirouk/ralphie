@@ -2197,6 +2197,35 @@ if want "fingerprint"; then
     f3="$(fingerprint)"
     check "fingerprint is stable when nothing changes" "$f2" "$f3"
 fi
+if want "fsmonitor-fingerprint"; then (
+    # Canary first proves this Git build actually executes this repo's monitor.
+    # A wrapper that accidentally never runs would not make this test green.
+    probe="$(new_project)"
+    ( cd "$probe" && printf 'one\n' > tracked.txt && git add tracked.txt && git commit -qm initial )
+    marker="$TMPROOT/fsmonitor-invocations"
+    hook="$TMPROOT/fsmonitor-canary"
+    printf '#!/usr/bin/env bash\nprintf "called\n" >> "%s"\n' "$marker" > "$hook"
+    chmod +x "$hook"
+    git -C "$probe" config core.fsmonitor "$hook"
+    git -C "$probe" status --porcelain >/dev/null 2>&1
+    [ -s "$marker" ] && ok "the fixture fsmonitor canary executes on unguarded git status" \
+        || no "fsmonitor canary" "Git did not invoke the control hook"
+    : > "$marker"
+    load_lib "$probe"
+    clean="$(fingerprint)"
+    printf 'two\n' > "$probe/tracked.txt"
+    dirty="$(fingerprint)"
+    [ "$clean" != "$dirty" ] && ok "fingerprint detects tracked dirty bytes with fsmonitor configured" \
+        || no "fsmonitor fingerprint dirty" "tracked edit was invisible"
+    printf 'three\n' > "$probe/tracked.txt"
+    changed="$(fingerprint)"
+    [ "$dirty" != "$changed" ] && ok "fingerprint detects edits to already-dirty tracked bytes" \
+        || no "fsmonitor fingerprint dirty content" "second edit was invisible"
+    check "fingerprint stays stable on unchanged dirty tree" "$changed" "$(fingerprint)"
+    check "fingerprint invokes zero repo-configured fsmonitor hooks" 0 "$(wc -l < "$marker" | tr -d ' ')"
+    check "fingerprint leaves repo fsmonitor config intact" "$hook" "$(git -C "$probe" config core.fsmonitor)"
+) || no "the fsmonitor-fingerprint group ran to completion" "it aborted before the final assertion"
+fi
 if want "gitignore"; then
     # A read-only command must not modify the operator's repository at all;
     # only a real run may add the ignore rule.

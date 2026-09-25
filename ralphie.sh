@@ -946,7 +946,7 @@ ensure_ignored() {
     # Test a path INSIDE the directory: a `dir/` pattern does not match the
     # bare directory name, so checking $HOME_DIR itself always reports "not
     # ignored" and an existing operator rule would be duplicated.
-    git -C "$PROJECT" check-ignore -q "$HOME_DIR/state" 2>/dev/null && return 0
+    read_git -C "$PROJECT" check-ignore -q "$HOME_DIR/state" 2>/dev/null && return 0
     ex="$(git -C "$PROJECT" rev-parse --git-dir 2>/dev/null)/info/exclude" || return 0
     case "$ex" in /*) ;; *) ex="$PROJECT/$ex";; esac
     mkdir -p "${ex%/*}" 2>/dev/null || return 0
@@ -1106,13 +1106,13 @@ work_changed() {
 # there is nothing to do, and Ralphie must not spend a single token proving it.
 fingerprint() {
     { git -C "$PROJECT" rev-parse HEAD 2>/dev/null || printf 'nogit'
-      git -C "$PROJECT" status --porcelain 2>/dev/null || true
+      read_git -C "$PROJECT" status --porcelain --ignore-submodules=all 2>/dev/null || true
       # Content, not just the status letter. `git status` prints " M calc.py"
       # whatever the file now contains, so the moment a red gate keeps the tree
       # dirty -- the exact situation this loop exists for -- every later edit
       # becomes invisible, real work is discarded as "changed nothing", and a
       # productive run is declared stalled. Measured.
-      git -C "$PROJECT" diff HEAD 2>/dev/null || true
+      read_git -C "$PROJECT" diff --no-ext-diff --no-textconv --ignore-submodules=all HEAD 2>/dev/null || true
       cat "$GATES_FILE" 2>/dev/null || true
       cat "$OBJECTIVE_FILE" 2>/dev/null || true
     } | sha_of
@@ -1776,14 +1776,19 @@ discover_candidates() (
 # Git's apparently read-only status can refresh the index, launch fsmonitor,
 # run clean/process filters, or inspect submodules. Disable all of those here.
 # These overrides are command-local; never change the operator's git config.
-discover_git() {
+read_git() {
+    # Autonomous reads must not run repo-configured fsmonitor or filters, refresh
+    # the operator's index, fetch missing objects, or recurse into submodules.
+    # Only reads use this wrapper: commit and gate commands retain their normal
+    # Git behavior. Config overrides are per invocation, not written to disk.
     local key
-    local opts=( -c core.fsmonitor=false -c core.untrackedCache=false )
+    local opts=( -c core.fsmonitor=false -c core.untrackedCache=false -c submodule.recurse=false )
     while IFS= read -r key; do
         [ -n "$key" ] && opts+=( -c "$key=" )
     done < <(git -C "$PROJECT" config --name-only --get-regexp '^filter\..*\.(clean|process)$' 2>/dev/null || true)
-    GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 git -C "$PROJECT" "${opts[@]+"${opts[@]}"}" "$@"
+    GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 git "${opts[@]+"${opts[@]}"}" "$@"
 }
+discover_git() { read_git -C "$PROJECT" "$@"; }
 
 cmd_discover() (
     # No ledger, repair, trap installation, engine probes or gate trials. A
@@ -2615,7 +2620,7 @@ git_identity() {
     git -C "$PROJECT" config user.name  >/dev/null 2>&1 || git -C "$PROJECT" config user.name  "Ralphie"
 }
 
-git_dirty() { git_ready && [ -n "$(git -C "$PROJECT" status --porcelain 2>/dev/null)" ]; }
+git_dirty() { git_ready && [ -n "$(read_git -C "$PROJECT" status --porcelain --ignore-submodules=all 2>/dev/null)" ]; }
 
 git_branch() {
     # `rev-parse --abbrev-ref HEAD` prints the literal string "HEAD" AND exits
@@ -2684,13 +2689,13 @@ dirty_paths_nul() {
     # excluded and half committed.
     ( cd "$(git_top)" || exit 1
       if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-          git diff --name-only -z --no-renames HEAD 2>/dev/null
+          read_git diff --no-ext-diff --no-textconv --ignore-submodules=all --name-only -z --no-renames HEAD 2>/dev/null
       else
           # An unborn index already contains operator work. diff HEAD fails
           # here and ls-files --others deliberately excludes these paths.
-          git ls-files --cached -z 2>/dev/null
+          read_git ls-files --cached -z 2>/dev/null
       fi ) || true
-    ( cd "$(git_top)" && git ls-files --others --exclude-standard -z 2>/dev/null ) || true
+    ( cd "$(git_top)" && read_git ls-files --others --exclude-standard -z 2>/dev/null ) || true
 }
 
 release_owned_paths() {
@@ -2862,8 +2867,8 @@ self_is_reviewed() {
     git_ready || return 0
     case "$SELF" in "$PROJECT"/*) ;; *) return 0;; esac   # not inside this repo
     local rel="${SELF#"$PROJECT"/}"
-    git --literal-pathspecs -C "$PROJECT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 0
-    git --literal-pathspecs -C "$PROJECT" diff --quiet -- "$rel" 2>/dev/null && return 0
+    read_git --literal-pathspecs -C "$PROJECT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 0
+    read_git --literal-pathspecs -C "$PROJECT" diff --no-ext-diff --no-textconv --ignore-submodules=all --quiet -- "$rel" 2>/dev/null && return 0
     warn "the script you are running differs from the committed copy ($rel)"
     dim  "  review it before trusting this run:  git diff -- $rel"
     event self uncommitted "the running script differs from the committed copy"
@@ -2992,7 +2997,7 @@ snapshot_pre_dirty() {
     # alone afterwards, because a staged revision can exist nowhere else.
     OPERATOR_STAGED="$RUN_DIR/operator-staged.nul"
     # With no explicit HEAD, Git compares an unborn index to the empty tree.
-    ( cd "$(git_top)" && git diff --cached --name-only -z --no-renames 2>/dev/null ) > "$OPERATOR_STAGED" 2>/dev/null || : > "$OPERATOR_STAGED"
+    ( cd "$(git_top)" && read_git diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --name-only -z --no-renames 2>/dev/null ) > "$OPERATOR_STAGED" 2>/dev/null || : > "$OPERATOR_STAGED"
     mkdir -p "$RUN_DIR"
     local raw="$RUN_DIR/pre-dirty.raw.$$" p home_rel
     home_rel="$(project_prefix)/.ralphie"; home_rel="${home_rel#./}"
@@ -3309,7 +3314,7 @@ unstage_risky() {
     top="$(git_top)"
     home_rel="$(project_prefix)/.ralphie"; home_rel="${home_rel#./}"
     mkdir -p "$RUN_DIR" 2>/dev/null || true
-    ( cd "$top" && GIT_INDEX_FILE="$COMMIT_INDEX" git diff --cached --name-only -z --no-renames 2>/dev/null ) > "$staged" 2>/dev/null || : > "$staged"
+    ( cd "$top" && GIT_INDEX_FILE="$COMMIT_INDEX" read_git diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --name-only -z --no-renames 2>/dev/null ) > "$staged" 2>/dev/null || : > "$staged"
     while IFS= read -r -d '' p; do
         [ -n "$p" ] || continue
         # RALPHIE NEVER COMMITS ITS OWN STATE, even when the operator has chosen
@@ -3453,7 +3458,7 @@ engine_history_is_safe() {
     else
         git -C "$PROJECT" merge-base --is-ancestor "$CY_HEAD" "$head" 2>/dev/null || return 1
         commits="$(git -C "$PROJECT" rev-list --reverse "$CY_HEAD..$head" 2>/dev/null)" || return 1
-        git -C "$PROJECT" diff --quiet "$CY_HEAD" "$head" && return 1
+        read_git -C "$PROJECT" diff --no-ext-diff --no-textconv --ignore-submodules=all --quiet "$CY_HEAD" "$head" && return 1
     fi
     [ -n "$commits" ] || return 1
     previous="$CY_HEAD"; prefix="$(project_prefix)"
@@ -3541,7 +3546,7 @@ pre_dirty_still_dirty() {
     [ -s "${PRE_DIRTY_FILE:-}" ] || return 1
     while IFS= read -r -d '' p; do
         [ -n "$p" ] || continue
-        [ -n "$(git --literal-pathspecs -C "$(git_top)" status --porcelain -- "$p" 2>/dev/null)" ] && return 0
+        [ -n "$(read_git --literal-pathspecs -C "$(git_top)" status --porcelain --ignore-submodules=all -- "$p" 2>/dev/null)" ] && return 0
     done < "$PRE_DIRTY_FILE"
     return 1
 }
@@ -3685,7 +3690,7 @@ index_holds_our_work_only() {
         event commit blocked "owned.nul changed during the cycle; the commit index is not trusted"
         return 1
     fi
-    ( cd "$(git_top)" && GIT_INDEX_FILE="$idx" git diff --cached --quiet ) || return 0
+    ( cd "$(git_top)" && GIT_INDEX_FILE="$idx" read_git diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --quiet ) || return 0
     # The gates passed on a tree that includes the operator's uncommitted
     # edits, but those edits are not Ralphie's to commit -- and when the agent
     # touched the same files, there is nothing left to separate. Say so
@@ -5781,10 +5786,10 @@ plan_report() {
 git_brief() {
     git_ready || { printf 'not a git repository\n'; return 0; }
     printf 'branch: %s\n' "$(git_branch)"
-    printf 'head:   %s\n' "$(git -C "$PROJECT" log -1 --pretty='%h %s' 2>/dev/null || printf 'no commits yet')"
-    local dirty; dirty="$(head -25 < <(git -C "$PROJECT" status --porcelain 2>/dev/null))"
+    printf 'head:   %s\n' "$(read_git -C "$PROJECT" log -1 --pretty='%h %s' 2>/dev/null || printf 'no commits yet')"
+    local dirty; dirty="$(head -25 < <(read_git -C "$PROJECT" status --porcelain --ignore-submodules=all 2>/dev/null))"
     if [ -n "$dirty" ]; then printf 'uncommitted:\n%s\n' "$dirty"; else printf 'uncommitted: none\n'; fi
-    printf 'recent:\n%s\n' "$(git -C "$PROJECT" log -5 --pretty='  %h %s' 2>/dev/null || printf '  none')"
+    printf 'recent:\n%s\n' "$(read_git -C "$PROJECT" log -5 --pretty='  %h %s' 2>/dev/null || printf '  none')"
 }
 
 ledger_render() {
@@ -7498,7 +7503,7 @@ panel_objective() {
 
 panel_tree() {
     if git_ready; then
-        head -200 < <(git -C "$PROJECT" ls-files 2>/dev/null) || true
+        head -200 < <(read_git -C "$PROJECT" ls-files 2>/dev/null) || true
     else
         ( cd "$PROJECT" 2>/dev/null && head -200 < <(ls -1 2>/dev/null) ) || true
     fi
@@ -7507,7 +7512,7 @@ panel_tree() {
 
 panel_diff() {
     git_ready || return 0
-    head -c 20000 < <(git -C "$PROJECT" diff HEAD -- . 2>/dev/null) || true
+    head -c 20000 < <(read_git -C "$PROJECT" diff --no-ext-diff --no-textconv --ignore-submodules=all HEAD -- . 2>/dev/null) || true
     return 0
 }
 
@@ -12889,7 +12894,7 @@ tg_status_text() {
     gl="$(gates_count)"
     ao="$(asks_open_count)"
     br="$(git_ready && git_branch || printf 'none')"
-    last="$(git -C "$PROJECT" log -1 --pretty=format:'%h %s' 2>/dev/null || printf '')"
+    last="$(read_git -C "$PROJECT" log -1 --pretty=format:'%h %s' 2>/dev/null || printf '')"
     last="${last:0:140}"
     reason="$(state_get reason '')"
     printf 'ralphie %s  %s\n' "$VERSION" "${PROJECT##*/}"
@@ -17746,7 +17751,7 @@ return_to_base_branch() {
     [ "$LOCK_LOST" != "1" ] || { warn "  the run lock was taken by another process; leaving the branch alone"; return 0; }
     local work_branch; work_branch="$(git_branch)"
     [ "$work_branch" != "$RESTORE_BRANCH" ] || return 0
-    if ! git -C "$PROJECT" diff --quiet HEAD 2>/dev/null; then
+    if ! read_git -C "$PROJECT" diff --no-ext-diff --no-textconv --ignore-submodules=all --quiet HEAD 2>/dev/null; then
         # Only TRACKED modifications block the return: switching would drag
         # unverified changes onto the branch they were deliberately kept off.
         # Untracked files belong to no branch and travel harmlessly.
