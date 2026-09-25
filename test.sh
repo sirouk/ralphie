@@ -11910,9 +11910,11 @@ if want "companion-boot-fence"; then
       cat > "$d/bin/tmux" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$MOCK_CALLS"
+[ -z "${MOCK_SPAWNED:-}" ] || : > "$MOCK_SPAWNED"
 MOCK
       chmod +x "$d/bin/tmux"
       MOCK_CALLS="$d/tmux-calls"; export MOCK_CALLS
+      MOCK_SPAWNED="$d/spawned"; export MOCK_SPAWNED
       STEERER_BOOT_SECONDS=1
       steerer_pa_snapshot() { return 1; }
       ( PATH="$d/bin:$PATH"; steerer_pa_start ralphie-steerer-test >/dev/null 2>&1 ); rc=$?
@@ -11935,6 +11937,60 @@ MOCK
       steerer_pa_snapshot() { printf 'foreign1\tlive\t%s\tother\t%s\n' "$PROJECT" "$d/foreign.jsonl"; }
       ( PATH="$d/bin:$PATH"; steerer_pa_start ralphie-steerer-test >/dev/null 2>&1 ); rc=$?
       check_fails "candidate outside private boot directory refuses boot" "$rc"
+      check "foreign candidate is never stopped" no "$([ -e "$d/stops" ] && echo yes || echo no)"
+      check "uncertain boot retains its name" ralphie-steerer-test "$(steerer_read name)"
+      check "uncertain boot retains its private directory" yes "$([ -d "$(steerer_read boot-dir)" ] && echo yes || echo no)"
+      # A transient list outage after a confirmed tmux spawn MUST NOT erase
+      # the only address to an agent the daemon might keep billing. Simulate
+      # steerer_start's entire API dispatch, not just its private boot helper.
+      steerer_forget
+      : > "$d/tmux-calls"; rm -f "$MOCK_SPAWNED"
+      steerer_pa_snapshot() { [ ! -f "$MOCK_SPAWNED" ] || return 1; return 0; }
+      steerer_impl() { printf prime-agent; }
+      steerer_name_new() { printf ralphie-steerer-outage; }
+      out="$( PATH="$d/bin:$PATH"; steerer_start 2>&1 )"; rc=$?
+      check_fails "post-spawn list failure refuses a successful start" "$rc"
+      check_contains "post-spawn failure warns of a possible paid daemon" 'paid daemon agent' "$out"
+      check_contains "outer start names its recovery record" 'recovery record retained' "$out"
+      check "post-spawn failure retains name" ralphie-steerer-outage "$(steerer_read name)"
+      check "post-spawn failure retains engine" prime-agent "$(steerer_read engine)"
+      check "post-spawn failure retains valid boot directory" yes "$([ -d "$(steerer_read boot-dir)" ] && echo yes || echo no)"
+      check "post-spawn outage never stops unknown/foreign ID" no "$([ -e "$d/stops" ] && echo yes || echo no)"
+      recovery="$(steerer_read boot-dir)"; steerer_forget
+      steerer_write boot-dir "$recovery"
+      steerer_start >/dev/null 2>&1; rc=$?
+      check_fails "boot-dir alone blocks another paid agent" "$rc"
+      check "boot-dir-alone guard does not spawn tmux" 1 "$(grep -c '^new-session ' "$MOCK_CALLS")"
+      status="$(steerer_status_cmd 2>&1)"
+      check_contains "status shows orphaned boot directory" "$recovery" "$status"
+      steerer_write name ralphie-steerer-outage
+      steerer_start >/dev/null 2>&1; rc=$?
+      check_fails "recovery record refuses a second paid boot" "$rc"
+      check "a second boot was not spawned" 1 "$(grep -c '^new-session ' "$MOCK_CALLS")"
+      steerer_forget
+      unset -f steerer_impl steerer_name_new
+      # A second list pass may recover. Stop only the confirmed new ID in the
+      # private boot directory, never a preexisting or name-matched foreign ID.
+      : > "$d/tmux-calls"; rm -f "$MOCK_SPAWNED"
+      steerer_bounded() { printf '%s\n' "$*" >> "$d/stops"; }
+      steerer_pa_snapshot() {
+          [ -f "$MOCK_SPAWNED" ] || return 0
+          [ -f "$d/boot-candidate" ] || { : > "$d/boot-candidate"; return 1; }
+          printf 'owner2\tlive\t%s\t\t%s\n' "$PROJECT" "$(steerer_read boot-dir)/owned.jsonl"
+      }
+      steerer_pa_new_id() {
+          [ -f "$d/boot-candidate" ] || { steerer_pa_snapshot >/dev/null; return 3; }
+          printf session\n > "$2/owned.jsonl"
+          printf owner2
+      }
+      ( PATH="$d/bin:$PATH"; steerer_pa_start ralphie-steerer-owned >/dev/null 2>&1 ); rc=$?
+      check_fails "recoverable post-boot scan failure refuses start" "$rc"
+      check_contains "private candidate is stopped by immutable ID" 'stop owner2 --json' "$(cat "$d/stops")"
+      check_lacks "never stop by reusable display name" 'stop ralphie-steerer-owned' "$(cat "$d/stops")"
+      check "stopped boot retains recovery name" ralphie-steerer-owned "$(steerer_read name)"
+      check "stopped boot retains private directory" yes "$([ -d "$(steerer_read boot-dir)" ] && echo yes || echo no)"
+      steerer_forget
+      unset -f steerer_pa_new_id steerer_bounded
       # A display-name collision must never be a successful rejoin, nor send
       # an event, nor claim to have notified an agent. Pin the immutable ID.
       steerer_write name ralphie-steerer-test
@@ -12257,12 +12313,13 @@ if want "companion-oneshot"; then
       steerer_impl() { printf prime-agent; }
       steerer_running() { return 1; }
       steerer_name_new() { printf ralphie-steerer-fresh; }
-      steerer_api() { case "$1" in start) printf agent_fresh;; stop) :;; *) return 1;; esac; }
+      steerer_api() { case "$1" in start) steerer_write boot-dir "$mock_dir"; printf agent_fresh;; stop) :;; *) return 1;; esac; }
       steerer_pa_snapshot() { printf 'agent_fresh\tlive\t%s\tralphie-steerer-fresh\t%s\n' "$PROJECT" "$mock_file"; }
       steerer_pa_row() { steerer_pa_snapshot; }
       # This older unit mocks the engine bootstrap, not the boot verifier.
       companion_live_row() { steerer_pa_snapshot; }
-      steerer_write boot-dir "$mock_dir"
+      # The previous boot witness was discarded by steerer_forget. The mocked
+      # start records its new boot directory only after the no-recovery guard.
       steerer_write fence-v2 "$fence"
       # Restore only the real implementation after all negative no-boot cases.
       eval "$(sed -n '/^steerer_start()/,/^}/p' "$d/ralphie.sh")"
@@ -12518,13 +12575,16 @@ JSON
       printf '{"sessions":[]}\n' > "$fixture"
       steerer_pa_snapshot >/dev/null; rc=$?
       check_ok "valid empty daemon snapshot succeeds" "$rc"
-      printf '{"sessions":[{"id":"x"}]\n' > "$fixture"
+      printf '{"sessions":[{"id":"x"}]}\n' > "$fixture"
       steerer_pa_snapshot >/dev/null; rc=$?
-      check_fails "truncated daemon snapshot fails closed" "$rc"
-      printf '{"sessions":[{"id":"dup"},{"id":"dup"}]}\n' > "$fixture"
+      check_fails "valid JSON with truncated session row fails closed" "$rc"
+      printf '{"sessions":[{"id":"x","lifecycle":"live","cwd":"/tmp/p","sessionName":"n"}]}\n' > "$fixture"
+      steerer_pa_snapshot >/dev/null; rc=$?
+      check_fails "missing sessionFile fails closed" "$rc"
+      printf '{"sessions":[{"id":"dup","lifecycle":"live","cwd":"/tmp/p","sessionName":"a","sessionFile":"/tmp/a"},{"id":"dup","lifecycle":"live","cwd":"/tmp/p","sessionName":"b","sessionFile":"/tmp/b"}]}\n' > "$fixture"
       steerer_pa_snapshot >/dev/null; rc=$?
       check_fails "duplicate daemon ID fails closed" "$rc"
-      printf '{"sessions":[{"id":"x","sessionName":"same"},{"id":"y","sessionName":"same"}]}\n' > "$fixture"
+      printf '{"sessions":[{"id":"x","lifecycle":"live","cwd":"/tmp/p","sessionName":"same","sessionFile":"/tmp/a"},{"id":"y","lifecycle":"live","cwd":"/tmp/p","sessionName":"same","sessionFile":"/tmp/b"}]}\n' > "$fixture"
       steerer_pa_snapshot >/dev/null; rc=$?
       check_fails "duplicate daemon name fails closed" "$rc"
       printf 'not JSON\n' > "$fixture"

@@ -10924,10 +10924,11 @@ try:
         if s["id"] in ids:
             raise ValueError("duplicate session id")
         ids.add(s["id"])
+        # A partial row is not a safe empty field. In particular, an id-only
+        # object is valid JSON but cannot prove lifecycle or file ownership.
         vals = [s.get(k) for k in ("lifecycle", "cwd", "sessionName", "sessionFile")]
-        if any(v is not None and not isinstance(v, str) for v in vals):
-            raise ValueError("invalid session field")
-        vals = [v or "" for v in vals]
+        if any(not isinstance(v, str) for v in vals):
+            raise ValueError("missing or invalid session field")
         if any(any(c in v for c in "\t\r\n") for v in vals):
             raise ValueError("unsafe session field")
         if vals[2]:
@@ -11430,7 +11431,13 @@ companion_connect() {
                  return 1;;
         esac
     fi
-    steerer_start >/dev/null 2>&1 || { warn "the resident companion could not start; using the stateless supervisor (details: $ME steerer start)"; return 1; }
+    steerer_start >/dev/null 2>&1 || {
+        warn "the resident companion could not start; using the stateless supervisor (details: $ME steerer start)"
+        if [ -n "$(steerer_read boot-dir 2>/dev/null || printf '')" ]; then
+            warn "a daemon agent may still be running; recovery address is under $(steerer_home). Verify prime-agent list --json and the private session file before any manual stop by ID."
+        fi
+        return 1
+    }
     name="$(steerer_read name 2>/dev/null || printf '')"
     [ -n "$name" ] && companion_live_row "$name" >/dev/null || { warn "the resident companion could not be verified as fenced; using the stateless supervisor"; return 1; }
     CHAT_COMPANION="$name"
@@ -11544,6 +11551,30 @@ companion_fence_args() {
     printf '%s\n%s\n' -e "$ext"
 }
 
+steerer_pa_boot_cleanup() {
+    # A tmux kill cannot prove that the daemon-owned agent has stopped. Re-scan
+    # independently: stop ONLY the unique new live ID whose transcript is a
+    # regular owned file under this boot's private directory. A failed or
+    # ambiguous scan is not permission to stop by name or by a stale candidate.
+    local name="$1" bin="$2" before="$3" boot_dir="$4" candidate="" stopped=0
+    candidate="$(steerer_pa_new_id "$before" "$boot_dir" 2>/dev/null)" || candidate=""
+    if [ -n "$candidate" ]; then
+        steerer_write id "$candidate" || err "could not save the failed boot's candidate ID; keep the private boot directory"
+        if steerer_bounded "$bin" stop "$candidate" --json >/dev/null 2>&1; then
+            stopped=1
+        fi
+    fi
+    steerer_tmux_kill "$name"
+    if [ "$stopped" = 1 ]; then
+        warn "the failed boot's verified private-session ID $candidate was stopped; the recovery record is retained"
+    else
+        warn "the failed boot may still have a paid daemon agent; no safe stop was confirmed"
+    fi
+    err "recovery address retained: name=$name boot-dir=$boot_dir${candidate:+ id=$candidate}"
+    dim "  inspect prime-agent list --json and verify the session file under that private directory before stopping an ID by hand; do not stop by display name"
+    return 1
+}
+
 steerer_pa_start() {
     local name="$1" bin cmdline before id="" tries=0
     bin="$(steerer_bin prime-agent)" || { err "prime-agent is not installed"; return 1; }
@@ -11578,17 +11609,24 @@ steerer_pa_start() {
     cmdline="$cmdline --system-prompt $(steerer_quote "$(steerer_role)")"
     cmdline="$cmdline --append-system-prompt $(steerer_quote "$(companion_append_prompt)")"
     cmdline="$cmdline $(steerer_quote "$(steerer_kickoff)")"
-    # Save the fresh directory before boot; the v2 local record binds it along
-    # with the broker, model, prompt text and session ID after verification.
+    # Save BOTH recovery addresses before boot. A post-spawn daemon outage may
+    # leave the agent alive after tmux exits; its name and private directory
+    # must survive steerer_start's failed API call for manual recovery.
     steerer_write boot-dir "$boot_dir" || { err "cannot record the boot directory"; return 1; }
-    tmux new-session -d -s "$name" -x 200 -y 50 "$cmdline" 2>/dev/null ||
-        { err "tmux could not start a terminal for the steerer"; return 1; }
+    steerer_write name "$name" || { err "cannot record the boot name; boot directory retained: $boot_dir"; return 1; }
+    tmux new-session -d -s "$name" -x 200 -y 50 "$cmdline" 2>/dev/null || {
+        # tmux may have refused because this name was already in use. In that
+        # case its session is NOT ours: never kill it on a failed new-session.
+        err "tmux could not start a terminal for the steerer; recovery address retained: name=$name boot-dir=$boot_dir"
+        warn "if a daemon agent appeared despite tmux's refusal, verify its private session file before stopping its ID by hand"
+        return 1
+    }
     while [ "$tries" -lt "$STEERER_BOOT_SECONDS" ]; do
         local scan_rc=0
         id="$(steerer_pa_new_id "$before" "$boot_dir")" || scan_rc=$?
         if [ "$scan_rc" -ge 2 ]; then
             err "the daemon session scan failed or the new companion is ambiguous; not renaming any session"
-            steerer_tmux_kill "$name"
+            steerer_pa_boot_cleanup "$name" "$bin" "$before" "$boot_dir"
             return 1
         fi
         [ -n "$id" ] && break
@@ -11596,7 +11634,7 @@ steerer_pa_start() {
     done
     if [ -z "$id" ]; then
         err "the steerer never registered with the prime-agent daemon after ${STEERER_BOOT_SECONDS}s"
-        steerer_tmux_kill "$name"
+        steerer_pa_boot_cleanup "$name" "$bin" "$before" "$boot_dir"
         return 1
     fi
     # VERIFIED, never `|| true`. rename loses a race with worker startup, and a
@@ -11606,7 +11644,7 @@ steerer_pa_start() {
         # Reconfirm the private, newly observed ID before every mutation.
         [ "$(steerer_pa_new_id "$before" "$boot_dir" 2>/dev/null || printf '')" = "$id" ] || {
             err "the candidate's daemon identity changed; refusing to rename another agent"
-            steerer_tmux_kill "$name"
+            steerer_pa_boot_cleanup "$name" "$bin" "$before" "$boot_dir"
             return 1
         }
         if steerer_bounded "$bin" rename "$id" "$name" --json >/dev/null 2>&1 &&
@@ -11617,12 +11655,9 @@ steerer_pa_start() {
         sleep 1; tries=$((tries+1))
     done
     err "could not give the steerer the name $name  (a name stays reserved after stop)"
-    # Rename may have succeeded even though list verification failed. The ID
-    # was verified as a new private-file candidate, but recheck before stop.
-    if [ "$(steerer_pa_new_id "$before" "$boot_dir" 2>/dev/null || printf '')" = "$id" ]; then
-        steerer_bounded "$bin" stop "$id" --json >/dev/null 2>&1 || true
-    fi
-    steerer_tmux_kill "$name"
+    # A rename may have succeeded while its list verification failed. Re-scan
+    # independently before stopping anything, and retain recovery on failure.
+    steerer_pa_boot_cleanup "$name" "$bin" "$before" "$boot_dir"
     return 1
 }
 
@@ -12032,6 +12067,13 @@ steerer_running() {
 steerer_start() {
     local name impl id fence
     impl="$(steerer_impl)" || { err "no steerer engine is installed  (prime-agent or claude)"; return 1; }
+    # Any recorded Prime boot directory is a recovery claim. A partial write
+    # may leave no name at all, but it must still block a second paid boot.
+    if [ "$impl" = prime-agent ] && [ -n "$(steerer_read boot-dir 2>/dev/null || printf '')" ] &&
+       [ -z "$(steerer_read name 2>/dev/null || printf '')" ]; then
+        err "a prior companion boot has a recovery directory: $(steerer_read boot-dir); refusing another paid boot until it is verified by ID"
+        return 1
+    fi
     # A recorded Prime name is an ownership claim, not authority. A missing
     # fence, foreign session or daemon timeout must NOT imply permission to
     # allocate another paid agent, overwrite the record, or claim it is ours.
@@ -12078,8 +12120,18 @@ steerer_start() {
     mkdir -p "$(steerer_home)" 2>/dev/null || true
     steerer_write engine "$impl" || { err "could not record the steerer engine under $(steerer_home)"; return 1; }
     info "starting a $impl steerer for $PROJECT"
-    id="$(steerer_api start "$name")" ||
-        { steerer_forget; event steerer failed "$impl could not start a steerer"; return 1; }
+    id="$(steerer_api start "$name")" || {
+        # A failed Prime boot is not proof that the daemon did not spawn: the
+        # child saved name/boot-dir before tmux and may have a live paid agent.
+        # Do not erase its sole recovery address on an uncertain API failure.
+        if [ "$impl" = prime-agent ] && [ -n "$(steerer_read boot-dir 2>/dev/null || printf '')" ]; then
+            err "Prime boot failed; recovery record retained under $(steerer_home) (name and boot-dir). Verify prime-agent list --json before any manual stop by ID."
+        else
+            steerer_forget
+        fi
+        event steerer failed "$impl could not start a steerer"
+        return 1
+    }
     # No inferred fence for older records. Record only after this boot returns
     # its private-session candidate ID. This hashes our intended launch settings,
     # not the daemon's actual argv; it is a local self-attestation, not auth.
@@ -12197,8 +12249,13 @@ steerer_status_cmd() {
     say "  ralphie steerer"
     say "  ─────────────────────────────────────────────"
     if [ -z "$name" ]; then
-        dim "  none started here"
-        dim "  start one:  $ME steerer start        (needs prime-agent, or claude)"
+        if [ -n "$(steerer_read boot-dir 2>/dev/null || printf '')" ]; then
+            warn "  uncertain boot; recovery directory: $(steerer_read boot-dir)"
+            dim "  verify prime-agent list --json and the private session file before stopping a session by ID"
+        else
+            dim "  none started here"
+            dim "  start one:  $ME steerer start        (needs prime-agent, or claude)"
+        fi
         say ""
         return 0
     fi
