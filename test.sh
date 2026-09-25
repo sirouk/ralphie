@@ -639,6 +639,30 @@ if want "blocked-model-resume-preflight"; then
         check_fails "revised blocked $named still refuses" "$rc"
         check 'named revision starts no engine' no "$([ -e "$dnamed/engine-started" ] && echo yes || echo no)"
     done
+    # Named and generic active-engine clauses are saved constraints too. Each
+    # refusal must leave the original blocked run untouched, not merely fail.
+    for clause in 'Only run with Llama 4 Maverick.' 'Must use qwen3-235b' \
+        'Active engine must be qwen3-235b' \
+        'Active model must be acme/fast' \
+        'The provider should be vendor/fast' \
+        'Only run with acme/fast'; do
+        dvariant="$(new_project)"
+        ( load_lib "$dvariant"
+          ledger_init; state_set status blocked; state_set run_id original-model-run
+          printf '%s\n' "$clause" > "$OBJECTIVE_FILE"
+          state_set objective_hash "$(printf '%s' "$clause" | sha_of)"
+          state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+          true ) || no 'model clause fixture completed'
+        variant_hash="$(sha_sum_of "$dvariant/.ralphie/OBJECTIVE.md")"
+        out="$(cd "$dvariant" && env RALPHIE_ENGINE_CMD="$TMPROOT/blocked-model-engine" \
+            MOCK_LAST_PROMPT="$dvariant/engine-started" \
+            ./ralphie.sh --no-update --engine custom --once run 2>&1)"; rc=$?
+        check_fails "saved blocked '$clause' refuses before engine" "$rc"
+        check 'blocked clause keeps run ID' original-model-run "$(sed -n 's/^run_id=//p' "$dvariant/.ralphie/state")"
+        check 'blocked clause keeps status' blocked "$(sed -n 's/^status=//p' "$dvariant/.ralphie/state")"
+        check 'blocked clause keeps objective bytes' "$variant_hash" "$(sha_sum_of "$dvariant/.ralphie/OBJECTIVE.md")"
+        check 'blocked clause makes no engine call' no "$([ -e "$dvariant/engine-started" ] && echo yes || echo no)"
+    done
     out="$(run_blocked_model --no-resume run)"; rc=$?
     check_fails '--no-resume does not launder unchanged requirement' "$rc"
     out="$(run_blocked_model run 'Requires Chutes Kimi K3 model, not gpt-6-sol.')"; rc=$?
@@ -806,6 +830,15 @@ if want "blocked-chat-continue"; then
       check_fails 'answered question cannot override Kimi K3 requirement' "$rc"
       check_contains 'operator told saved objective still wins' 'does not revise an objective' "$out"
       check 'refusal starts no second worker' 1 "$(grep -c -- '^--continue-from$' "$HOME_DIR/launched" || true)"
+      for clause in 'Only run with Llama 4 Maverick.' 'Must use qwen3-235b' \
+          'Active engine must be qwen3-235b'; do
+          printf '%s\n' "$clause" > "$OBJECTIVE_FILE"
+          state_set objective_bytes_hash "$(sha_of < "$OBJECTIVE_FILE")"
+          out="$(chat_input /continue 2>&1)"; rc=$?
+          check_fails "chat continuation refuses $clause" "$rc"
+          check 'chat refusal does not start second worker' 1 "$(grep -c -- '^--continue-from$' "$HOME_DIR/launched" || true)"
+          check 'chat refusal preserves original run' blocked-one "$(state_get run_id '')"
+      done
       # An early hit also needs the whole stream consumed: tr|grep -q under
       # pipefail used to return 141 and falsely permit /continue.
       { printf 'Requires Chutes Kimi K3 model, not gpt-6-sol.\n';
