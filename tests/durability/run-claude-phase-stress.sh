@@ -206,6 +206,8 @@ prepare_workspace() {
     local ws="$RUN_DIR/workspaces/$scenario"
 
     mkdir -p "$ws/.ralphie" "$ws/tests/durability"
+    # Scenarios are separate projects even when this harness lives in a Git checkout.
+    git -C "$ws" init -q || return 1
     cp "$RALPHIE_SOURCE" "$ws/ralphie.sh"
     cp "$MOCK_CLAUDE_SOURCE" "$ws/tests/durability/mock-claude-control.sh"
     chmod +x "$ws/ralphie.sh" "$ws/tests/durability/mock-claude-control.sh"

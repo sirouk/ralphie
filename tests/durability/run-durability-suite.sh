@@ -244,6 +244,21 @@ EOF_HONESTY
     grep -q 'Recorded outcomes: total=2 pass=0 fail=2' "$result" || return 1
 }
 
+test_stress_workspace_has_independent_git_root() {
+    local ws
+    ws="$(make_workspace)"
+    mkdir -p "$ws/parent"
+    git -C "$ws/parent" init -q || return 1
+    /bin/bash -s -- "$ROOT_DIR/tests/durability/run-claude-phase-stress.sh" "$ws/parent" <<'EOF_STRESS_ROOT'
+set -euo pipefail
+source "$1"
+RUN_DIR="$2/artifacts"
+workspace="$(prepare_workspace full)"
+[ "$(git -C "$workspace" rev-parse --show-toplevel)" = "$(cd "$workspace" && pwd -P)" ]
+[ "$(git -C "$2" rev-parse --show-toplevel)" = "$(cd "$2" && pwd -P)" ]
+EOF_STRESS_ROOT
+}
+
 test_shellcheck() {
     if ! command -v shellcheck >/dev/null 2>&1; then
         return 200
@@ -3104,6 +3119,7 @@ main() {
     run_case "syntax" test_syntax
     run_case "harness_does_not_swallow_assertions" test_harness_does_not_swallow_assertions
     run_case "stress_harness_does_not_report_failed_lifecycles" test_stress_harness_does_not_report_failed_lifecycles
+    run_case "stress_workspace_has_independent_git_root" test_stress_workspace_has_independent_git_root
     run_case "shellcheck" test_shellcheck
     run_case "cli_help_does_not_mutate_state" test_cli_help_does_not_mutate_state
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum
