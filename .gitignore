@@ -11,3 +11,5 @@ coverage/
 htmlcov/
 tests/durability/artifacts/
 harness-mutation-audit.txt
+# Local analysis left by the later master branch is not this branch's evidence.
+graphify-out/

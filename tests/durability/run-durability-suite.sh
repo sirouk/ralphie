@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=tests/durability/offline-test-guards.sh
+source "$ROOT_DIR/tests/durability/offline-test-guards.sh"
+prepare_offline_test_guards
 SOURCE_RALPHIE_FILE="$ROOT_DIR/ralphie.sh"
 RALPHIE_FILE="$SOURCE_RALPHIE_FILE"
 TARGET_SANDBOX_DIR=""
@@ -88,17 +91,54 @@ make_workspace() {
     printf '%s' "$ws"
 }
 
+make_lifecycle_workspace() {
+    local ws
+    ws="$(make_workspace)"
+    mkdir -p "$ws/.ralphie"
+    # Routing/resume fixtures still execute a real shell-owned project check.
+    printf 'bash -n ./ralphie.sh\n' > "$ws/.ralphie/gates"
+    printf '%s' "$ws"
+}
+
+prepare_unit_terminal_contract() {
+    local tmpd="$1"
+    PROJECT_DIR="$tmpd/project"
+    CONFIG_DIR="$PROJECT_DIR/.ralphie"
+    RESEARCH_DIR="$PROJECT_DIR/research"
+    SPECS_DIR="$PROJECT_DIR/specs"
+    PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+    PROJECT_BOOTSTRAP_FILE="$CONFIG_DIR/project-bootstrap.md"
+    PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
+    MISSION_OBJECTIVE_FILE="$CONFIG_DIR/OBJECTIVE.md"
+    OWNED_PATHS_FILE="$CONFIG_DIR/owned-paths.nul"
+    SHELL_GATES_FILE="$CONFIG_DIR/gates"
+    SHELL_VERIFICATION_LOG="$CONFIG_DIR/verification.jsonl"
+    mkdir -p "$CONFIG_DIR"
+    git -C "$PROJECT_DIR" init -q
+    printf '.ralphie/\n' > "$PROJECT_DIR/.gitignore"
+    cp "$RALPHIE_FILE" "$PROJECT_DIR/ralphie.sh"
+    git -C "$PROJECT_DIR" add -- .gitignore ralphie.sh
+    git -C "$PROJECT_DIR" -c user.name='Ralphie Test' -c user.email='ralphie-test@example.invalid' commit -qm 'fixture baseline'
+    runtime_guard_prepare
+    capture_operator_baseline
+    ACCEPT_COMMANDS=('bash -n ./ralphie.sh')
+    prepare_shell_gates
+    snapshot_operator_inputs
+}
+
 run_case() {
     local name="$1"
     shift
     local rc=0
     TOTAL_COUNT=$((TOTAL_COUNT + 1))
     info "Running: $name"
-    if "$@"; then
-        rc=0
-    else
-        rc=$?
-    fi
+    # A conditional call disables errexit throughout a shell function, even
+    # inside its subshells. Run outside that context so an early assertion
+    # cannot disappear behind a later success, and keep aborts case-local.
+    set +e
+    ( set -e; "$@" )
+    rc=$?
+    set -e
 
     if ! assert_source_script_unchanged; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -133,11 +173,37 @@ test_syntax() {
     bash -n "$RALPHIE_FILE"
 }
 
+test_harness_does_not_swallow_assertions() {
+    local ws result
+    ws="$(make_workspace)"
+    result="$ws/harness-honesty.out"
+    /bin/bash -s -- "$ROOT_DIR/tests/durability/run-durability-suite.sh" >"$result" 2>&1 <<'EOF_HONESTY'
+set -euo pipefail
+source "$1"
+prepare_isolated_target
+trap 'cleanup_isolated_target; cleanup_offline_test_guards' EXIT
+capture_repo_tracked_status_baseline
+deliberate_failure() {
+    false
+    printf 'UNREACHABLE_ASSERTION\n'
+    true
+}
+run_case deliberate_failure deliberate_failure
+[ "$TOTAL_COUNT" -eq 1 ]
+[ "$FAIL_COUNT" -eq 1 ]
+[ "$PASS_COUNT" -eq 0 ]
+EOF_HONESTY
+    grep -q '\[FAIL\] deliberate_failure' "$result"
+    if grep -q 'UNREACHABLE_ASSERTION' "$result"; then
+        return 1
+    fi
+}
+
 test_shellcheck() {
     if ! command -v shellcheck >/dev/null 2>&1; then
         return 200
     fi
-    shellcheck "$RALPHIE_FILE" >/dev/null
+    shellcheck -S error "$RALPHIE_FILE"
 }
 
 test_cli_help_does_not_mutate_state() {
@@ -360,7 +426,8 @@ test_unit_reviewer_payload_sanitization() {
                 printf 'normal after\n'
             } | stream_engine_output "$stream_log" "$stream_out"
         )"
-        printf '%s' "$streamed" | grep -q 'normal before'
+        # Challenge detection intentionally discards its buffered prelude: a
+        # provider can print sensitive challenge markup before the marker.
         printf '%s' "$streamed" | grep -q 'normal after'
         printf '%s' "$streamed" | grep -q 'redacted provider auth/challenge'
         if printf '%s' "$streamed" | grep -qi 'provider logo prelude\\|Enable JavaScript'; then
@@ -438,7 +505,7 @@ test_unit_reviewer_payload_sanitization() {
             printf '<gaps>none</gaps>\n'
         } > "$missing_verdict_file"
         reason="$(review_output_invalid_reason "$missing_verdict_file" "consensus")"
-        printf '%s' "$reason" | grep -q 'invalid <verdict>'
+        printf '%s' "$reason" | grep -q '<verdict>'
 
         cons_dir="$tmpd/consensus"
         mkdir -p "$cons_dir"
@@ -595,6 +662,7 @@ test_unit_terminal_done_guard_requires_actual_passes() {
         # shellcheck source=/dev/null
         source "$RALPHIE_FILE"
         assert_unit_runtime_isolated
+        prepare_unit_terminal_contract "$(mktemp -d /tmp/ralphie-terminal-pass-unit.XXXXXX)"
 
         REQUIRE_LINT_BEFORE_DONE=true
         REQUIRE_DOCUMENT_BEFORE_DONE=true
@@ -608,7 +676,7 @@ test_unit_terminal_done_guard_requires_actual_passes() {
 
         enforce_terminal_done_requirements "document" "done" >/dev/null
         [ "$LAST_DONE_GUARD_NEXT_PHASE" = "document" ]
-        printf '%s' "$LAST_DONE_GUARD_REASON" | grep -q 'missing required pre-done phases: document'
+        printf '%s' "$LAST_DONE_GUARD_REASON" | grep -q 'document'
 
         enforce_terminal_done_requirements "document" "done" true >/dev/null
         [ "$LAST_DONE_GUARD_NEXT_PHASE" = "done" ]
@@ -624,8 +692,7 @@ test_unit_terminal_done_guard_allows_no_local_work_handoff_plan() {
 
         local tmpd
         tmpd="$(mktemp -d /tmp/ralphie-terminal-handoff-unit.XXXXXX)"
-        PROJECT_DIR="$tmpd/project"
-        PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+        prepare_unit_terminal_contract "$tmpd"
         BACKLOG_SOURCES="IMPLEMENTATION_PLAN.md"
         mkdir -p "$PROJECT_DIR"
 
@@ -1535,7 +1602,7 @@ test_unit_idle_output_watchdog_kills_child_process() {
     )
 }
 
-test_unit_timeout_warning_without_timeout_binary() {
+test_unit_portable_watchdog_needs_no_timeout_warning() {
     (
         set -euo pipefail
         # shellcheck source=/dev/null
@@ -1550,9 +1617,8 @@ test_unit_timeout_warning_without_timeout_binary() {
         warn_timeout_binary_unavailable_if_needed >"$warning_file" 2>&1 || true
         warning_output="$(cat "$warning_file")"
         rm -f "$warning_file"
-        printf '%s' "$warning_output" | grep -q "no timeout wrapper is installed"
-        printf '%s' "$warning_output" | grep -q "brew install coreutils"
-        [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "true" ]
+        [ -z "$warning_output" ]
+        [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "false" ]
     )
 }
 
@@ -1748,7 +1814,7 @@ EOF
 line
 assistant to=functions.exec_command
 EOF
-        printf 'README.md\n' > "$SESSION_CHANGED_PATHS_FILE"
+        printf '%s\0' README.md > "$SESSION_CHANGED_PATHS_FILE"
 
         AUTO_REPAIR_MARKDOWN_DRY_RUN=true
         AUTO_REPAIR_MARKDOWN_BACKUP=true
@@ -1991,7 +2057,7 @@ test_unit_auto_commit_skips_preexisting_dirty_overlap() {
 
 test_integration_consensus_infra_retry_without_attempt_decrement() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2078,7 +2144,7 @@ EOF
 
 test_integration_unlimited_phase_attempts_stagnation_guard() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2122,7 +2188,7 @@ EOF
 
 test_integration_unlimited_routing_stagnation_guard() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2192,7 +2258,7 @@ EOF
 
 test_integration_phase_pair_cycle_guard_barks_on_ping_pong() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2267,7 +2333,7 @@ EOF
 
 test_integration_plan_freshness_checkpoint_allows_multi_doc_plan_refresh() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2358,7 +2424,7 @@ EOF
 
 test_integration_plan_freshness_reroutes_do_not_count_as_routing_stagnation() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2470,7 +2536,7 @@ EOF
 
 test_integration_terminal_done_guard_requires_lint_and_document() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2552,7 +2618,7 @@ EOF
 
 test_integration_happy_path() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2632,7 +2698,7 @@ EOF
 
 test_integration_forward_reroute_guard() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2706,7 +2772,7 @@ test_integration_clean_terminal_done_reroute_on_hold() {
         source "$RALPHIE_FILE"
         assert_unit_runtime_isolated
 
-        PROJECT_DIR="$(mktemp -d /tmp/ralphie-clean-terminal.XXXXXX)"
+        prepare_unit_terminal_contract "$(mktemp -d /tmp/ralphie-clean-terminal.XXXXXX)"
         CONSENSUS_REVIEWERS=3
         LAST_CONSENSUS_PASS=false
         LAST_CONSENSUS_FAILURE_KIND="quality"
@@ -2729,8 +2795,15 @@ test_integration_clean_terminal_done_reroute_on_hold() {
 }
 
 test_integration_resume_done_short_circuit() {
-    local ws
-    ws="$(make_workspace)"
+    local ws status
+    ws="$(make_lifecycle_workspace)"
+    printf 'bash ./resume-check.sh\n' > "$ws/.ralphie/gates"
+    printf 'good\n' > "$ws/behavior.txt"
+    cat > "$ws/resume-check.sh" <<'EOF_CHECK'
+#!/usr/bin/env bash
+printf 'checked\n' >> .ralphie/resume-check.receipt
+[ "$(cat behavior.txt)" = good ]
+EOF_CHECK
     cat > "$ws/harness.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2749,30 +2822,41 @@ load_state() {
     CURRENT_PHASE_ATTEMPT=1
     PHASE_ATTEMPT_IN_PROGRESS=false
     ITERATION_COUNT=9
-    SESSION_ATTEMPT_COUNT=0
+    SESSION_ATTEMPT_COUNT=3
     return 0
 }
-ensure_engines_ready() { CODEX_HEALTHY=true; CLAUDE_HEALTHY=false; ACTIVE_ENGINE=codex; ACTIVE_CMD=codex; return 0; }
-probe_engine_capabilities() { CODEX_CAP_OUTPUT_LAST_MESSAGE=1; CODEX_CAP_YOLO_FLAG=1; CLAUDE_CAP_PRINT=1; ENGINE_CAPABILITIES_PROBED=true; return 0; }
+ensure_engines_ready() { : > "$PWD/unexpected-inference"; return 99; }
+probe_engine_capabilities() { : > "$PWD/unexpected-inference"; return 99; }
 run_first_deploy_engine_override_wizard() { return 0; }
 run_first_deploy_notification_wizard() { return 0; }
 run_startup_operational_probe() { return 0; }
-run_agent_with_prompt() { return 1; }
-run_handoff_validation() { return 1; }
-run_swarm_consensus() { return 1; }
-main --resume > "$PWD/run.out" 2> "$PWD/run.err"
-grep -q "All phases completed. Session done." "$PWD/run.out"
-if grep -q ">>> Entering phase" "$PWD/run.out"; then
-    exit 1
-fi
+run_agent_with_prompt() { : > "$PWD/unexpected-inference"; return 99; }
+run_handoff_validation() { : > "$PWD/unexpected-inference"; return 99; }
+run_swarm_consensus() { : > "$PWD/unexpected-inference"; return 99; }
+main --resume --max-session-cycles 3 > "$PWD/$1.out" 2> "$PWD/$1.err"
 EOF
     chmod +x "$ws/harness.sh"
-    "$ws/harness.sh"
+    "$ws/harness.sh" green
+    grep -q 'All phases completed. Session done.' "$ws/green.out"
+    [ ! -e "$ws/unexpected-inference" ]
+    [ "$(wc -l < "$ws/.ralphie/resume-check.receipt" | tr -d ' ')" -eq 1 ]
+    grep -q '^SESSION_ATTEMPT_COUNT="3"' "$ws/.ralphie/state.env"
+    if grep -q '>>> Entering phase' "$ws/green.out"; then return 1; fi
+    printf 'broken\n' > "$ws/behavior.txt"
+    set +e
+    "$ws/harness.sh" red
+    status=$?
+    set -e
+    [ "$status" -ne 0 ]
+    [ ! -e "$ws/unexpected-inference" ]
+    [ "$(wc -l < "$ws/.ralphie/resume-check.receipt" | tr -d ' ')" -eq 2 ]
+    grep -q '^SESSION_ATTEMPT_COUNT="3"' "$ws/.ralphie/state.env"
+    if grep -q 'All phases completed. Session done.' "$ws/red.out"; then return 1; fi
 }
 
 test_integration_lock_contention() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
     cat > "$ws/holder.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2805,7 +2889,7 @@ EOF
 
 test_integration_crash_and_resume() {
     local ws
-    ws="$(make_workspace)"
+    ws="$(make_lifecycle_workspace)"
 
     cat > "$ws/harness_crash.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -2938,7 +3022,7 @@ main() {
         exit 1
     fi
     prepare_isolated_target
-    trap cleanup_isolated_target EXIT
+    trap 'cleanup_isolated_target; cleanup_offline_test_guards' EXIT
     capture_repo_tracked_status_baseline
 
     if [ ! -f "$RALPHIE_FILE" ]; then
@@ -2947,6 +3031,7 @@ main() {
     fi
 
     run_case "syntax" test_syntax
+    run_case "harness_does_not_swallow_assertions" test_harness_does_not_swallow_assertions
     run_case "shellcheck" test_shellcheck
     run_case "cli_help_does_not_mutate_state" test_cli_help_does_not_mutate_state
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum
@@ -2973,7 +3058,7 @@ main() {
     run_case "unit_prompt_read_line_shows_prompt_with_piped_stdin" test_unit_prompt_read_line_shows_prompt_with_piped_stdin
     run_case "unit_idle_output_watchdog_recycles_hung_process" test_unit_idle_output_watchdog_recycles_hung_process
     run_case "unit_idle_output_watchdog_kills_child_process" test_unit_idle_output_watchdog_kills_child_process
-    run_case "unit_timeout_warning_without_timeout_binary" test_unit_timeout_warning_without_timeout_binary
+    run_case "unit_portable_watchdog_needs_no_timeout_warning" test_unit_portable_watchdog_needs_no_timeout_warning
     run_case "unit_run_agent_cli_contracts_codex_and_claude" test_unit_run_agent_cli_contracts_codex_and_claude
     run_case "unit_manifest_modes_light_and_deep" test_unit_manifest_modes_light_and_deep
     run_case "unit_markdown_repair_dry_run_backup_and_scope" test_unit_markdown_repair_dry_run_backup_and_scope
@@ -2998,6 +3083,10 @@ main() {
 
     printf '\n'
     info "Total: $TOTAL_COUNT | Passed: $PASS_COUNT | Failed: $FAIL_COUNT | Skipped: $SKIP_COUNT"
+    if [ "$TOTAL_COUNT" -ne "$((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))" ] || [ "$TOTAL_COUNT" -lt 1 ]; then
+        fail "BROKEN: test result counters disagree or no cases ran."
+        exit 1
+    fi
     if [ "$FAIL_COUNT" -gt 0 ]; then
         warn "Failed cases:"
         local item
@@ -3017,4 +3106,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

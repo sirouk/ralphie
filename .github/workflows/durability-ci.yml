@@ -37,7 +37,11 @@ permissions:
 jobs:
   durability:
     name: Offline Durability Suite
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - name: Checkout
@@ -47,7 +51,7 @@ jobs:
         shell: bash
         run: |
           chmod +x test.sh tests/durability/*.sh engines/setup-agent-subrepos.sh
-          ./test.sh --skip-live
+          env PATH="/usr/bin:/bin:$PATH" /bin/bash ./test.sh --skip-live
 
   live_smoke:
     name: Live Provider API Smoke

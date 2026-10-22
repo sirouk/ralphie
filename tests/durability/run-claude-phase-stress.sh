@@ -209,6 +209,7 @@ prepare_workspace() {
     cp "$RALPHIE_SOURCE" "$ws/ralphie.sh"
     cp "$MOCK_CLAUDE_SOURCE" "$ws/tests/durability/mock-claude-control.sh"
     chmod +x "$ws/ralphie.sh" "$ws/tests/durability/mock-claude-control.sh"
+    printf 'bash -n ./ralphie.sh\n' > "$ws/.ralphie/gates"
 
     cat > "$ws/.ralphie/project-bootstrap.md" <<'EOF_BOOT'
 # Ralphie Project Bootstrap

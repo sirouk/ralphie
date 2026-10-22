@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Ralphie - Unified autonomous loop for Codex and Claude Code.
+# Ralphie - Autonomous lifecycle orchestration for Prime Agent, Codex and Claude Code.
 # One script handles first-run setup, prompt generation, and iterative execution.
 #
 
@@ -13,7 +13,7 @@ if [ "${RALPHIE_LIB:-0}" != "1" ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
     if {
         printf '%s\n' '#!/usr/bin/env bash'
         printf '%s\n' '#'
-        printf '%s\n' '# Ralphie - Unified autonomous loop for Codex and Claude Code.'
+        printf '%s\n' '# Ralphie - Autonomous lifecycle orchestration for Prime Agent, Codex and Claude Code.'
         printf '%s\n' '# Installed from stdin stream.'
         printf '%s\n' '#'
         cat
@@ -33,8 +33,44 @@ set -euo pipefail
 
 SCRIPT_VERSION="2.0.0"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+INVOCATION_DIR="$(pwd -P)"
 PROJECT_DIR="$SCRIPT_DIR"
+# Project binding precedes every runtime path and config read. Library sourcing
+# keeps its fixture/source root; executable invocations may target any existing root.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    rb_early_args=("$@")
+    rb_early_index=0
+    while [ "$rb_early_index" -lt "${#rb_early_args[@]}" ]; do
+        rb_project_arg="${rb_early_args[$rb_early_index]}"
+        case "$rb_project_arg" in
+            --project)
+                rb_early_index=$((rb_early_index + 1))
+                rb_project_arg="${rb_early_args[$rb_early_index]:-}"
+                [ -n "$rb_project_arg" ] || { printf '%s\n' '--project requires an existing directory' >&2; exit 1; }
+                if ! PROJECT_DIR="$(cd -- "$rb_project_arg" 2>/dev/null && pwd -P)"; then
+                    printf 'Cannot open project directory: %s\n' "$rb_project_arg" >&2
+                    exit 1
+                fi
+                ;;
+            --objective|--spec|--accept|--engine|--auto-engine-preference|--command|--prime-agent-command|--prime-agent-model|--prime-agent-reasoning|--prime-agent-provider|--prime-agent-url|--claude-command|--codex-command|--codex-model|--codex-reasoning|--gate-timeout-seconds)
+                rb_early_index=$((rb_early_index + 1)) ;;
+            --) break ;;
+        esac
+        rb_early_index=$((rb_early_index + 1))
+    done
+    unset rb_early_args rb_early_index rb_project_arg
+    # Git paths and the index belong to the whole worktree. A nested target
+    # would misbind raw paths and could commit staged work outside its scope.
+    if rb_git_root="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+        rb_git_root="$(cd -- "$rb_git_root" && pwd -P)" || exit 1
+        if [ "$rb_git_root" != "$PROJECT_DIR" ]; then
+            printf 'Ralphie requires the Git project root. Target %s is inside %s; use --project "%s".\n' "$PROJECT_DIR" "$rb_git_root" "$rb_git_root" >&2
+            exit 1
+        fi
+    fi
+    unset rb_git_root
+fi
 
 CONFIG_DIR="$PROJECT_DIR/.ralphie"
 CONFIG_FILE="$CONFIG_DIR/config.env"
@@ -43,6 +79,29 @@ REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
 NOTIFICATION_LOG_FILE="$CONFIG_DIR/notifications.log"
 GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
 STATE_FILE="$CONFIG_DIR/state.env"
+MISSION_OBJECTIVE_FILE="$CONFIG_DIR/OBJECTIVE.md"
+OWNED_PATHS_FILE="$CONFIG_DIR/owned-paths.nul"
+SHELL_GATES_FILE="$CONFIG_DIR/gates"
+SHELL_VERIFICATION_LOG="$CONFIG_DIR/verification.jsonl"
+OBJECTIVE_TEXT=""
+SPEC_FILE=""
+PLAN_ONLY=false
+NO_TERMINAL_INPUT=false
+ACCEPT_COMMANDS=()
+MISSION_SEED_SHA=""
+OWNED_PATHS_SHA=""
+SHELL_GATES_FINGERPRINT=""
+SHELL_GATES_STATUS=absent
+SHELL_GATES_FAILURE=""
+SHELL_LOCAL_WORK_SEEN=false
+SHELL_DEVELOPMENT_PHASE_STARTED=false
+RUNTIME_GUARD_DIR=""
+ACTIVE_PHASE_MANIFEST_BEFORE=""
+SESSION_INITIAL_HEAD=""
+PHASE_SAVE_REQUIRED=false
+PHASE_SAVE_OK=true
+PHASE_SAVE_REASON=""
+GATE_TIMEOUT_SECONDS="${RALPHIE_GATE_TIMEOUT_SECONDS:-900}"
 SPECIFY_DIR="$PROJECT_DIR/.specify/memory"
 CONSTITUTION_FILE="$SPECIFY_DIR/constitution.md"
 SPECS_DIR="$PROJECT_DIR/specs"
@@ -166,7 +225,7 @@ is_number() {
 sanitize_text_for_log() {
     local value="${1:-}"
     value="$(printf '%s' "$value" | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177')"
-    value="$(printf '%s' "$value" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    value="$(printf '%s' "$value" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | sed 's/^ *//; s/ *$//')"
     printf '%s' "$value"
 }
 
@@ -250,6 +309,14 @@ discover_codex_command_default() {
         "/opt/homebrew/bin/codex" \
         "/usr/local/bin/codex" \
         "${HOME:-}/.local/bin/codex"
+}
+
+discover_prime_command_default() {
+    discover_versioned_command_default \
+        "prime-agent" \
+        "${HOME:-}/.local/bin/prime-agent" \
+        "/opt/homebrew/bin/prime-agent" \
+        "/usr/local/bin/prime-agent"
 }
 
 discover_claude_command_default() {
@@ -344,7 +411,7 @@ review_gaps_are_blocking() {
     local normalized
 
     normalized="$(sanitize_text_for_log "$gaps" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-    normalized="$(printf '%s' "$normalized" | sed 's/[[:space:]]\+/ /g')"
+    normalized="$(printf '%s' "$normalized" | sed 's/[[:space:]][[:space:]]*/ /g')"
     normalized="$(printf '%s' "$normalized" | sed 's/[[:space:]]*[.,;:][[:space:]]*$//')"
     case "$normalized" in
         ""|none|n/a|na|"not applicable"|"no gaps"|"no blockers"|"no blocking gaps"|"none blocking"|"no explicit gaps"|"no explicit blockers")
@@ -526,16 +593,31 @@ safe_print_file_tail() {
     tail -n "$lines" "$file"
 }
 
-stream_engine_output() {
+stream_engine_output() (
     local log_file="$1"
     local output_file="${2:-}"
     local stdout_enabled="${3:-true}"
+    local ceiling capture stream_exit captured_bytes
+    ceiling="${ENGINE_OUTPUT_MAX_BYTES:-16777216}"
+    is_number "$ceiling" && [ "$ceiling" -gt 0 ] || ceiling=16777216
+    capture="$(mktemp "${engine_scratch_dir:-${TMPDIR:-/tmp}}/capture.XXXXXX")" || return 1
+    trap "$(printf 'rm -f -- %q' "$capture")" EXIT
+    trap 'exit 143' HUP INT TERM
+    stream_exit=0
 
     if [ -n "$output_file" ]; then
         : > "$output_file"
     fi
 
-    awk -v log_file="$log_file" -v output_file="$output_file" -v stdout_enabled="$stdout_enabled" '
+    # Bound bytes before line parsing: even an endless line cannot fill the
+    # log or awk's buffer. Drain excess so the child can finish or be timed out.
+    {
+        head -c "$((ceiling + 1))" | tee "$capture"
+        if [ "$(wc -c < "$capture" | tr -d ' ')" -gt "$ceiling" ] && [ -n "${capture_limit_marker:-}" ]; then
+            : > "$capture_limit_marker"
+        fi
+        cat >/dev/null
+    } | awk -v log_file="$log_file" -v output_file="$output_file" -v stdout_enabled="$stdout_enabled" '
         function emit(line) {
             if (stdout_enabled == "true") {
                 print line
@@ -625,8 +707,16 @@ stream_engine_output() {
                 flush_buffer()
             }
         }
-    '
-}
+    ' || stream_exit=$?
+    captured_bytes="$(wc -c < "$capture" | tr -d ' ')"
+    rm -f "$capture"
+    if [ "$captured_bytes" -gt "$ceiling" ]; then
+        warn "Engine output exceeded ${ceiling} bytes; this attempt is not accepted."
+        [ -z "$output_file" ] || : > "$output_file"
+        return 125
+    fi
+    return "$stream_exit"
+)
 
 is_phase_or_done() {
     case "$1" in
@@ -759,6 +849,22 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+normalize_engine_name() {
+    case "$(to_lower "${1:-}")" in
+        prime) printf 'prime-agent' ;;
+        *) to_lower "${1:-}" ;;
+    esac
+}
+
+engine_auto_order() {
+    local preferred name
+    preferred="$(normalize_engine_name "${AUTO_ENGINE_PREFERENCE:-prime-agent}")"
+    printf '%s\n' "$preferred"
+    for name in prime-agent codex claude; do
+        [ "$name" = "$preferred" ] || printf '%s\n' "$name"
+    done
+}
+
 awk_regex_is_valid() {
     local regex="${1:-}"
     [ -z "$regex" ] && return 0
@@ -797,7 +903,8 @@ is_allowed_config_key() {
         NOTIFY_TTS_ENABLED|NOTIFY_TTS_STYLE|NOTIFY_CHUTES_TTS_URL|NOTIFY_CHUTES_VOICE|NOTIFY_CHUTES_SPEED|\
         NOTIFY_EVENT_DEDUP_WINDOW_SECONDS|NOTIFY_INCIDENT_REMINDER_MINUTES|\
         NOTIFICATION_WIZARD_BOOTSTRAPPED|TG_BOT_TOKEN|TG_CHAT_ID|CHUTES_API_KEY|\
-        CODEX_ENGINE_CMD|CLAUDE_ENGINE_CMD|CODEX_MODEL|CLAUDE_MODEL|PHASE_WALLCLOCK_LIMIT_SECONDS)
+        CODEX_ENGINE_CMD|CLAUDE_ENGINE_CMD|CODEX_MODEL|CLAUDE_MODEL|PHASE_WALLCLOCK_LIMIT_SECONDS|\
+        PRIME_ENGINE_CMD|PRIME_PROVIDER|PRIME_MODEL|PRIME_THINKING_OVERRIDE|ENGINE_OUTPUT_MAX_BYTES)
             return 0
             ;;
         *)
@@ -869,6 +976,12 @@ load_config_file_safe() {
             AUTO_PREPARE_BACKFILL_ON_IDLE_BUILD) key="AUTO_PLAN_BACKFILL_ON_IDLE_BUILD" ;;
         esac
 
+        case "$key" in
+            AUTO_UPDATE|RALPHIE_AUTO_UPDATE|RALPHIE_UPDATE_URL|AUTO_UPDATE_URL|RALPHIE_AUTO_UPDATE_URL|AUTO_UPDATE_ALLOW_DIRTY|RALPHIE_AUTO_UPDATE_ALLOW_DIRTY|AUTO_UPDATE_ALLOW_INSECURE|RALPHIE_AUTO_UPDATE_ALLOW_INSECURE)
+                warn "Ignoring operator-only update setting '$key' in $file_display."
+                continue
+                ;;
+        esac
         # Prevent config files from mutating critical shell interpreter behavior.
         case "$key" in
             BASH_ENV|ENV|SHELLOPTS|BASHOPTS|BASH_XTRACEFD|IFS|PATH|CDPATH|GLOBIGNORE|PROMPT_COMMAND|PS4)
@@ -885,6 +998,14 @@ load_config_file_safe() {
         if printenv "$key" >/dev/null 2>&1; then
             continue
         fi
+        # Both spellings of Prime options belong to the same operator choice.
+        # An exported compatibility key must outrank a namespaced config key.
+        case "$key" in
+            PRIME_ENGINE_CMD|PRIME_PROVIDER|PRIME_MODEL|PRIME_THINKING_OVERRIDE|ENGINE_OUTPUT_MAX_BYTES|AUTO_ENGINE_PREFERENCE)
+                printenv "RALPHIE_$key" >/dev/null 2>&1 && continue ;;
+            RALPHIE_PRIME_ENGINE_CMD|RALPHIE_PRIME_PROVIDER|RALPHIE_PRIME_MODEL|RALPHIE_PRIME_THINKING_OVERRIDE|RALPHIE_ENGINE_OUTPUT_MAX_BYTES|RALPHIE_AUTO_ENGINE_PREFERENCE)
+                printenv "${key#RALPHIE_}" >/dev/null 2>&1 && continue ;;
+        esac
 
         # For unquoted values, allow trailing comments using '#'.
         if [[ ! "$raw_value" =~ ^\".*\"$ ]] && [[ ! "$raw_value" =~ ^\'.*\'$ ]]; then
@@ -1079,7 +1200,17 @@ print_usage() {
 Usage: ./ralphie.sh [options]
 
 Core options:
+  --engine auto|prime-agent|codex|claude  Select an engine; an explicit choice never falls back
+  --prime-provider NAME                  Prime provider (uses its configured default when unset)
+  --prime-model ID                       Prime model (uses its configured default when unset)
+  --prime-thinking LEVEL                 Prime reasoning: off|minimal|low|medium|high|xhigh|max
   --resume                               Resume from previous persisted session state (default: true)
+  --project DIR                          Manage an existing directory (default: script directory)
+  --objective TEXT                       Explicit mission seed; authorize the local lifecycle
+  --spec FILE                            Exact specification/context file, relative to invocation cwd
+  --plan-only                            Complete approved planning without authorizing build
+  --accept CMD                           Add one shell-owned project check (repeatable)
+  --gate-timeout-seconds N                Hard deadline per project check (default: 900)
   --no-resume                            Force fresh start; ignore persisted state
   --rebootstrap                          Rebuild project bootstrap context (project type/objective/build consent)
   --max-session-cycles N                 Max total inference attempts in this session (0 = unlimited)
@@ -1099,10 +1230,10 @@ Core options:
   --auto-init-git-if-missing bool         Initialize git repository at startup when missing (true|false)
   --auto-commit-on-phase-pass bool        Auto-commit local changes after phase gate pass (true|false, no push)
   --auto-update bool                      Check and replace ralphie.sh from remote before startup (true|false)
-  --auto-update-url URL                   Raw ralphie.sh URL for auto-update; defaults to GitHub origin/current branch
+  --auto-update-url URL                   Compatible continuation source; default: published sirouk/ralphie master
   --auto-update-allow-insecure bool       Allow non-HTTPS HTTP auto-update URLs (true|false; default false)
   --auto-update-lock-timeout-seconds N    Seconds to wait for another Ralphie self-update to finish
-  --auto-engine-preference codex|claude   Preferred AUTO engine selection order
+  --auto-engine-preference ENGINE        Preferred AUTO engine (default: prime-agent)
   --engine-output-to-stdout bool          Show or suppress live engine output stream (true|false)
   --auto-repair-markdown-artifacts bool    Auto-sanitize markdown artifacts when gate-blocked (true|false)
   --strict-validation-noop bool           Require worktree mutation for test/lint phases too (true|false)
@@ -1118,20 +1249,28 @@ Core options:
   --backlog-sources PATHS                 Comma-separated markdown backlog files (default: IMPLEMENTATION_PLAN.md)
   --help, -h                             Show this help and exit
 
-All options may also be set through config.env (eg. SESSION_TOKEN_BUDGET, MAX_SESSION_CYCLES, etc).
+Project settings may also use config.env. Update enablement, source and trust options are operator-only.
 
 Additional runtime env knobs:
+  RALPHIE_ENGINE                        Engine selection: auto|prime-agent|codex|claude (prime is an alias)
+  RALPHIE_PRIME_ENGINE_CMD              Prime executable path (compatibility key: PRIME_ENGINE_CMD)
+  RALPHIE_PRIME_PROVIDER                Prime provider (compatibility key: PRIME_PROVIDER)
+  RALPHIE_PRIME_MODEL                   Prime model ID (compatibility key: PRIME_MODEL)
+  RALPHIE_PRIME_THINKING_OVERRIDE       Prime reasoning level (compatibility key: PRIME_THINKING_OVERRIDE)
+  RALPHIE_ENGINE_OUTPUT_MAX_BYTES       Maximum captured engine output per attempt (default: 16777216)
   RALPHIE_CODEX_ENDPOINT                 Optional OPENAI_BASE_URL override for codex calls
   RALPHIE_CODEX_USE_RESPONSES_SCHEMA     Whether to pass codex --output-schema (true|false)
   RALPHIE_CODEX_RESPONSES_SCHEMA_FILE    JSON schema file path for codex --output-schema
   RALPHIE_CODEX_THINKING_OVERRIDE        Codex reasoning override: none|minimal|low|medium|high|xhigh
   RALPHIE_CLAUDE_ENDPOINT                Optional ANTHROPIC_BASE_URL override for claude calls
   RALPHIE_CLAUDE_THINKING_OVERRIDE       Claude thinking override: none|off|low|medium|high|xhigh
-  RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS  Kill/retry agent run if no new output for N seconds (0=disabled)
+  RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS  Silence timeout for streaming engines; Prime/Claude print are buffered
   RALPHIE_AUTO_INIT_GIT_IF_MISSING       Initialize git repo at startup when missing (true|false)
   RALPHIE_AUTO_COMMIT_ON_PHASE_PASS      Auto-commit phase-approved changes (true|false)
   RALPHIE_AUTO_UPDATE                    Enable pre-run single-file self-update (true|false)
-  RALPHIE_AUTO_UPDATE_URL                Explicit raw ralphie.sh update URL
+  RALPHIE_UPDATE_URL                     Preferred operator-only compatible continuation update source
+  RALPHIE_AUTO_UPDATE_URL                Compatibility alias for RALPHIE_UPDATE_URL
+  RALPHIE_GATE_TIMEOUT_SECONDS           Hard deadline per project check (default: 900)
   RALPHIE_AUTO_UPDATE_ALLOW_DIRTY        Allow replacing a locally modified ralphie.sh (true|false)
   RALPHIE_AUTO_UPDATE_ALLOW_INSECURE     Allow http:// auto-update URLs (true|false)
   RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS    Fetch timeout for single-file self-update
@@ -1204,10 +1343,66 @@ parse_args() {
             print_usage
             exit 0
             ;;
+        --engine)
+            ENGINE_SELECTION_REQUESTED="$(normalize_engine_name "$(parse_arg_value "--engine" "${2:-}")")"
+            ACTIVE_ENGINE="$ENGINE_SELECTION_REQUESTED"
+            ENGINE_SELECTION_EXPLICIT=true
+            shift 2
+            ;;
+        --prime-provider)
+            PRIME_PROVIDER="$(parse_arg_value "--prime-provider" "${2:-}")"
+            PRIME_OPTIONS_EXPLICIT=true
+            shift 2
+            ;;
+        --prime-model)
+            PRIME_MODEL="$(parse_arg_value "--prime-model" "${2:-}")"
+            PRIME_OPTIONS_EXPLICIT=true
+            shift 2
+            ;;
+        --prime-thinking)
+            PRIME_THINKING_OVERRIDE="$(to_lower "$(parse_arg_value "--prime-thinking" "${2:-}")")"
+            PRIME_OPTIONS_EXPLICIT=true
+            shift 2
+            ;;
             --resume)
                 RESUME_REQUESTED=true
                 shift
                 ;;
+        --project)
+            parse_arg_value "--project" "${2:-}" >/dev/null
+            shift 2
+            ;;
+        --objective)
+            parse_arg_value "--objective" "${2:-}" >/dev/null
+            OBJECTIVE_TEXT="${2:-}"
+            NO_TERMINAL_INPUT=true
+            shift 2
+            ;;
+        --spec)
+            parse_arg_value "--spec" "${2:-}" >/dev/null
+            SPEC_FILE="${2:-}"
+            NO_TERMINAL_INPUT=true
+            shift 2
+            ;;
+        --plan-only)
+            PLAN_ONLY=true
+            NO_TERMINAL_INPUT=true
+            shift
+            ;;
+        --accept)
+            local accept_command
+            parse_arg_value "--accept" "${2:-}" >/dev/null
+            accept_command="${2:-}"
+            case "$accept_command" in *$'\n'*|*$'\r'*) err '--accept requires one physical command line'; exit 1;; esac
+            ACCEPT_COMMANDS+=("$accept_command")
+            shift 2
+            ;;
+        --gate-timeout-seconds)
+            GATE_TIMEOUT_SECONDS="$(parse_arg_value "--gate-timeout-seconds" "${2:-}")"
+            require_non_negative_int "GATE_TIMEOUT_SECONDS" "$GATE_TIMEOUT_SECONDS"
+            [ "$GATE_TIMEOUT_SECONDS" -gt 0 ] || { err 'Gate timeout must be positive'; exit 1; }
+            shift 2
+            ;;
         --no-resume)
             RESUME_REQUESTED=false
             shift
@@ -1343,11 +1538,12 @@ parse_args() {
                 shift 2
                 ;;
             --auto-engine-preference)
-                AUTO_ENGINE_PREFERENCE="$(to_lower "$(parse_arg_value "--auto-engine-preference" "${2:-}")")"
+                AUTO_ENGINE_PREFERENCE="$(normalize_engine_name "$(parse_arg_value "--auto-engine-preference" "${2:-}")")"
+                ENGINE_SELECTION_EXPLICIT=true
                 case "$AUTO_ENGINE_PREFERENCE" in
-                    codex|claude) ;;
+                    prime-agent|codex|claude) ;;
                     *)
-                        err "Invalid value for --auto-engine-preference: $AUTO_ENGINE_PREFERENCE (expected codex|claude)"
+                        err "Invalid value for --auto-engine-preference: $AUTO_ENGINE_PREFERENCE (expected prime-agent|codex|claude)"
                         exit 1
                         ;;
                 esac
@@ -1493,9 +1689,10 @@ AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
 
 # Configuration defaults
 DEFAULT_ENGINE="auto"
+DEFAULT_PRIME_CMD="$(discover_prime_command_default)"
 DEFAULT_CODEX_CMD="$(discover_codex_command_default)"
 DEFAULT_CLAUDE_CMD="$(discover_claude_command_default)"
-DEFAULT_AUTO_ENGINE_PREFERENCE="codex"        # codex|claude (AUTO mode selection priority)
+DEFAULT_AUTO_ENGINE_PREFERENCE="prime-agent"  # configured preference, then other available engines
 DEFAULT_CODEX_ENDPOINT=""                     # empty = do not override OPENAI_BASE_URL
 DEFAULT_CODEX_USE_RESPONSES_SCHEMA="false"    # false = skip codex --output-schema
 DEFAULT_CODEX_RESPONSES_SCHEMA_FILE=""        # path passed to codex --output-schema when enabled
@@ -1505,8 +1702,8 @@ DEFAULT_CLAUDE_THINKING_OVERRIDE="high"       # none|off|low|medium|high|xhigh
 DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup when missing
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
-DEFAULT_AUTO_UPDATE="true"                   # check remote script and replace before startup
-DEFAULT_AUTO_UPDATE_URL=""                   # explicit raw ralphie.sh URL; derived from GitHub origin when empty
+DEFAULT_AUTO_UPDATE="false"                  # self-update is an explicit operator action
+DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh"
 DEFAULT_AUTO_UPDATE_ALLOW_DIRTY="false"      # refuse to overwrite local ralphie.sh edits by default
 DEFAULT_AUTO_UPDATE_ALLOW_INSECURE="false"   # refuse plaintext HTTP update URLs by default
 DEFAULT_RALPHIE_QUALITY_LEVEL="standard"    # minimal|standard|high
@@ -1571,6 +1768,7 @@ DEFAULT_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=60        # wait for concurrent startup
 DEFAULT_RUN_AGENT_MAX_ATTEMPTS=6                   # transient engine hiccup retries per agent run
 DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS=8            # exponential backoff base for inference retries
 DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS=900     # recycle hung engine runs after prolonged no-output stalls (0=disabled)
+DEFAULT_ENGINE_OUTPUT_MAX_BYTES=16777216           # bound each engine's captured stdout/stderr
 DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS=5            # phase-local completion attempts before backtracking/blocking
 DEFAULT_PHASE_COMPLETION_RETRY_DELAY_SECONDS=10
 DEFAULT_MAX_CONSENSUS_ROUTING_ATTEMPTS=0           # 0 means unlimited adaptive backtracking reroutes
@@ -1621,6 +1819,7 @@ RUN_AGENT_MAX_ATTEMPTS="${RUN_AGENT_MAX_ATTEMPTS:-$DEFAULT_RUN_AGENT_MAX_ATTEMPT
 RUN_AGENT_RETRY_DELAY_SECONDS="${RUN_AGENT_RETRY_DELAY_SECONDS:-$DEFAULT_RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RUN_AGENT_RETRY_VERBOSE:-$DEFAULT_RUN_AGENT_RETRY_VERBOSE}"
 ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS="${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS}"
+ENGINE_OUTPUT_MAX_BYTES="${ENGINE_OUTPUT_MAX_BYTES:-$DEFAULT_ENGINE_OUTPUT_MAX_BYTES}"
 ENGINE_OUTPUT_TO_STDOUT="${ENGINE_OUTPUT_TO_STDOUT:-$DEFAULT_ENGINE_OUTPUT_TO_STDOUT}"
 STRICT_VALIDATION_NOOP="${STRICT_VALIDATION_NOOP:-$DEFAULT_STRICT_VALIDATION_NOOP}"
 PHASE_COMPLETION_MAX_ATTEMPTS="${PHASE_COMPLETION_MAX_ATTEMPTS:-$DEFAULT_PHASE_COMPLETION_MAX_ATTEMPTS}"
@@ -1683,6 +1882,7 @@ fi
 
 # Override with environment variables if present.
 ACTIVE_ENGINE="${RALPHIE_ENGINE:-$DEFAULT_ENGINE}"
+PRIME_CMD="${RALPHIE_PRIME_ENGINE_CMD:-${PRIME_ENGINE_CMD:-$DEFAULT_PRIME_CMD}}"
 CODEX_CMD="${CODEX_ENGINE_CMD:-$DEFAULT_CODEX_CMD}"
 CLAUDE_CMD="${CLAUDE_ENGINE_CMD:-$DEFAULT_CLAUDE_CMD}"
 COMMAND_TIMEOUT_SECONDS="${RALPHIE_COMMAND_TIMEOUT_SECONDS:-$COMMAND_TIMEOUT_SECONDS}"
@@ -1695,6 +1895,7 @@ RUN_AGENT_MAX_ATTEMPTS="${RALPHIE_RUN_AGENT_MAX_ATTEMPTS:-$RUN_AGENT_MAX_ATTEMPT
 RUN_AGENT_RETRY_DELAY_SECONDS="${RALPHIE_RUN_AGENT_RETRY_DELAY_SECONDS:-$RUN_AGENT_RETRY_DELAY_SECONDS}"
 RUN_AGENT_RETRY_VERBOSE="${RALPHIE_RUN_AGENT_RETRY_VERBOSE:-$RUN_AGENT_RETRY_VERBOSE}"
 ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS="${RALPHIE_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-$ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS}"
+ENGINE_OUTPUT_MAX_BYTES="${RALPHIE_ENGINE_OUTPUT_MAX_BYTES:-$ENGINE_OUTPUT_MAX_BYTES}"
 PHASE_COMPLETION_MAX_ATTEMPTS="${RALPHIE_PHASE_COMPLETION_MAX_ATTEMPTS:-$PHASE_COMPLETION_MAX_ATTEMPTS}"
 PHASE_COMPLETION_RETRY_DELAY_SECONDS="${RALPHIE_PHASE_COMPLETION_RETRY_DELAY_SECONDS:-$PHASE_COMPLETION_RETRY_DELAY_SECONDS}"
 PHASE_COMPLETION_RETRY_VERBOSE="${RALPHIE_PHASE_COMPLETION_RETRY_VERBOSE:-$PHASE_COMPLETION_RETRY_VERBOSE}"
@@ -1738,12 +1939,16 @@ AUTO_ENGINE_PREFERENCE="${RALPHIE_AUTO_ENGINE_PREFERENCE:-$AUTO_ENGINE_PREFERENC
 AUTO_INIT_GIT_IF_MISSING="${RALPHIE_AUTO_INIT_GIT_IF_MISSING:-$AUTO_INIT_GIT_IF_MISSING}"
 AUTO_COMMIT_ON_PHASE_PASS="${RALPHIE_AUTO_COMMIT_ON_PHASE_PASS:-$AUTO_COMMIT_ON_PHASE_PASS}"
 AUTO_UPDATE="${RALPHIE_AUTO_UPDATE:-$AUTO_UPDATE}"
-AUTO_UPDATE_URL="${RALPHIE_AUTO_UPDATE_URL:-$AUTO_UPDATE_URL}"
+AUTO_UPDATE_URL="${RALPHIE_UPDATE_URL:-${RALPHIE_AUTO_UPDATE_URL:-$AUTO_UPDATE_URL}}"
+GATE_TIMEOUT_SECONDS="${RALPHIE_GATE_TIMEOUT_SECONDS:-$GATE_TIMEOUT_SECONDS}"
 AUTO_UPDATE_ALLOW_DIRTY="${RALPHIE_AUTO_UPDATE_ALLOW_DIRTY:-$AUTO_UPDATE_ALLOW_DIRTY}"
 AUTO_UPDATE_ALLOW_INSECURE="${RALPHIE_AUTO_UPDATE_ALLOW_INSECURE:-$AUTO_UPDATE_ALLOW_INSECURE}"
 AUTO_UPDATE_TIMEOUT_SECONDS="${RALPHIE_AUTO_UPDATE_TIMEOUT_SECONDS:-$AUTO_UPDATE_TIMEOUT_SECONDS}"
 AUTO_UPDATE_LOCK_TIMEOUT_SECONDS="${RALPHIE_AUTO_UPDATE_LOCK_TIMEOUT_SECONDS:-$AUTO_UPDATE_LOCK_TIMEOUT_SECONDS}"
 CODEX_ENDPOINT="${RALPHIE_CODEX_ENDPOINT:-$CODEX_ENDPOINT}"
+PRIME_PROVIDER="${RALPHIE_PRIME_PROVIDER:-${PRIME_PROVIDER:-}}"
+PRIME_MODEL="${RALPHIE_PRIME_MODEL:-${PRIME_MODEL:-}}"
+PRIME_THINKING_OVERRIDE="${RALPHIE_PRIME_THINKING_OVERRIDE:-${PRIME_THINKING_OVERRIDE:-}}"
 CODEX_MODEL="${RALPHIE_CODEX_MODEL:-${CODEX_MODEL:-}}"
 CODEX_USE_RESPONSES_SCHEMA="${RALPHIE_CODEX_USE_RESPONSES_SCHEMA:-$CODEX_USE_RESPONSES_SCHEMA}"
 CODEX_RESPONSES_SCHEMA_FILE="${RALPHIE_CODEX_RESPONSES_SCHEMA_FILE:-$CODEX_RESPONSES_SCHEMA_FILE}"
@@ -1782,22 +1987,13 @@ if printenv PHASE_NOOP_POLICY_DOCUMENT >/dev/null 2>&1 || printenv RALPHIE_PHASE
 if printenv CONSENSUS_SCORE_THRESHOLD >/dev/null 2>&1 || printenv RALPHIE_CONSENSUS_SCORE_THRESHOLD >/dev/null 2>&1; then CONSENSUS_SCORE_THRESHOLD_EXPLICIT=true; fi
 
 # Validate engine selection
-ENGINE_SELECTION_REQUESTED="$(to_lower "$ACTIVE_ENGINE")"
-case "$ENGINE_SELECTION_REQUESTED" in
-    claude|codex|auto) ;;
-    *)
-        warn "Unrecognized engine '$ENGINE_SELECTION_REQUESTED'. Falling back to '$DEFAULT_ENGINE'."
-        ENGINE_SELECTION_REQUESTED="$DEFAULT_ENGINE"
-        ;;
-esac
-AUTO_ENGINE_PREFERENCE="$(to_lower "$AUTO_ENGINE_PREFERENCE")"
-case "$AUTO_ENGINE_PREFERENCE" in
-    codex|claude) ;;
-    *)
-        warn "Invalid AUTO_ENGINE_PREFERENCE '$AUTO_ENGINE_PREFERENCE'. Falling back to '$DEFAULT_AUTO_ENGINE_PREFERENCE'."
-        AUTO_ENGINE_PREFERENCE="$DEFAULT_AUTO_ENGINE_PREFERENCE"
-        ;;
-esac
+ENGINE_SELECTION_REQUESTED="$(normalize_engine_name "$ACTIVE_ENGINE")"
+ENGINE_SELECTION_EXPLICIT=false
+[ "$ENGINE_SELECTION_REQUESTED" = auto ] || ENGINE_SELECTION_EXPLICIT=true
+if printenv AUTO_ENGINE_PREFERENCE >/dev/null 2>&1 || printenv RALPHIE_AUTO_ENGINE_PREFERENCE >/dev/null 2>&1; then ENGINE_SELECTION_EXPLICIT=true; fi
+PRIME_OPTIONS_EXPLICIT=false
+if [ -n "$PRIME_PROVIDER$PRIME_MODEL$PRIME_THINKING_OVERRIDE" ]; then PRIME_OPTIONS_EXPLICIT=true; fi
+AUTO_ENGINE_PREFERENCE="$(normalize_engine_name "$AUTO_ENGINE_PREFERENCE")"
 
 AUTO_COMMIT_ON_PHASE_PASS="$(to_lower "$AUTO_COMMIT_ON_PHASE_PASS")"
 if ! is_bool_like "$AUTO_COMMIT_ON_PHASE_PASS"; then
@@ -2034,7 +2230,10 @@ if [ "$NOTIFY_TELEGRAM_ENABLED" != "true" ] && [ "$NOTIFY_DISCORD_ENABLED" != "t
     NOTIFICATIONS_ENABLED="false"
 fi
 
-if [ "$ENGINE_SELECTION_REQUESTED" = "codex" ]; then
+if [ "$ENGINE_SELECTION_REQUESTED" = "prime-agent" ]; then
+    ACTIVE_ENGINE="prime-agent"
+    ACTIVE_CMD="$PRIME_CMD"
+elif [ "$ENGINE_SELECTION_REQUESTED" = "codex" ]; then
     ACTIVE_ENGINE="codex"
     ACTIVE_CMD="$CODEX_CMD"
 elif [ "$ENGINE_SELECTION_REQUESTED" = "claude" ]; then
@@ -2044,7 +2243,9 @@ else
     # Keep auto as the requested mode; resolve_active_engine will select the
     # active runtime engine each loop based on health/capabilities.
     ACTIVE_ENGINE="auto"
-    if [ "$AUTO_ENGINE_PREFERENCE" = "claude" ]; then
+    if [ "$AUTO_ENGINE_PREFERENCE" = "prime-agent" ]; then
+        ACTIVE_CMD="$PRIME_CMD"
+    elif [ "$AUTO_ENGINE_PREFERENCE" = "claude" ]; then
         if command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
             ACTIVE_CMD="$CLAUDE_CMD"
         elif command -v "$CODEX_CMD" >/dev/null 2>&1; then
@@ -2072,6 +2273,13 @@ SESSION_ATTEMPT_COUNT=0
 SESSION_TOKEN_COUNT=0
 SESSION_COST_CENTS=0
 LAST_RUN_TOKEN_COUNT=0
+SESSION_BUDGET_RECEIPT_FILE=""
+SWARM_BUDGET_RECEIPT_DIR=""
+SWARM_BUDGET_BASE_ATTEMPTS=0
+SWARM_BUDGET_BASE_TOKENS=0
+SWARM_BUDGET_BASE_COST=0
+ENGINE_BUDGET_EXHAUSTED=false
+ENGINE_BUDGET_FAILURE_REASON=""
 LAST_CONSENSUS_SCORE=0
 LAST_CONSENSUS_PASS=false
 LAST_CONSENSUS_DIR=""
@@ -2119,6 +2327,9 @@ NOTIFY_INCIDENT_LAST_SENT_AT=0
 NOTIFY_INCIDENT_REPEAT_COUNT=0
 
 # Capability Probing results (populated by probe_engine_capabilities)
+PRIME_CAP_PRINT=0
+PRIME_CAP_NOTE=""
+PRIME_HEALTHY="false"
 CLAUDE_CAP_PRINT=0
 CLAUDE_CAP_YOLO_FLAG=""
 CODEX_CAP_OUTPUT_LAST_MESSAGE=0
@@ -2131,6 +2342,8 @@ CLAUDE_HEALTHY="false"
 CODEX_SMOKE_PASS="false"
 CLAUDE_SMOKE_PASS="false"
 LAST_ENGINE_SELECTION_BLOCK_REASON=""
+ENGINE_PERMANENT_FAILURE=false
+ENGINE_PERMANENT_FAILURE_REASON=""
 
 # Resilience Dial implementation
 get_reviewer_count() {
@@ -2373,8 +2586,15 @@ self_update_candidate_is_valid() {
     if LC_ALL=C grep -q "$(printf '\r')" "$candidate"; then
         return 1
     fi
-    grep -q 'Ralphie - Unified autonomous loop' "$candidate" || return 1
-    grep -q '^SCRIPT_VERSION=' "$candidate" || return 1
+    grep -q 'Ralphie - ' "$candidate" || return 1
+    # The published source may belong to a different harness architecture. A
+    # compatible May continuation must retain this entry and phase contract;
+    # never execute a downloaded candidate merely to inspect it.
+    [ "$(grep -cE '^SCRIPT_VERSION="[0-9]+\.[0-9]+\.[0-9]+"$' "$candidate")" = 1 ] || return 1
+    grep -q '^ensure_project_bootstrap()' "$candidate" || return 1
+    grep -q '^run_swarm_consensus()' "$candidate" || return 1
+    grep -q '^enforce_terminal_done_requirements()' "$candidate" || return 1
+    grep -q 'local -a phases=("plan" "build" "test" "refactor" "lint" "document")' "$candidate" || return 1
     grep -q 'parse_args "$@"' "$candidate" || return 1
     grep -q 'self_update_check_and_reexec "$@"' "$candidate" || return 1
     grep -q 'RALPHIE_SKIP_AUTO_UPDATE' "$candidate" || return 1
@@ -2420,15 +2640,7 @@ self_update_check_and_reexec() {
         return 0
     fi
 
-    update_url="${AUTO_UPDATE_URL:-}"
-    if [ -z "$update_url" ]; then
-        update_url="$(self_update_derive_github_raw_url || true)"
-    fi
-    if [ -z "$update_url" ]; then
-        warn "Auto-update skipped: set AUTO_UPDATE_URL or run from a GitHub checkout with origin/current branch."
-        self_update_release_lock "$update_lock_dir"
-        return 0
-    fi
+    update_url="${AUTO_UPDATE_URL:-$DEFAULT_AUTO_UPDATE_URL}"
     if ! self_update_url_is_allowed "$update_url"; then
         warn "Auto-update skipped: update URL must be https://, file://, or a local path. Set AUTO_UPDATE_ALLOW_INSECURE=true only for trusted http:// origins."
         self_update_release_lock "$update_lock_dir"
@@ -2600,6 +2812,7 @@ $failure_summary"
 }
 
 save_state() {
+    ensure_runtime_file "$STATE_FILE" || return 1
     mkdir -p "$(dirname "$STATE_FILE")"
     local checksum
     local tmp_state_file
@@ -2620,6 +2833,12 @@ save_state() {
     }
 
     {
+        printf 'MISSION_SEED_SHA="%s"\n' "$(state_escape_value "${MISSION_SEED_SHA:-}")"
+        printf 'OWNED_PATHS_SHA="%s"\n' "$(state_escape_value "${OWNED_PATHS_SHA:-}")"
+        printf 'SHELL_GATES_FINGERPRINT="%s"\n' "$(state_escape_value "${SHELL_GATES_FINGERPRINT:-}")"
+        printf 'SHELL_LOCAL_WORK_SEEN="%s"\n' "$(state_escape_value "${SHELL_LOCAL_WORK_SEEN:-}")"
+        printf 'SHELL_DEVELOPMENT_PHASE_STARTED="%s"\n' "$(state_escape_value "${SHELL_DEVELOPMENT_PHASE_STARTED:-}")"
+        printf 'SESSION_INITIAL_HEAD="%s"\n' "$(state_escape_value "${SESSION_INITIAL_HEAD:-}")"
         printf 'CURRENT_PHASE="%s"\n' "$(state_escape_value "$CURRENT_PHASE")"
         printf 'CURRENT_PHASE_INDEX="%s"\n' "$(state_escape_value "$CURRENT_PHASE_INDEX")"
         printf 'CURRENT_PHASE_ATTEMPT="%s"\n' "$(state_escape_value "$CURRENT_PHASE_ATTEMPT")"
@@ -2731,6 +2950,12 @@ load_state() {
         value="${value#\"}"
         value="$(state_unescape_value "$value")"
         case "$key" in
+            MISSION_SEED_SHA) MISSION_SEED_SHA="$value" ;;
+            OWNED_PATHS_SHA) OWNED_PATHS_SHA="$value" ;;
+            SHELL_GATES_FINGERPRINT) SHELL_GATES_FINGERPRINT="$value" ;;
+            SHELL_LOCAL_WORK_SEEN) SHELL_LOCAL_WORK_SEEN="$value" ;;
+            SHELL_DEVELOPMENT_PHASE_STARTED) SHELL_DEVELOPMENT_PHASE_STARTED="$value" ;;
+            SESSION_INITIAL_HEAD) SESSION_INITIAL_HEAD="$value" ;;
             CURRENT_PHASE) CURRENT_PHASE="$value" ;;
             CURRENT_PHASE_INDEX) is_number "$value" && CURRENT_PHASE_INDEX="$value" ;;
             CURRENT_PHASE_ATTEMPT) is_number "$value" && CURRENT_PHASE_ATTEMPT="$value" ;;
@@ -2827,7 +3052,6 @@ charge_session_budget() {
     if ! is_number "$tokens"; then
         tokens=0
     fi
-    SESSION_ATTEMPT_COUNT=$((SESSION_ATTEMPT_COUNT + 1))
     SESSION_TOKEN_COUNT=$((SESSION_TOKEN_COUNT + tokens))
 
     if is_number "$SESSION_TOKEN_RATE_CENTS_PER_MILLION" && [ "$SESSION_TOKEN_RATE_CENTS_PER_MILLION" -gt 0 ]; then
@@ -2837,27 +3061,107 @@ charge_session_budget() {
     fi
 
     LAST_RUN_TOKEN_COUNT="$tokens"
+    write_session_budget_receipt
 }
 
 enforce_session_budget() {
     local reason_prefix="${1:-run}"
+    local reason_code=""
+    local reason=""
     if is_number "$MAX_SESSION_CYCLES" && [ "$MAX_SESSION_CYCLES" -gt 0 ] && [ "$SESSION_ATTEMPT_COUNT" -ge "$MAX_SESSION_CYCLES" ]; then
-        log_reason_code "RB_SESSION_CYCLE_BUDGET_EXCEEDED" "$reason_prefix: session cycle budget exceeded at $SESSION_ATTEMPT_COUNT/$MAX_SESSION_CYCLES attempts"
+        reason_code=RB_SESSION_CYCLE_BUDGET_EXCEEDED
+        reason="session cycle budget reached at $SESSION_ATTEMPT_COUNT/$MAX_SESSION_CYCLES attempts"
+    elif is_number "$SESSION_TOKEN_BUDGET" && [ "$SESSION_TOKEN_BUDGET" -gt 0 ] && [ "$SESSION_TOKEN_COUNT" -ge "$SESSION_TOKEN_BUDGET" ]; then
+        reason_code=RB_SESSION_TOKEN_BUDGET_EXCEEDED
+        reason="session token budget reached at $SESSION_TOKEN_COUNT/$SESSION_TOKEN_BUDGET"
+    elif is_number "$SESSION_COST_BUDGET_CENTS" && [ "$SESSION_COST_BUDGET_CENTS" -gt 0 ] && [ "$SESSION_COST_CENTS" -ge "$SESSION_COST_BUDGET_CENTS" ]; then
+        reason_code=RB_SESSION_COST_BUDGET_EXCEEDED
+        reason="session cost budget reached at $SESSION_COST_CENTS/$SESSION_COST_BUDGET_CENTS cents"
+    fi
+    if [ -n "$reason_code" ]; then
+        ENGINE_BUDGET_EXHAUSTED=true
+        ENGINE_BUDGET_FAILURE_REASON="$reason_prefix: $reason"
+        log_reason_code "$reason_code" "$ENGINE_BUDGET_FAILURE_REASON"
         return 1
     fi
-    if is_number "$SESSION_TOKEN_BUDGET" && [ "$SESSION_TOKEN_BUDGET" -gt 0 ] && [ "$SESSION_TOKEN_COUNT" -gt "$SESSION_TOKEN_BUDGET" ]; then
-        log_reason_code "RB_SESSION_TOKEN_BUDGET_EXCEEDED" "$reason_prefix: session token budget exceeded at $SESSION_TOKEN_COUNT/$SESSION_TOKEN_BUDGET"
-        return 1
+    return 0
+}
+
+finite_session_budget() {
+    local limit
+    for limit in "$MAX_SESSION_CYCLES" "$SESSION_TOKEN_BUDGET" "$SESSION_COST_BUDGET_CENTS"; do
+        if is_number "$limit" && [ "$limit" -gt 0 ]; then return 0; fi
+    done
+    return 1
+}
+
+write_session_budget_receipt() {
+    [ -n "${SESSION_BUDGET_RECEIPT_FILE:-}" ] || return 0
+    if printf '%s %s %s\n' "$SESSION_ATTEMPT_COUNT" "$SESSION_TOKEN_COUNT" "$SESSION_COST_CENTS" > "$SESSION_BUDGET_RECEIPT_FILE.tmp" \
+        && mv "$SESSION_BUDGET_RECEIPT_FILE.tmp" "$SESSION_BUDGET_RECEIPT_FILE"; then
+        return 0
     fi
-    if is_number "$SESSION_COST_BUDGET_CENTS" && [ "$SESSION_COST_BUDGET_CENTS" -gt 0 ] && [ "$SESSION_COST_CENTS" -gt "$SESSION_COST_BUDGET_CENTS" ]; then
-        log_reason_code "RB_SESSION_COST_BUDGET_EXCEEDED" "$reason_prefix: session cost budget exceeded at $SESSION_COST_CENTS/$SESSION_COST_BUDGET_CENTS cents"
-        return 1
+    ENGINE_BUDGET_EXHAUSTED=true
+    ENGINE_BUDGET_FAILURE_REASON="Could not record inference budget usage."
+    err "$ENGINE_BUDGET_FAILURE_REASON"
+    return 1
+}
+
+admit_session_attempt() {
+    if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then return 75; fi
+    enforce_session_budget "${1:-inference admission}" || return 75
+    # Count admission before launching so an interrupted call still consumes it.
+    SESSION_ATTEMPT_COUNT=$((SESSION_ATTEMPT_COUNT + 1))
+    write_session_budget_receipt || return 75
+    if finite_session_budget && [ -z "${SESSION_BUDGET_RECEIPT_FILE:-}" ] && is_true "${RALPHIE_CLEANUP_STATE_ENABLED:-false}"; then
+        # A killed parent cannot run cleanup. Persist finite admission before
+        # inference so same-session resume cannot spend that allowance again.
+        if ! save_state; then
+            ENGINE_BUDGET_EXHAUSTED=true
+            ENGINE_BUDGET_FAILURE_REASON="Could not checkpoint inference admission; no engine call was launched."
+            err "$ENGINE_BUDGET_FAILURE_REASON"
+            return 75
+        fi
+    fi
+    return 0
+}
+
+import_swarm_session_budget() {
+    [ -n "${SWARM_BUDGET_RECEIPT_DIR:-}" ] || return 0
+    local attempts=0 tokens=0 cost=0 receipt a t c extra
+    for receipt in "$SWARM_BUDGET_RECEIPT_DIR"/reviewer_*.usage; do
+        [ -f "$receipt" ] || continue
+        a=""; t=""; c=""; extra=""
+        if ! IFS=' ' read -r a t c extra < "$receipt" || ! is_number "$a" || ! is_number "$t" || ! is_number "$c" || [ -n "$extra" ]; then
+            ENGINE_BUDGET_EXHAUSTED=true
+            ENGINE_BUDGET_FAILURE_REASON="Invalid reviewer inference usage receipt."
+            err "$ENGINE_BUDGET_FAILURE_REASON"
+            return 1
+        fi
+        attempts=$((attempts + a))
+        tokens=$((tokens + t))
+        cost=$((cost + c))
+    done
+    # Re-importing while cleaning up must never charge a child twice.
+    SESSION_ATTEMPT_COUNT=$((SWARM_BUDGET_BASE_ATTEMPTS + attempts))
+    SESSION_TOKEN_COUNT=$((SWARM_BUDGET_BASE_TOKENS + tokens))
+    SESSION_COST_CENTS=$((SWARM_BUDGET_BASE_COST + cost))
+    return 0
+}
+
+finish_swarm_session_budget() {
+    import_swarm_session_budget || return 1
+    if [ -n "${SWARM_BUDGET_RECEIPT_DIR:-}" ]; then
+        rm -f -- "$SWARM_BUDGET_RECEIPT_DIR"/reviewer_*.usage "$SWARM_BUDGET_RECEIPT_DIR"/reviewer_*.usage.tmp
+        rmdir "$SWARM_BUDGET_RECEIPT_DIR" || return 1
+        SWARM_BUDGET_RECEIPT_DIR=""
     fi
     return 0
 }
 
 # Interactive Questions
 is_tty_input_available() {
+    is_true "${NO_TERMINAL_INPUT:-false}" && return 1
     if [ -t 0 ]; then
         return 0
     fi
@@ -2869,6 +3173,10 @@ prompt_read_line() {
     local default="$2"
     local response=""
 
+    if is_true "${NO_TERMINAL_INPUT:-false}"; then
+        printf '%s\n' "$default"
+        return 0
+    fi
     if [ -t 0 ]; then
         read -rp "$prompt" response
         echo "${response:-$default}"
@@ -2921,6 +3229,7 @@ prompt_optional_line() {
 }
 
 prompt_multiline_block() {
+    if is_true "${NO_TERMINAL_INPUT:-false}"; then printf '%s' "${2:-}"; return 0; fi
     local prompt="$1"
     local default="${2:-}"
     local sentinel="${3:-EOF}"
@@ -3194,7 +3503,7 @@ bootstrap_dense_token() {
 
     value="$(sanitize_text_for_log "$raw_value")"
     [ -n "$value" ] || value="$fallback"
-    value="$(printf '%s' "$value" | sed 's/[[:space:]]\+/_/g')"
+    value="$(printf '%s' "$value" | sed 's/[[:space:]][[:space:]]*/_/g')"
     if [ "${#value}" -gt "$max_len" ]; then
         value="${value:0:$max_len}"
     fi
@@ -3786,8 +4095,11 @@ build_is_preapproved() {
 
 healthy_engines_for_display() {
     local engines=""
+    if [ "$PRIME_HEALTHY" = "true" ]; then
+        engines="prime-agent"
+    fi
     if [ "$CODEX_HEALTHY" = "true" ]; then
-        engines="codex"
+        engines="${engines}${engines:+, }codex"
     fi
     if [ "$CLAUDE_HEALTHY" = "true" ]; then
         engines="${engines}${engines:+, }claude"
@@ -3929,7 +4241,7 @@ notification_log_append() {
         "$event" \
         "$status" \
         "$delivery" \
-        "$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')" \
+        "$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | sed 's/^ *//; s/ *$//')" \
         >> "$NOTIFICATION_LOG_FILE"
 }
 
@@ -4191,7 +4503,7 @@ build_tts_notification_line() {
 
     style="$(normalize_notify_tts_style "${NOTIFY_TTS_STYLE:-$DEFAULT_NOTIFY_TTS_STYLE}")"
     summary="$(notification_tts_event_summary "$event" "$status")"
-    normalized_details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    normalized_details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | sed 's/^ *//; s/ *$//')"
     normalized_details="$(printf '%s' "$normalized_details" | cut -c 1-140)"
     [ -n "$normalized_details" ] || normalized_details="no extra details"
 
@@ -4235,7 +4547,7 @@ notify_event() {
     fi
     command -v curl >/dev/null 2>&1 || return 0
 
-    details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    details="$(printf '%s' "$details" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | sed 's/^ *//; s/ *$//')"
     [ -n "$details" ] || details="none"
 
     if ! notification_event_is_high_signal "$event"; then
@@ -4600,6 +4912,11 @@ persist_engine_override_value() {
 }
 
 run_first_deploy_engine_override_wizard() {
+    # A first-run questionnaire must not replace an engine or model the
+    # operator already selected in config, environment or this invocation.
+    if is_true "${ENGINE_SELECTION_EXPLICIT:-false}" || is_true "${PRIME_OPTIONS_EXPLICIT:-false}"; then
+        return 1
+    fi
     if is_true "$ENGINE_OVERRIDES_BOOTSTRAPPED"; then
         return 1
     fi
@@ -4623,9 +4940,9 @@ run_first_deploy_engine_override_wizard() {
     local codex_schema_enabled_choice codex_schema_file_choice
     local claude_endpoint_choice claude_model_choice claude_thinking_choice
 
-    selected_engine_choice="$(to_lower "$(prompt_read_line "Engine mode (auto|codex|claude) [current: $ENGINE_SELECTION_REQUESTED]: " "$ENGINE_SELECTION_REQUESTED")")"
+    selected_engine_choice="$(normalize_engine_name "$(prompt_read_line "Engine mode (auto|prime-agent|codex|claude) [current: $ENGINE_SELECTION_REQUESTED]: " "$ENGINE_SELECTION_REQUESTED")")"
     case "$selected_engine_choice" in
-        auto|codex|claude) ;;
+        auto|prime-agent|codex|claude) ;;
         *)
             warn "Invalid engine mode '$selected_engine_choice'. Keeping '$ENGINE_SELECTION_REQUESTED'."
             selected_engine_choice="$ENGINE_SELECTION_REQUESTED"
@@ -4638,9 +4955,9 @@ run_first_deploy_engine_override_wizard() {
     persist_engine_override_value "RALPHIE_ENGINE" "$ENGINE_SELECTION_REQUESTED" || true
 
     if [ "$ENGINE_SELECTION_REQUESTED" = "auto" ]; then
-        preferred_auto_choice="$(to_lower "$(prompt_read_line "AUTO preference (codex|claude) [current: $AUTO_ENGINE_PREFERENCE]: " "$AUTO_ENGINE_PREFERENCE")")"
+        preferred_auto_choice="$(normalize_engine_name "$(prompt_read_line "AUTO preference (prime-agent|codex|claude) [current: $AUTO_ENGINE_PREFERENCE]: " "$AUTO_ENGINE_PREFERENCE")")"
         case "$preferred_auto_choice" in
-            codex|claude) ;;
+            prime-agent|codex|claude) ;;
             *)
                 warn "Invalid AUTO preference '$preferred_auto_choice'. Keeping '$AUTO_ENGINE_PREFERENCE'."
                 preferred_auto_choice="$AUTO_ENGINE_PREFERENCE"
@@ -4739,51 +5056,19 @@ run_command_with_timeout() {
         timeout_seconds=15
     fi
 
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_seconds" "$@"
-        return $?
-    fi
-    if command -v gtimeout >/dev/null 2>&1; then
-        gtimeout "$timeout_seconds" "$@"
-        return $?
-    fi
-    if command -v perl >/dev/null 2>&1; then
-        perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" "$@"
-        return $?
-    fi
-
-    # Portable watchdog fallback if timeout/gtimeout/perl are unavailable.
-    local timeout_marker cmd_pid watchdog_pid cmd_exit
-    timeout_marker="$(mktemp "${TMPDIR:-/tmp}/ralphie_timeout.XXXXXX")" || return 1
-    rm -f "$timeout_marker"
-
-    "$@" &
+    # A shell deadline works on macOS too, without timeout, Perl or a detached
+    # alarm process. Explicit stdin preserves prompt input for background jobs.
+    local COMMAND_TIMEOUT_SECONDS="$timeout_seconds"
+    local cmd_pid cmd_exit
+    "$@" <&0 &
     cmd_pid=$!
-    (
-        sleep "$timeout_seconds"
-        if kill -0 "$cmd_pid" 2>/dev/null; then
-            : > "$timeout_marker"
-            kill -TERM "$cmd_pid" 2>/dev/null || true
-            sleep 1
-            kill -KILL "$cmd_pid" 2>/dev/null || true
-        fi
-    ) &
-    watchdog_pid=$!
-
-    if wait "$cmd_pid"; then
+    register_managed_pid "$cmd_pid"
+    if wait_for_process_with_idle_output_watchdog "$cmd_pid" 0 "bounded command"; then
         cmd_exit=0
     else
         cmd_exit=$?
     fi
-
-    kill -TERM "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-
-    if [ -f "$timeout_marker" ]; then
-        rm -f "$timeout_marker"
-        return 124
-    fi
-    rm -f "$timeout_marker"
+    unregister_managed_pid "$cmd_pid"
     return "$cmd_exit"
 }
 
@@ -4794,7 +5079,7 @@ run_startup_operational_probe() {
     local timeout_probe_exit=0
     local -a required_cmds=(
         sh sleep mktemp sed awk grep find sort date
-        git seq cut head tail wc tr tee comm cmp
+        git seq cut head tail wc tr tee comm cmp ps mkfifo
     )
 
     for cmd in "${required_cmds[@]}"; do
@@ -4861,6 +5146,10 @@ smoke_test_engine() {
     local smoke_start smoke_elapsed
     smoke_start="$(date +%s)"
 
+    if ! admit_session_attempt "$engine_name readiness canary"; then
+        rm -f "$prompt_file" "$output_file"
+        return 75
+    fi
     if [ "$engine_name" = "codex" ]; then
         if [ -n "$CODEX_ENDPOINT" ]; then
             smoke_prefix=("env" "OPENAI_BASE_URL=$CODEX_ENDPOINT")
@@ -4897,6 +5186,11 @@ smoke_test_engine() {
             < "$prompt_file" > "$output_file" 2>/dev/null && smoke_exit=0 || smoke_exit=$?
     fi
 
+    if ! charge_session_budget "$(estimate_run_tokens "$prompt_file" "" "$output_file")"; then
+        rm -f "$prompt_file" "$output_file"
+        return 75
+    fi
+
     smoke_elapsed=$(( $(date +%s) - smoke_start ))
     local result=1
     # Check for canary token in output regardless of exit code — the engine may
@@ -4917,7 +5211,63 @@ smoke_test_engine() {
     fi
 
     rm -f "$prompt_file" "$output_file"
+    if [ "$result" -ne 0 ] && ! enforce_session_budget "$engine_name readiness canary"; then
+        return 75
+    fi
     return "$result"
+}
+
+validate_engine_options() {
+    ENGINE_SELECTION_REQUESTED="$(normalize_engine_name "$ENGINE_SELECTION_REQUESTED")"
+    AUTO_ENGINE_PREFERENCE="$(normalize_engine_name "$AUTO_ENGINE_PREFERENCE")"
+    case "$ENGINE_SELECTION_REQUESTED" in
+        auto|prime-agent|codex|claude) ;;
+        *) err "Unsupported engine '$ENGINE_SELECTION_REQUESTED'; choose prime-agent, codex, claude or auto."; return 1 ;;
+    esac
+    case "$AUTO_ENGINE_PREFERENCE" in
+        prime-agent|codex|claude) ;;
+        *) err "Unsupported AUTO preference '$AUTO_ENGINE_PREFERENCE'."; return 1 ;;
+    esac
+    PRIME_THINKING_OVERRIDE="$(to_lower "$PRIME_THINKING_OVERRIDE")"
+    case "$PRIME_THINKING_OVERRIDE" in
+        off|minimal|low|medium|high|xhigh|max|"") ;;
+        *) err "Unsupported Prime thinking level '$PRIME_THINKING_OVERRIDE'."; return 1 ;;
+    esac
+    ACTIVE_ENGINE="$ENGINE_SELECTION_REQUESTED"
+    if [ "$ACTIVE_ENGINE" = auto ]; then
+        ACTIVE_CMD="$(engine_command_for_name "$AUTO_ENGINE_PREFERENCE")"
+    else
+        ACTIVE_CMD="$(engine_command_for_name "$ACTIVE_ENGINE")"
+    fi
+    return 0
+}
+
+engine_command_for_name() {
+    case "$1" in
+        prime-agent) printf '%s' "$PRIME_CMD" ;;
+        codex) printf '%s' "$CODEX_CMD" ;;
+        claude) printf '%s' "$CLAUDE_CMD" ;;
+        *) return 1 ;;
+    esac
+}
+
+engine_name_for_command() {
+    case "$1" in
+        "$PRIME_CMD") printf 'prime-agent' ;;
+        "$CODEX_CMD") printf 'codex' ;;
+        "$CLAUDE_CMD") printf 'claude' ;;
+        *) return 1 ;;
+    esac
+}
+
+engine_is_healthy() {
+    case "$1" in
+        prime-agent) [ "$PRIME_HEALTHY" = true ] || return 1 ;;
+        codex) [ "$CODEX_HEALTHY" = true ] || return 1 ;;
+        claude) [ "$CLAUDE_HEALTHY" = true ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    command -v "$(engine_command_for_name "$1")" >/dev/null 2>&1
 }
 
 # Multi-Agent Capability Detection
@@ -4926,7 +5276,9 @@ probe_engine_capabilities() {
     local probe_scope="${2:-${ENGINE_SELECTION_REQUESTED:-auto}}"
     local probe_codex="true"
     local probe_claude="true"
+    local probe_prime="true"
 
+    is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && return 75
     if is_true "$ENGINE_CAPABILITIES_PROBED" && ! is_true "$force_reprobe"; then
         return 0
     fi
@@ -4934,9 +5286,15 @@ probe_engine_capabilities() {
     case "$probe_scope" in
         codex)
             probe_claude="false"
+            probe_prime="false"
             ;;
         claude)
             probe_codex="false"
+            probe_prime="false"
+            ;;
+        prime-agent|prime)
+            probe_codex="false"
+            probe_claude="false"
             ;;
         auto|"")
             ;;
@@ -4955,6 +5313,34 @@ probe_engine_capabilities() {
     CLAUDE_HEALTHY="false"
     CODEX_SMOKE_PASS="false"
     CLAUDE_SMOKE_PASS="false"
+    PRIME_CAP_PRINT=0
+    PRIME_CAP_NOTE=""
+    PRIME_HEALTHY="false"
+
+    # Readiness proves the installed CLI contract. A paid model request belongs
+    # to the actual phase, not an extra startup canary repeated at every gate.
+    if ! is_true "$probe_prime"; then
+        PRIME_CAP_NOTE="not probed for requested engine scope '$probe_scope'"
+    elif command -v "$PRIME_CMD" >/dev/null 2>&1; then
+        local prime_help prime_flag
+        prime_help="$("$PRIME_CMD" --help 2>&1 || true)"
+        for prime_flag in --print --mode --cwd --offline --no-session --provider --model --thinking; do
+            if ! printf '%s\n' "$prime_help" | grep -F -- "$prime_flag" >/dev/null; then
+                PRIME_CAP_NOTE="missing required option $prime_flag"
+                break
+            fi
+        done
+        if [ -z "$PRIME_CAP_NOTE" ]; then
+            PRIME_CAP_PRINT=1
+            PRIME_HEALTHY=true
+        fi
+    else
+        PRIME_CAP_NOTE="command not found: $PRIME_CMD"
+    fi
+    if [ "$probe_scope" = auto ] && [ "$AUTO_ENGINE_PREFERENCE" = prime-agent ] && [ "$PRIME_HEALTHY" = true ]; then
+        probe_codex=false
+        probe_claude=false
+    fi
 
     # Probing Claude Code
     if ! is_true "$probe_claude"; then
@@ -4983,6 +5369,7 @@ probe_engine_capabilities() {
             if smoke_test_engine "$CLAUDE_CMD" "claude"; then
                 CLAUDE_SMOKE_PASS="true"
             else
+                is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && return 75
                 CLAUDE_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
                 CLAUDE_SMOKE_PASS="false"
             fi
@@ -5020,6 +5407,7 @@ probe_engine_capabilities() {
             if smoke_test_engine "$CODEX_CMD" "codex"; then
                 CODEX_SMOKE_PASS="true"
             else
+                is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && return 75
                 CODEX_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
                 CODEX_SMOKE_PASS="false"
             fi
@@ -5034,6 +5422,7 @@ probe_engine_capabilities() {
 }
 
 log_engine_health_summary() {
+    local prime_line
     local codex_line
     local claude_line
     if [ "$CODEX_HEALTHY" = "true" ]; then
@@ -5046,76 +5435,67 @@ log_engine_health_summary() {
     else
         claude_line="claude: unhealthy (${CLAUDE_CAP_NOTE:-unknown})"
     fi
-    info "Engine health: $codex_line | $claude_line"
+    if [ "$PRIME_HEALTHY" = true ]; then
+        prime_line="prime-agent: CLI ready (provider connectivity not probed)"
+    else
+        prime_line="prime-agent: unavailable (${PRIME_CAP_NOTE:-unknown})"
+    fi
+    info "Engine health: $prime_line | $codex_line | $claude_line"
 }
 
 resolve_active_engine() {
-    local requested_engine="$1"
+    local requested_engine name note
+    requested_engine="$(normalize_engine_name "$1")"
     LAST_ENGINE_SELECTION_BLOCK_REASON=""
-    local preferred_auto_engine="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
-    local fallback_auto_engine="claude"
-    preferred_auto_engine="$(to_lower "$preferred_auto_engine")"
-    case "$preferred_auto_engine" in
-        codex|claude) ;;
-        *) preferred_auto_engine="$DEFAULT_AUTO_ENGINE_PREFERENCE" ;;
-    esac
-    if [ "$preferred_auto_engine" = "claude" ]; then
-        fallback_auto_engine="codex"
+    if [ "$requested_engine" = auto ]; then
+        # A Prime-specific model/provider request cannot be satisfied by
+        # borrowing another engine with a different model namespace.
+        if is_true "${PRIME_OPTIONS_EXPLICIT:-false}"; then
+            requested_engine=prime-agent
+        else
+            while IFS= read -r name; do
+                if engine_is_healthy "$name"; then
+                    ACTIVE_ENGINE="$name"
+                    ACTIVE_CMD="$(engine_command_for_name "$name")"
+                    return 0
+                fi
+            done < <(engine_auto_order)
+            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO requested but no supported engine is ready."
+            return 1
+        fi
     fi
-
+    if engine_is_healthy "$requested_engine"; then
+        ACTIVE_ENGINE="$requested_engine"
+        ACTIVE_CMD="$(engine_command_for_name "$requested_engine")"
+        return 0
+    fi
     case "$requested_engine" in
-        auto)
-            # Auto: prefer configured engine, fall back to the other silently.
-            if [ "$preferred_auto_engine" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="codex"
-                ACTIVE_CMD="$CODEX_CMD"
-                return 0
-            fi
-            if [ "$preferred_auto_engine" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="claude"
-                ACTIVE_CMD="$CLAUDE_CMD"
-                return 0
-            fi
-            if [ "$fallback_auto_engine" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="codex"
-                ACTIVE_CMD="$CODEX_CMD"
-                return 0
-            fi
-            if [ "$fallback_auto_engine" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="claude"
-                ACTIVE_CMD="$CLAUDE_CMD"
-                return 0
-            fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="AUTO requested but neither codex nor claude is healthy."
-            return 1
-            ;;
-        codex)
-            # Explicit codex: use it or fail. No silent switch.
-            if [ "$CODEX_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="codex"
-                ACTIVE_CMD="$CODEX_CMD"
-                return 0
-            fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="RALPHIE_ENGINE=codex but codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
-            err "$LAST_ENGINE_SELECTION_BLOCK_REASON"
-            return 1
-            ;;
-        claude)
-            # Explicit claude: use it or fail. No silent switch.
-            if [ "$CLAUDE_HEALTHY" = "true" ]; then
-                ACTIVE_ENGINE="claude"
-                ACTIVE_CMD="$CLAUDE_CMD"
-                return 0
-            fi
-            LAST_ENGINE_SELECTION_BLOCK_REASON="RALPHIE_ENGINE=claude but claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
-            err "$LAST_ENGINE_SELECTION_BLOCK_REASON"
-            return 1
-            ;;
-        *)
-            LAST_ENGINE_SELECTION_BLOCK_REASON="Unsupported requested engine '$requested_engine' during resolution."
-            return 1
-            ;;
+        prime-agent) note="$PRIME_CAP_NOTE" ;;
+        codex) note="$CODEX_CAP_NOTE" ;;
+        claude) note="$CLAUDE_CAP_NOTE" ;;
+        *) note="unsupported engine" ;;
     esac
+    LAST_ENGINE_SELECTION_BLOCK_REASON="Selected engine '$requested_engine' is unavailable (${note:-unknown}); no engine substitution."
+    return 1
+}
+
+reviewer_command_candidates() {
+    local requested name
+    requested="$(normalize_engine_name "${ENGINE_SELECTION_REQUESTED:-auto}")"
+    if [ "$requested" = auto ] && is_true "${PRIME_OPTIONS_EXPLICIT:-false}"; then requested=prime-agent; fi
+    if [ "$requested" != auto ]; then
+        engine_is_healthy "$requested" || return 1
+        engine_command_for_name "$requested"
+        printf '\n'
+        return 0
+    fi
+    while IFS= read -r name; do
+        if engine_is_healthy "$name"; then
+            engine_command_for_name "$name"
+            printf '\n'
+        fi
+    done < <(engine_auto_order)
+    return 0
 }
 
 ensure_engines_ready() {
@@ -5126,7 +5506,7 @@ ensure_engines_ready() {
     local preferred_auto_engine="${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
     preferred_auto_engine="$(to_lower "$preferred_auto_engine")"
     case "$preferred_auto_engine" in
-        codex|claude) ;;
+        prime-agent|codex|claude) ;;
         *) preferred_auto_engine="$DEFAULT_AUTO_ENGINE_PREFERENCE" ;;
     esac
 
@@ -5137,29 +5517,16 @@ ensure_engines_ready() {
         base_delay=5
     fi
 
-    local warned_unavailable=false
     while [ "$attempt" -le "$max_attempts" ]; do
         if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
             info "Engine readiness check attempt $attempt/$max_attempts..."
         fi
 
-        probe_engine_capabilities "true" "$requested_engine"
+        probe_engine_capabilities "true" "$requested_engine" || return $?
         ENGINE_CAPABILITIES_PROBED=true
 
         if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
             log_engine_health_summary
-        fi
-
-        # Warn once about unavailable engines (not on every retry)
-        if [ "$warned_unavailable" = false ]; then
-            warned_unavailable=true
-            if [ "$CODEX_HEALTHY" != "true" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
-                warn "Both engines unavailable: codex (${CODEX_CAP_NOTE:-unknown}), claude (${CLAUDE_CAP_NOTE:-unknown})."
-            elif [ "$CODEX_HEALTHY" != "true" ]; then
-                warn "codex is unavailable (${CODEX_CAP_NOTE:-unknown})."
-            elif [ "$CLAUDE_HEALTHY" != "true" ]; then
-                warn "claude is unavailable (${CLAUDE_CAP_NOTE:-unknown})."
-            fi
         fi
 
         if resolve_active_engine "$requested_engine"; then
@@ -5170,7 +5537,7 @@ ensure_engines_ready() {
                 notify_event "phase_decision" "engine_outage_recovered" "engine readiness recovered on attempt $attempt/$max_attempts; active_engine=$ACTIVE_ENGINE" || true
             fi
             if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
-                info "Engine ready: $ACTIVE_ENGINE selected (codex=$CODEX_HEALTHY, claude=$CLAUDE_HEALTHY)"
+                info "Engine ready: $ACTIVE_ENGINE selected (prime-agent=$PRIME_HEALTHY, codex=$CODEX_HEALTHY, claude=$CLAUDE_HEALTHY)"
             fi
             return 0
         fi
@@ -5333,38 +5700,75 @@ unregister_managed_pid() {
     RALPHIE_BG_PIDS=("${kept[@]+"${kept[@]}"}")
 }
 
+process_tree_snapshot() {
+    local root="${1:-}"
+    is_number "$root" && [ "$root" -gt 1 ] && [ "$root" != "$$" ] || return 1
+    # One finite ps snapshot avoids a live recursive walk and works without
+    # pgrep. Children are emitted before their parents.
+    ps -A -o pid= -o ppid= | awk -v root="$root" '
+        { parent[$1]=$2 }
+        END {
+            selected[root]=1; order[++n]=root
+            do {
+                changed=0
+                for (pid in parent) {
+                    if (!selected[pid] && selected[parent[pid]]) {
+                        selected[pid]=1; order[++n]=pid; changed=1
+                    }
+                }
+            } while (changed)
+            for (i=n; i>0; i--) print order[i]
+        }
+    '
+}
+
+signal_process_snapshot() {
+    local signal="$1" snapshot="$2" pid
+    while IFS= read -r pid; do
+        is_number "$pid" && [ "$pid" -gt 1 ] && [ "$pid" != "$$" ] || continue
+        kill "-$signal" "$pid" 2>/dev/null || true
+    done <<< "$snapshot"
+}
+
 terminate_process_tree() {
-    local pid="${1:-}"
-    local signal="${2:-TERM}"
-    local child
-    [ -n "$pid" ] || return 0
-    [ "$pid" != "$$" ] || return 0
+    local snapshot
+    snapshot="$(process_tree_snapshot "${1:-}")" || return 1
+    signal_process_snapshot "${2:-TERM}" "$snapshot"
+}
 
-    if command -v pgrep >/dev/null 2>&1; then
-        while IFS= read -r child; do
-            [ -n "$child" ] || continue
-            terminate_process_tree "$child" "$signal"
-        done < <(pgrep -P "$pid" 2>/dev/null || true)
-    fi
+stop_process_tree() {
+    local snapshot
+    snapshot="$(process_tree_snapshot "$1")" || return 1
+    signal_process_snapshot TERM "$snapshot"
+    sleep 2
+    # Reuse the original descendants after TERM may have reparented them.
+    signal_process_snapshot KILL "$snapshot"
+    return 0
+}
 
-    kill "-$signal" "$pid" 2>/dev/null || true
+cleanup_engine_attempt_files() {
+    local dir="${1:-}"
+    [ -n "$dir" ] || return 0
+    rm -f "$dir"/capture.* "$dir/limit" "$dir/stderr" "$dir/stderr-input" "$dir/log"
+    rmdir "$dir" 2>/dev/null || true
 }
 
 cleanup_managed_processes() {
+    local pid snapshot current
+    snapshot=""
     if [ "${#RALPHIE_BG_PIDS[@]}" -gt 0 ]; then
         for pid in "${RALPHIE_BG_PIDS[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
-                terminate_process_tree "$pid" TERM
+                current="$(process_tree_snapshot "$pid")" || continue
+                snapshot="${snapshot}${current}"$'\n'
             fi
         done
+        signal_process_snapshot TERM "$snapshot"
         sleep 2
-        for pid in "${RALPHIE_BG_PIDS[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                terminate_process_tree "$pid" KILL
-            fi
-        done
+        signal_process_snapshot KILL "$snapshot"
         RALPHIE_BG_PIDS=()
     fi
+    cleanup_engine_attempt_files "${engine_scratch_dir:-}"
 }
 
 cleanup_resources() {
@@ -5372,11 +5776,21 @@ cleanup_resources() {
         return 0
     fi
     RALPHIE_CLEANUP_IN_PROGRESS="true"
+    cleanup_managed_processes
+    finish_swarm_session_budget 2>/dev/null || warn "Could not import interrupted reviewer inference usage."
+    if [ -n "${RUNTIME_GUARD_DIR:-}" ]; then
+        guard_operator_inputs 2>/dev/null || true
+        checkpoint_current_phase_worktree 2>/dev/null || warn "Could not checkpoint interrupted phase ownership."
+    fi
     if is_true "$RALPHIE_CLEANUP_STATE_ENABLED"; then
         save_state 2>/dev/null || true
     fi
-    cleanup_managed_processes
     release_lock
+    if [ -n "${RUNTIME_GUARD_DIR:-}" ] && [ -d "$RUNTIME_GUARD_DIR" ] && [ ! -L "$RUNTIME_GUARD_DIR" ]; then
+        find "$RUNTIME_GUARD_DIR" -maxdepth 1 -type f -delete 2>/dev/null || true
+        rmdir "$RUNTIME_GUARD_DIR" 2>/dev/null || true
+        RUNTIME_GUARD_DIR=""
+    fi
     RALPHIE_CLEANUP_IN_PROGRESS="false"
 }
 
@@ -5470,20 +5884,9 @@ get_timeout_command() {
 }
 
 warn_timeout_binary_unavailable_if_needed() {
-    if [ "$TIMEOUT_BINARY_WARNING_EMITTED" = "true" ]; then
-        return 0
-    fi
-    if ! is_number "${COMMAND_TIMEOUT_SECONDS:-0}" || [ "${COMMAND_TIMEOUT_SECONDS:-0}" -le 0 ]; then
-        return 0
-    fi
-    if [ -n "$(get_timeout_command)" ]; then
-        return 0
-    fi
-
-    TIMEOUT_BINARY_WARNING_EMITTED="true"
-    warn "COMMAND_TIMEOUT_SECONDS=${COMMAND_TIMEOUT_SECONDS} requested, but no timeout wrapper is installed."
-    warn "Install GNU timeout via coreutils (macOS: 'brew install coreutils', Linux: 'apt/yum install coreutils')."
-    warn "Ralphie will continue without hard command timeout limits."
+    # Compatibility entry point: the portable watchdog enforces the same
+    # deadline whether or not a timeout executable is installed.
+    return 0
 }
 
 file_size_bytes_safe() {
@@ -5519,41 +5922,78 @@ wait_for_process_with_idle_output_watchdog() {
     local last_progress
     local observed_bytes
     local previous_bytes
+    local started hard_timeout ceiling file bytes status first_poll
+    hard_timeout="${COMMAND_TIMEOUT_SECONDS:-0}"
+    is_number "$hard_timeout" || hard_timeout=0
+    ceiling="${ENGINE_OUTPUT_MAX_BYTES:-16777216}"
+    is_number "$ceiling" && [ "$ceiling" -gt 0 ] || ceiling=16777216
 
-    if ! is_number "$idle_timeout" || [ "$idle_timeout" -le 0 ]; then
-        wait "$pid"
-        return $?
-    fi
+    is_number "$idle_timeout" || idle_timeout=0
 
     previous_bytes="$(aggregate_output_bytes "${watch_files[@]+"${watch_files[@]}"}")"
     last_progress="$(date +%s 2>/dev/null || echo 0)"
     is_number "$last_progress" || last_progress=0
+    started="$last_progress"
+    first_poll=true
 
     while kill -0 "$pid" 2>/dev/null; do
-        sleep 1
+        if is_true "$first_poll"; then
+            first_poll=false
+            sleep 0.05
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.95
+        else
+            sleep 1
+        fi
+        if [ -n "${capture_limit_marker:-}" ] && [ -f "$capture_limit_marker" ]; then
+            warn "Output limit exceeded for ${label} (${ceiling} bytes)."
+            stop_process_tree "$pid"
+            wait "$pid" 2>/dev/null || true
+            return 125
+        fi
         observed_bytes="$(aggregate_output_bytes "${watch_files[@]+"${watch_files[@]}"}")"
         if is_number "$observed_bytes" && [ "$observed_bytes" -gt "$previous_bytes" ]; then
             previous_bytes="$observed_bytes"
             last_progress="$(date +%s 2>/dev/null || echo 0)"
             is_number "$last_progress" || last_progress=0
-            continue
         fi
 
         now="$(date +%s 2>/dev/null || echo 0)"
         is_number "$now" || now=0
-        if [ "$last_progress" -gt 0 ] && [ "$now" -gt 0 ] && [ $((now - last_progress)) -ge "$idle_timeout" ]; then
+        for file in "${watch_files[@]+"${watch_files[@]}"}"; do
+            bytes="$(file_size_bytes_safe "$file")"
+            if [ "$bytes" -gt "$ceiling" ]; then
+                warn "Output limit exceeded for ${label} (${ceiling} bytes)."
+                stop_process_tree "$pid"
+                wait "$pid" 2>/dev/null || true
+                return 125
+            fi
+        done
+        kill -0 "$pid" 2>/dev/null || break
+        if [ "$hard_timeout" -gt 0 ] && [ "$started" -gt 0 ] && [ $((now - started)) -ge "$hard_timeout" ]; then
+            warn "Command deadline reached for ${label} (${hard_timeout}s)."
+            log_reason_code "RB_COMMAND_TIMEOUT" "${label} reached its ${hard_timeout}s deadline"
+            stop_process_tree "$pid"
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        if [ "$idle_timeout" -gt 0 ] && [ "$last_progress" -gt 0 ] && [ "$now" -gt 0 ] && [ $((now - last_progress)) -ge "$idle_timeout" ]; then
             warn "Idle-output watchdog tripped for ${label}: no new output for ${idle_timeout}s. Recycling process."
             log_reason_code "RB_IDLE_OUTPUT_WATCHDOG" "idle output watchdog tripped for ${label} (${idle_timeout}s without new output)"
-            terminate_process_tree "$pid" TERM
-            sleep 2
-            terminate_process_tree "$pid" KILL
+            stop_process_tree "$pid"
             wait "$pid" 2>/dev/null || true
             return 124
         fi
     done
 
-    wait "$pid"
-    return $?
+    if wait "$pid"; then status=0; else status=$?; fi
+    if [ -n "${capture_limit_marker:-}" ] && [ -f "$capture_limit_marker" ]; then return 125; fi
+    # Fast file-answer producers may exit between polls.
+    for file in "${watch_files[@]+"${watch_files[@]}"}"; do
+        bytes="$(file_size_bytes_safe "$file")"
+        [ "$bytes" -le "$ceiling" ] || return 125
+    done
+    return "$status"
 }
 
 run_agent_with_prompt() {
@@ -5562,13 +6002,24 @@ run_agent_with_prompt() {
     local output_file="$3"
     local yolo_effective="$4"
     local attempt_no="${5:-1}"
-    local timeout_cmd=""
     local idle_output_timeout="${ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS:-0}"
     local exit_code=0
     local -a engine_args=()
-    local -a codex_prefix=()
-    local -a yolo_prefix=()
+    local -a engine_prefix=()
+    local stream_output_file="$output_file"
+    local stderr_file="" stderr_pipe="" stream_status stderr_status stderr_pid trimmed_log
+    local capture_limit_marker="" engine_scratch_dir=""
 
+    if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then
+        err "${ENGINE_BUDGET_FAILURE_REASON:-Session inference budget exhausted.}"
+        : > "$output_file"
+        return 75
+    fi
+    if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+        err "${ENGINE_PERMANENT_FAILURE_REASON:-Engine provider/model/authentication configuration failed.}"
+        : > "$output_file"
+        return 126
+    fi
     if [ ! -f "$prompt_file" ]; then
         err "Prompt file not found: $prompt_file"
         return 2
@@ -5585,25 +6036,34 @@ run_agent_with_prompt() {
         err "Selected engine 'claude' is currently marked unhealthy: ${CLAUDE_CAP_NOTE:-missing required capability state}"
         return 2
     fi
-
-    if [ "$COMMAND_TIMEOUT_SECONDS" -gt 0 ]; then
-        timeout_cmd="$(get_timeout_command)"
-        warn_timeout_binary_unavailable_if_needed
+    if [ "$ACTIVE_ENGINE" = "prime-agent" ] && [ "$PRIME_HEALTHY" != "true" ]; then
+        err "Selected engine 'prime-agent' is currently marked unavailable: ${PRIME_CAP_NOTE:-missing required capability state}"
+        return 2
     fi
     if ! is_number "$idle_output_timeout" || [ "$idle_output_timeout" -lt 0 ]; then
         idle_output_timeout="$DEFAULT_ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS"
     fi
 
-    probe_engine_capabilities
+    probe_engine_capabilities || return $?
 
-    if [ "$ACTIVE_ENGINE" = "codex" ]; then
+    if [ "$ACTIVE_ENGINE" = "prime-agent" ]; then
+        if ! is_true "$PRIME_CAP_PRINT"; then
+            err "Prime capability missing: non-interactive print mode is required."
+            return 2
+        fi
+        engine_args=("$ACTIVE_CMD" -p --mode text --cwd "$PROJECT_DIR" --offline --no-session)
+        [ -n "$PRIME_PROVIDER" ] && engine_args+=(--provider "$PRIME_PROVIDER")
+        [ -n "$PRIME_MODEL" ] && engine_args+=(--model "$PRIME_MODEL")
+        [ -n "$PRIME_THINKING_OVERRIDE" ] && engine_args+=(--thinking "$PRIME_THINKING_OVERRIDE")
+        idle_output_timeout=0
+    elif [ "$ACTIVE_ENGINE" = "codex" ]; then
         if ! is_true "$CODEX_CAP_OUTPUT_LAST_MESSAGE"; then
             err "Codex capability missing: --output-last-message is required."
             return 2
         fi
 
         if [ -n "$CODEX_ENDPOINT" ]; then
-            codex_prefix=("env" "OPENAI_BASE_URL=$CODEX_ENDPOINT")
+            engine_prefix=("env" "OPENAI_BASE_URL=$CODEX_ENDPOINT")
         fi
 
         engine_args=("$ACTIVE_CMD" "exec")
@@ -5622,7 +6082,9 @@ run_agent_with_prompt() {
         if is_true "$yolo_effective" && is_true "$CODEX_CAP_YOLO_FLAG"; then
             engine_args+=("--dangerously-bypass-approvals-and-sandbox")
         fi
-    else
+        engine_args+=(- --output-last-message "$output_file")
+        stream_output_file=""
+    elif [ "$ACTIVE_ENGINE" = "claude" ]; then
         if ! is_true "$CLAUDE_CAP_PRINT"; then
             err "Claude capability missing: print mode is required."
             return 2
@@ -5645,17 +6107,23 @@ run_agent_with_prompt() {
                 ;;
         esac
         if [ -n "$CLAUDE_ENDPOINT" ]; then
-            yolo_prefix=("env" "ANTHROPIC_BASE_URL=$CLAUDE_ENDPOINT")
+            engine_prefix=("env" "ANTHROPIC_BASE_URL=$CLAUDE_ENDPOINT")
         fi
 
         if is_true "$yolo_effective"; then
             [ -n "$CLAUDE_CAP_YOLO_FLAG" ] && engine_args+=("$CLAUDE_CAP_YOLO_FLAG")
-            if [ "${#yolo_prefix[@]}" -eq 0 ]; then
-                yolo_prefix=("env" "IS_SANDBOX=1")
+            if [ "${#engine_prefix[@]}" -eq 0 ]; then
+                engine_prefix=("env" "IS_SANDBOX=1")
             else
-                yolo_prefix+=("IS_SANDBOX=1")
+                engine_prefix+=("IS_SANDBOX=1")
             fi
         fi
+        engine_args+=(-)
+        # Print mode can legitimately remain silent until the final answer.
+        idle_output_timeout=0
+    else
+        err "Unsupported active engine '$ACTIVE_ENGINE'."
+        return 2
     fi
 
     local attempt=1
@@ -5670,86 +6138,101 @@ run_agent_with_prompt() {
 
     while [ "$attempt" -le "$max_run_attempts" ]; do
         info "Dispatching ${ACTIVE_ENGINE} for attempt ${attempt}/${max_run_attempts} (phase attempt ${attempt_no}) with prompt $(path_for_display "$prompt_file")."
-        if [ "$ACTIVE_ENGINE" = "codex" ]; then
-            if [ -n "$timeout_cmd" ]; then
-                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file"
-                    ) &
-                else
-                    (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "" false
-                    ) &
-                fi
-            else
-                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file"
-                    ) &
-                else
-                    (
-                        "${codex_prefix[@]+"${codex_prefix[@]}"}" "${engine_args[@]}" - --output-last-message "$output_file" 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "" false
-                    ) &
-                fi
+        : > "$log_file"
+        : > "$output_file"
+        engine_scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralphie_engine.XXXXXX")" || return 1
+        capture_limit_marker="$engine_scratch_dir/limit"
+        if [ "$ACTIVE_ENGINE" = prime-agent ]; then
+            stderr_file="$engine_scratch_dir/stderr"
+            stderr_pipe="$engine_scratch_dir/stderr-input"
+            : > "$stderr_file"
+            if ! mkfifo "$stderr_pipe"; then
+                cleanup_engine_attempt_files "$engine_scratch_dir"
+                return 1
             fi
+        fi
+        if ! admit_session_attempt "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}"; then
+            cleanup_engine_attempt_files "$engine_scratch_dir"
+            return 75
+        fi
+        if [ "$ACTIVE_ENGINE" = prime-agent ]; then
+            (
+                trap "$(printf 'cleanup_engine_attempt_files %q; exit 143' "$engine_scratch_dir")" HUP INT TERM
+                trap "$(printf 'rm -f -- %q/capture.*' "$engine_scratch_dir")" EXIT
+                cd "$PROJECT_DIR" || exit 2
+                # Diagnostics never enter Prime's completion/reviewer answer.
+                # Wait for their bounded drain as well as the stdout pipeline.
+                stream_engine_output "$stderr_file" "" false < "$stderr_pipe" &
+                stderr_pid=$!
+                if "${engine_args[@]}" 2> "$stderr_pipe" < "$prompt_file" \
+                    | stream_engine_output "$log_file" "$output_file" "$ENGINE_OUTPUT_TO_STDOUT"; then
+                    stream_status=0
+                else
+                    stream_status=$?
+                fi
+                if wait "$stderr_pid"; then stderr_status=0; else stderr_status=$?; fi
+                [ "$stream_status" -ne 0 ] || stream_status="$stderr_status"
+                exit "$stream_status"
+            ) &
         else
-            if [ -n "$timeout_cmd" ]; then
-                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    (
-                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "$output_file"
-                    ) &
-                else
-                    (
-                        "$timeout_cmd" "$COMMAND_TIMEOUT_SECONDS" "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "$output_file" false
-                    ) &
-                fi
-            else
-                if is_true "$ENGINE_OUTPUT_TO_STDOUT"; then
-                    (
-                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "$output_file"
-                    ) &
-                else
-                    (
-                        "${yolo_prefix[@]+"${yolo_prefix[@]}"}" "${engine_args[@]}" - 2>&1 < "$prompt_file" | stream_engine_output "$log_file" "$output_file" false
-                    ) &
-                fi
-            fi
+            (
+                trap "$(printf 'cleanup_engine_attempt_files %q; exit 143' "$engine_scratch_dir")" HUP INT TERM
+                trap "$(printf 'rm -f -- %q/capture.*' "$engine_scratch_dir")" EXIT
+                cd "$PROJECT_DIR" || exit 2
+                "${engine_prefix[@]+"${engine_prefix[@]}"}" "${engine_args[@]}" 2>&1 < "$prompt_file" \
+                    | stream_engine_output "$log_file" "$stream_output_file" "$ENGINE_OUTPUT_TO_STDOUT"
+            ) &
         fi
         local agent_pid=$!
         register_managed_pid "$agent_pid"
-        if wait_for_process_with_idle_output_watchdog "$agent_pid" "$idle_output_timeout" "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}" "$log_file" "$output_file"; then
+        if wait_for_process_with_idle_output_watchdog "$agent_pid" "$idle_output_timeout" "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}" "$log_file" "$output_file" "$stderr_file"; then
             exit_code=0
         else
             exit_code=$?
         fi
         unregister_managed_pid "$agent_pid"
-        if [ "$exit_code" -eq 0 ]; then
-            charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")"
-            if ! enforce_session_budget "agent attempt"; then
-                return 1
+        if [ -n "$stderr_file" ] && [ -f "$stderr_file" ]; then
+            cat "$stderr_file" >> "$log_file"
+            stderr_file=""
+            stderr_pipe=""
+            if [ "$(file_size_bytes_safe "$log_file")" -gt "$ENGINE_OUTPUT_MAX_BYTES" ]; then
+                exit_code=125
+                trimmed_log="$engine_scratch_dir/log"
+                head -c "$ENGINE_OUTPUT_MAX_BYTES" "$log_file" > "$trimmed_log"
+                cat "$trimmed_log" > "$log_file"
             fi
+        fi
+        cleanup_engine_attempt_files "$engine_scratch_dir"
+        engine_scratch_dir=""
+        capture_limit_marker=""
+        if ! guard_operator_inputs; then
+            charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")" || return 75
+            return 1
+        fi
+        charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")" || return 75
+        if [ "$exit_code" -eq 0 ]; then
             break
         fi
-        charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")"
-        if ! enforce_session_budget "agent attempt"; then
-            return 1
+        if [ "$exit_code" -eq 125 ]; then
+            : > "$output_file"
+            warn "Engine output limit exceeded; not retrying this attempt."
+            break
         fi
 
         local hiccup_detected=false
         local permanent_failure=false
-        if grep -qiE "backend error|token error|timeout|connection refused|overloaded|rate.?limit|503|502|429|ECONNRESET|ETIMEDOUT" "$log_file" 2>/dev/null; then
+        # Known configuration/authentication failures cannot be repaired by a
+        # paid retry, including when their diagnostic also says "token error".
+        if [ "$exit_code" -ne 0 ] && grep -qiE "invalid.*api.?key|no api.?key|missing api.?key|authentication.*failed|not authenticated|permission.*denied|unknown provider|model.*not.*found|no models available|no model selected|insufficient.*quota" "$log_file" 2>/dev/null; then
+            permanent_failure=true
+        elif grep -qiE "backend error|token error|timeout|connection refused|overloaded|rate.?limit|503|502|429|ECONNRESET|ETIMEDOUT" "$log_file" 2>/dev/null; then
             hiccup_detected=true
         elif [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ] || [ "$exit_code" -eq 143 ]; then
             # 124=timeout, 137=SIGKILL, 143=SIGTERM
             hiccup_detected=true
         elif [ "$exit_code" -ne 0 ]; then
-            # Check for permanent failures that should NOT be retried
-            if grep -qiE "invalid.*api.?key|authentication.*failed|permission.*denied|model.*not.*found|insufficient.*quota" "$log_file" 2>/dev/null; then
-                permanent_failure=true
-            else
-                # Default: treat unknown non-zero exits as transient (agent crash, OOM, etc.)
-                hiccup_detected=true
-            fi
+            # Unknown non-zero exits may be transient (agent crash, OOM, etc.).
+            hiccup_detected=true
         fi
 
         # If the engine command itself disappeared, mark unhealthy so the next
@@ -5757,7 +6240,10 @@ run_agent_with_prompt() {
         if ! is_true "$permanent_failure" && is_true "$hiccup_detected"; then
             if ! command -v "$ACTIVE_CMD" >/dev/null 2>&1; then
                 warn "Engine command '$ACTIVE_CMD' no longer available; marking $ACTIVE_ENGINE unhealthy."
-                if [ "$ACTIVE_ENGINE" = "codex" ]; then
+                if [ "$ACTIVE_ENGINE" = "prime-agent" ]; then
+                    PRIME_HEALTHY="false"
+                    PRIME_CAP_NOTE="command disappeared mid-session"
+                elif [ "$ACTIVE_ENGINE" = "codex" ]; then
                     CODEX_HEALTHY="false"
                     CODEX_CAP_NOTE="command disappeared mid-session"
                     CODEX_SMOKE_PASS="false"
@@ -5771,10 +6257,17 @@ run_agent_with_prompt() {
         fi
 
         if is_true "$permanent_failure"; then
-            warn "Permanent failure detected on attempt $attempt/$max_run_attempts. Not retrying."
+            ENGINE_PERMANENT_FAILURE=true
+            ENGINE_PERMANENT_FAILURE_REASON="$ACTIVE_ENGINE provider/model/authentication configuration failed; see $(path_for_display "$log_file")."
+            exit_code=126
+            : > "$output_file"
+            warn "$ENGINE_PERMANENT_FAILURE_REASON Not retrying or changing engines."
             break
         fi
 
+        if ! enforce_session_budget "${ACTIVE_ENGINE} failed attempt"; then
+            return 75
+        fi
         if is_true "$hiccup_detected" && [ "$attempt" -lt "$max_run_attempts" ]; then
             # Exponential backoff with jitter: base_delay * 2^(attempt-1) + random(0..base_delay)
             local backoff_delay jitter
@@ -5794,7 +6287,7 @@ run_agent_with_prompt() {
     done
 
     if [ "$exit_code" -ne 0 ]; then
-        log_reason_code "RB_RUN_AGENT_RETRY_EXHAUSTED" "run_agent exceeded ${max_run_attempts} attempts for $(path_for_display "$prompt_file") with last_exit=$exit_code"
+        log_reason_code "RB_RUN_AGENT_RETRY_EXHAUSTED" "run_agent failed after ${attempt} attempts (limit ${max_run_attempts}) for $(path_for_display "$prompt_file") with last_exit=$exit_code"
     fi
 
     return "$exit_code"
@@ -5829,6 +6322,12 @@ run_swarm_reviewer() {
     local status_file="$5"
     local primary_cmd="$6"
     local fallback_cmd="$7"
+    local COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-0}"
+    local reviewer_timeout="${SWARM_CONSENSUS_TIMEOUT:-600}"
+    is_number "$reviewer_timeout" && [ "$reviewer_timeout" -gt 0 ] || reviewer_timeout=600
+    if [ "$COMMAND_TIMEOUT_SECONDS" -le 0 ] || [ "$COMMAND_TIMEOUT_SECONDS" -gt "$reviewer_timeout" ]; then
+        COMMAND_TIMEOUT_SECONDS="$reviewer_timeout"
+    fi
 
     local -a candidate_cmds=("$primary_cmd")
     [ -n "$fallback_cmd" ] && [ "$fallback_cmd" != "$primary_cmd" ] && candidate_cmds+=("$fallback_cmd")
@@ -5848,22 +6347,17 @@ run_swarm_reviewer() {
 
     for attempt_cmd in "${candidate_cmds[@]}"; do
         [ -n "$attempt_cmd" ] || continue
-        if [ "$attempt_cmd" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
-            continue
-        fi
-        if [ "$attempt_cmd" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
-            continue
-        fi
-        command -v "$attempt_cmd" >/dev/null 2>&1 || continue
-
-        if [ "$attempt_cmd" = "$CODEX_CMD" ]; then
-            ACTIVE_ENGINE="codex"
-        elif [ "$attempt_cmd" = "$CLAUDE_CMD" ]; then
-            ACTIVE_ENGINE="claude"
-        else
+        if ! ACTIVE_ENGINE="$(engine_name_for_command "$attempt_cmd")"; then
             # Guard against custom command aliases unexpectedly routing to the
             # wrong engine mode.
             warn "Reviewer command '$attempt_cmd' did not match configured engines; skipping."
+            continue
+        fi
+        engine_is_healthy "$ACTIVE_ENGINE" || continue
+        if [ "${ENGINE_SELECTION_REQUESTED:-auto}" != auto ] && [ "$ACTIVE_ENGINE" != "$ENGINE_SELECTION_REQUESTED" ]; then
+            continue
+        fi
+        if [ "${ENGINE_SELECTION_REQUESTED:-auto}" = auto ] && is_true "${PRIME_OPTIONS_EXPLICIT:-false}" && [ "$ACTIVE_ENGINE" != prime-agent ]; then
             continue
         fi
         ACTIVE_CMD="$attempt_cmd"
@@ -5882,7 +6376,16 @@ run_swarm_reviewer() {
             write_invalid_reviewer_output_placeholder "$output_file" "$invalid_reason" "$raw_invalid_output"
             warn "Reviewer $reviewer_index output from ${ACTIVE_ENGINE:-unknown} was rejected: $invalid_reason"
             attempt_exit=1
+            if ! enforce_session_budget "rejected reviewer output"; then
+                attempt_exit=75
+                break
+            fi
             continue
+        else
+            attempt_exit=$?
+            # A provider/model requirement is not authority to try another
+            # engine, even for an otherwise automatic reviewer schedule.
+            case "$attempt_exit" in 75|126) break;; esac
         fi
     done
 
@@ -5895,7 +6398,9 @@ run_swarm_reviewer() {
             echo "exit_code=0"
         else
             echo "status=failure"
-            echo "exit_code=1"
+            echo "exit_code=$attempt_exit"
+            [ "$attempt_exit" -ne 126 ] || echo "failure_kind=permanent"
+            [ "$attempt_exit" -ne 75 ] || echo "failure_kind=budget"
             if [ -n "$invalid_reason" ]; then
                 echo "failure_reason=$(sanitize_text_for_log "$invalid_reason")"
             fi
@@ -6009,51 +6514,29 @@ run_swarm_consensus() {
 
     local -a prompts=() logs=() outputs=() status_files=()
     local -a primary_cmds=() fallback_cmds=() summary_lines=()
-    local claude_available=false
-    local codex_available=false
     local reviewer_engine_request="${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
     local reviewer_engine_policy="mixed:auto"
-    local pinned_reviewer_cmd=""
-    if [ "$CODEX_HEALTHY" = "true" ] && command -v "$CODEX_CMD" >/dev/null 2>&1; then
-        codex_available=true
-    fi
-    if [ "$CLAUDE_HEALTHY" = "true" ] && command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
-        claude_available=true
-    fi
-    reviewer_engine_request="$(to_lower "$reviewer_engine_request")"
-    if [ "$reviewer_engine_request" = "codex" ] || [ "$reviewer_engine_request" = "claude" ]; then
+    local available_cmd
+    local -a available_cmds=()
+    if [ "$reviewer_engine_request" != auto ]; then
         reviewer_engine_policy="pinned:${reviewer_engine_request}"
-        if [ "$reviewer_engine_request" = "codex" ] && [ "$codex_available" = "true" ]; then
-            pinned_reviewer_cmd="$CODEX_CMD"
-        elif [ "$reviewer_engine_request" = "claude" ] && [ "$claude_available" = "true" ]; then
-            pinned_reviewer_cmd="$CLAUDE_CMD"
-        else
-            warn "Consensus reviewers are pinned to '$reviewer_engine_request', but that engine is unavailable."
-            LAST_CONSENSUS_SCORE=0
-            LAST_CONSENSUS_PASS=false
-            LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
-            LAST_CONSENSUS_NEXT_PHASE_REASON="pinned reviewer engine unavailable"
-            LAST_CONSENSUS_RESPONDED_VOTES=0
-            LAST_CONSENSUS_NEXT_PHASE_VOTES=0
-            LAST_CONSENSUS_FAILURE_KIND="infra"
-            LAST_CONSENSUS_FAILURE_REASON="pinned reviewer engine '$reviewer_engine_request' unavailable"
-            CONSENSUS_NO_ENGINES=true
-            ACTIVE_ENGINE="$saved_engine"
-            ACTIVE_CMD="$saved_cmd"
-            return 1
-        fi
+    elif is_true "${PRIME_OPTIONS_EXPLICIT:-false}"; then
+        reviewer_engine_policy="pinned:prime-agent"
     fi
+    while IFS= read -r available_cmd; do
+        [ -n "$available_cmd" ] && available_cmds+=("$available_cmd")
+    done < <(reviewer_command_candidates)
     info "Consensus reviewer policy: $reviewer_engine_policy"
-    if [ "$claude_available" = false ] && [ "$codex_available" = false ]; then
-        warn "No healthy reviewer engines available for consensus."
+    if [ "${#available_cmds[@]}" -eq 0 ]; then
+        warn "No ready reviewer engine satisfies '$reviewer_engine_policy'."
         LAST_CONSENSUS_SCORE=0
         LAST_CONSENSUS_PASS=false
         LAST_CONSENSUS_NEXT_PHASE="$default_next_phase"
-        LAST_CONSENSUS_NEXT_PHASE_REASON="no healthy reviewer engines available"
+        LAST_CONSENSUS_NEXT_PHASE_REASON="no ready reviewer engine for requested policy"
         LAST_CONSENSUS_RESPONDED_VOTES=0
         LAST_CONSENSUS_NEXT_PHASE_VOTES=0
         LAST_CONSENSUS_FAILURE_KIND="infra"
-        LAST_CONSENSUS_FAILURE_REASON="no healthy reviewer engines available"
+        LAST_CONSENSUS_FAILURE_REASON="no ready reviewer engine for '$reviewer_engine_policy'"
         CONSENSUS_NO_ENGINES=true
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
@@ -6062,26 +6545,13 @@ run_swarm_consensus() {
 
     local i
     for i in $(seq 1 "$count"); do
-        local primary_cmd="$CLAUDE_CMD"
-        local fallback_cmd=""
-
-        if [ -n "$pinned_reviewer_cmd" ]; then
-            # Explicit engine pinning means reviewer personas must stay on the selected engine.
-            primary_cmd="$pinned_reviewer_cmd"
-            fallback_cmd=""
-        else
-            if [ "$claude_available" = false ] && [ "$codex_available" = true ]; then
-                primary_cmd="$CODEX_CMD"
-            elif [ "$claude_available" = true ] && [ "$codex_available" = true ] && [ $(( (i - 1) % 2 )) -eq 0 ]; then
-                primary_cmd="$CODEX_CMD"
-            fi
-
-            if [ "$primary_cmd" = "$CODEX_CMD" ] && [ "$claude_available" = true ]; then
-                fallback_cmd="$CLAUDE_CMD"
-            fi
-            if [ "$primary_cmd" = "$CLAUDE_CMD" ] && [ "$codex_available" = true ]; then
-                fallback_cmd="$CODEX_CMD"
-            fi
+        local primary_cmd fallback_cmd candidate_index
+        candidate_index=$(( (i - 1) % ${#available_cmds[@]} ))
+        primary_cmd="${available_cmds[$candidate_index]}"
+        fallback_cmd=""
+        if [ "${#available_cmds[@]}" -gt 1 ]; then
+            candidate_index=$(( (candidate_index + 1) % ${#available_cmds[@]} ))
+            fallback_cmd="${available_cmds[$candidate_index]}"
         fi
 
         prompts+=("$consensus_dir/reviewer_${i}_prompt.md")
@@ -6098,8 +6568,11 @@ run_swarm_consensus() {
     done
 
     local active=0
-    for i in $(seq 0 $((count - 1))); do
-        (
+    if finite_session_budget; then
+        # Admission must see the preceding review's usage before another paid
+        # request starts. A parallel ceiling does not require concurrency.
+        for i in $(seq 0 $((count - 1))); do
+            local reviewer_exit=0
             run_swarm_reviewer \
                 "$((i + 1))" \
                 "${prompts[$i]}" \
@@ -6107,28 +6580,51 @@ run_swarm_consensus() {
                 "${outputs[$i]}" \
                 "${status_files[$i]}" \
                 "${primary_cmds[$i]}" \
-                "${fallback_cmds[$i]}"
-        ) &
-        register_managed_pid "$!"
-        active=$((active + 1))
-        if [ "$active" -ge "$parallel" ] || [ "$i" -eq $((count - 1)) ]; then
-            # wait -n requires Bash 4.3+; use portable fallback
-            if [ "${BASH_VERSINFO[0]:-3}" -gt 4 ] || { [ "${BASH_VERSINFO[0]:-3}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
-                wait -n 2>/dev/null || true
-            else
-                # Portable: poll only swarm PIDs until at least one finishes
-                while true; do
-                    local __alive=0
-                    for __pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
-                        kill -0 "$__pid" 2>/dev/null && __alive=$((__alive + 1))
+                "${fallback_cmds[$i]}" || reviewer_exit=$?
+            case "$reviewer_exit" in 75|126) break;; esac
+        done
+    else
+        runtime_guard_prepare || return 1
+        SWARM_BUDGET_RECEIPT_DIR="$(mktemp -d "$RUNTIME_GUARD_DIR/swarm-budget.XXXXXX")" || return 1
+        SWARM_BUDGET_BASE_ATTEMPTS="$SESSION_ATTEMPT_COUNT"
+        SWARM_BUDGET_BASE_TOKENS="$SESSION_TOKEN_COUNT"
+        SWARM_BUDGET_BASE_COST="$SESSION_COST_CENTS"
+        for i in $(seq 0 $((count - 1))); do
+            (
+                SESSION_ATTEMPT_COUNT=0
+                SESSION_TOKEN_COUNT=0
+                SESSION_COST_CENTS=0
+                SESSION_BUDGET_RECEIPT_FILE="$SWARM_BUDGET_RECEIPT_DIR/reviewer_${i}.usage"
+                run_swarm_reviewer \
+                    "$((i + 1))" \
+                    "${prompts[$i]}" \
+                    "${logs[$i]}" \
+                    "${outputs[$i]}" \
+                    "${status_files[$i]}" \
+                    "${primary_cmds[$i]}" \
+                    "${fallback_cmds[$i]}"
+            ) &
+            register_managed_pid "$!"
+            active=$((active + 1))
+            if [ "$active" -ge "$parallel" ] || [ "$i" -eq $((count - 1)) ]; then
+                # wait -n requires Bash 4.3+; use portable fallback
+                if [ "${BASH_VERSINFO[0]:-3}" -gt 4 ] || { [ "${BASH_VERSINFO[0]:-3}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
+                    wait -n 2>/dev/null || true
+                else
+                    # Portable: poll only swarm PIDs until at least one finishes
+                    while true; do
+                        local __alive=0
+                        for __pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
+                            kill -0 "$__pid" 2>/dev/null && __alive=$((__alive + 1))
+                        done
+                        [ "$__alive" -lt "$active" ] && break
+                        sleep 0.2 2>/dev/null || sleep 1
                     done
-                    [ "$__alive" -lt "$active" ] && break
-                    sleep 0.2 2>/dev/null || sleep 1
-                done
+                fi
+                active=$((active - 1))
             fi
-            active=$((active - 1))
-        fi
-    done
+        done
+    fi
     # Wait for all reviewers with a safety timeout to prevent infinite hangs
     local swarm_timeout="${SWARM_CONSENSUS_TIMEOUT:-$DEFAULT_SWARM_CONSENSUS_TIMEOUT}"
     is_number "$swarm_timeout" || swarm_timeout=600
@@ -6150,13 +6646,7 @@ run_swarm_consensus() {
             if [ "$swarm_elapsed" -ge "$swarm_timeout" ]; then
                 warn "Swarm consensus timeout after ${swarm_timeout}s. Killing hung reviewers."
                 swarm_timed_out=true
-                for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
-                    terminate_process_tree "$pid" TERM
-                done
-                sleep 2
-                for pid in "${RALPHIE_BG_PIDS[@]+"${RALPHIE_BG_PIDS[@]}"}"; do
-                    terminate_process_tree "$pid" KILL
-                done
+                cleanup_managed_processes
                 break
             fi
         sleep 1
@@ -6164,6 +6654,14 @@ run_swarm_consensus() {
     wait 2>/dev/null || true
     # Clean PID registry to prevent stale accumulation
     RALPHIE_BG_PIDS=()
+    finish_swarm_session_budget || return 75
+    if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then
+        LAST_CONSENSUS_FAILURE_KIND=budget
+        LAST_CONSENSUS_FAILURE_REASON="$ENGINE_BUDGET_FAILURE_REASON"
+        ACTIVE_ENGINE="$saved_engine"
+        ACTIVE_CMD="$saved_cmd"
+        return 75
+    fi
     if [ "$swarm_timed_out" = true ]; then
         log_reason_code "RB_SWARM_TIMEOUT" "consensus reviewers exceeded timeout (${swarm_timeout}s) for stage $stage"
         LAST_CONSENSUS_FAILURE_KIND="infra"
@@ -6195,10 +6693,28 @@ run_swarm_consensus() {
 
         status_file="${status_files[$idx]}"
         if [ -f "$status_file" ]; then
+            if grep -qx 'exit_code=75' "$status_file"; then
+                ENGINE_BUDGET_EXHAUSTED=true
+                ENGINE_BUDGET_FAILURE_REASON="Reviewer inference budget could not admit another call."
+                LAST_CONSENSUS_FAILURE_KIND=budget
+                LAST_CONSENSUS_FAILURE_REASON="$ENGINE_BUDGET_FAILURE_REASON"
+                ACTIVE_ENGINE="$saved_engine"
+                ACTIVE_CMD="$saved_cmd"
+                return 75
+            fi
+            if grep -qx 'exit_code=126' "$status_file"; then
+                ENGINE_PERMANENT_FAILURE=true
+                ENGINE_PERMANENT_FAILURE_REASON="Reviewer provider/model/authentication configuration failed; see $(path_for_display "$status_file")."
+                LAST_CONSENSUS_FAILURE_KIND=permanent
+                LAST_CONSENSUS_FAILURE_REASON="$ENGINE_PERMANENT_FAILURE_REASON"
+                ACTIVE_ENGINE="$saved_engine"
+                ACTIVE_CMD="$saved_cmd"
+                return 126
+            fi
             status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
             engine="$(grep -E "^engine=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
             engine="$(sanitize_text_for_log "$engine" | cut -c 1-40)"
-            failure_reason="$(grep -E "^failure_reason=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+            failure_reason="$(grep -E "^failure_reason=" "$status_file" | head -n 1 | cut -d'=' -f2- || true)"
             failure_reason="$(sanitize_text_for_log "$failure_reason" | cut -c 1-180)"
             [ "$status" = "success" ] || status="failure"
         fi
@@ -6562,38 +7078,163 @@ phase_manifest_file_signature() {
     printf 'type=%s,size=%s,mtime=%s' "$type" "$size" "$mtime"
 }
 
-phase_capture_worktree_manifest() {
-    local manifest_file="$1"
-    local mode
-    local line
-    local status_code
-    local rel_path
-    local target_path
-    local signature
+path_to_hex() {
+    LC_ALL=C printf '%s' "$1" | od -An -tx1 | tr -d ' \n'
+}
 
-    [ -n "$manifest_file" ] || return 1
-    : > "$manifest_file"
+hex_path_to_nul() {
+    local hex="$1" decoded='' byte pair
+    case "$hex" in *[!0-9a-f]*) return 1;; esac
+    [ $(( ${#hex} % 2 )) -eq 0 ] || return 1
+    while [ -n "$hex" ]; do
+        pair="${hex:0:2}"
+        hex="${hex:2}"
+        [ "$pair" != 00 ] || return 1
+        printf -v byte '%b' "\\x$pair"
+        decoded="$decoded$byte"
+    done
+    printf '%s\0' "$decoded"
+}
 
-    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+nul_file_contains() {
+    local file="$1" wanted="$2" path
+    [ -f "$file" ] || return 1
+    while IFS= read -r -d '' path; do
+        [ "$path" != "$wanted" ] || return 0
+    done < "$file"
+    return 1
+}
+
+phase_manifest_changed_paths_nul() {
+    local before_file="$1" after_file="$2" line
+    [ -f "$before_file" ] && [ -f "$after_file" ] || return 1
+    while IFS= read -r line; do
+        line="${line#$'\t'}"
+        case "$line" in
+            P\ *$'\t'h:*) hex_path_to_nul "${line#*$'\t'h:}" || return 1 ;;
+            P\ *$'\t'*) printf '%s\0' "${line#*$'\t'}" ;;
+        esac
+    done < <(LC_ALL=C comm -3 "$before_file" "$after_file")
+}
+
+owned_path_signature() {
+    local path="$PROJECT_DIR/$1"
+    if [ -L "$path" ]; then
+        printf 'symlink:'
+        readlink "$path" | sha256_stream_sum
+    elif [ -f "$path" ]; then
+        printf 'file:'
+        sha256_file_sum "$path"
+    elif [ ! -e "$path" ]; then
+        printf missing
+    else
         return 1
     fi
+}
 
+owned_path_matches() {
+    local wanted="$1" path signature current
+    [ -f "$OWNED_PATHS_FILE" ] || return 1
+    current="$(owned_path_signature "$wanted")" || return 1
+    while IFS= read -r -d '' path && IFS= read -r -d '' signature; do
+        if [ "$path" = "$wanted" ] && [ "$signature" = "$current" ]; then
+            return 0
+        fi
+    done < "$OWNED_PATHS_FILE"
+    return 1
+}
+
+capture_operator_baseline() {
+    local raw="$RUNTIME_GUARD_DIR/operator-initial.nul" path actual
+    local PHASE_MANIFEST_MODE=deep
+    AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE="$RUNTIME_GUARD_DIR/operator-dirty.nul"
+    : > "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" || return 1
+    ensure_runtime_file "$OWNED_PATHS_FILE" || return 1
+    if is_true "${RESUME_REQUESTED:-true}" && [ -n "${OWNED_PATHS_SHA:-}" ]; then
+        [ -f "$OWNED_PATHS_FILE" ] || { err 'Saved phase ownership is missing; restore it before resuming.'; return 1; }
+        actual="$(sha256_file_sum "$OWNED_PATHS_FILE")" || return 1
+        [ "$actual" = "$OWNED_PATHS_SHA" ] || { err 'Saved phase ownership changed; review it before resuming.'; return 1; }
+    fi
+    collect_git_dirty_paths > "$raw" || return 1
+    while IFS= read -r -d '' path; do
+        case "$path" in .ralphie|.ralphie/*) continue;; esac
+        if is_true "${RESUME_REQUESTED:-true}" && [ -n "${OWNED_PATHS_SHA:-}" ] && owned_path_matches "$path"; then
+            continue
+        fi
+        nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$path" || printf '%s\0' "$path" >> "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE"
+    done < "$raw"
+    phase_capture_worktree_manifest "$RUNTIME_GUARD_DIR/original-project.manifest" || return 1
+    return 0
+}
+
+record_phase_owned_paths() {
+    local before="$1" after="$2" path old signature record
+    local replacement="$RUNTIME_GUARD_DIR/owned-next.nul"
+    local paths="$RUNTIME_GUARD_DIR/owned-current-paths.nul"
+    ensure_runtime_file "$OWNED_PATHS_FILE" || return 1
+    [ -f "$OWNED_PATHS_FILE" ] || : > "$OWNED_PATHS_FILE"
+    phase_manifest_changed_paths_nul "$before" "$after" > "$paths" || return 1
+    # Exact current bytes, rather than light manifest timestamps, determine
+    # which generated/phase files can be saved and resumed as our own work.
+    collect_git_dirty_paths >> "$paths" || return 1
+    while IFS= read -r -d '' path; do
+        case "$path" in .ralphie|.ralphie/*|.git|.git/*) continue;; esac
+        if [ -n "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ] && nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$path"; then
+            continue
+        fi
+        signature="$(owned_path_signature "$path")" || return 1
+        : > "$replacement" || return 1
+        while IFS= read -r -d '' old && IFS= read -r -d '' record; do
+            [ "$old" = "$path" ] || printf '%s\0%s\0' "$old" "$record" >> "$replacement"
+        done < "$OWNED_PATHS_FILE"
+        printf '%s\0%s\0' "$path" "$signature" >> "$replacement" || return 1
+        cp "$replacement" "$OWNED_PATHS_FILE" || return 1
+    done < "$paths"
+    OWNED_PATHS_SHA="$(sha256_file_sum "$OWNED_PATHS_FILE")" || return 1
+    cp "$OWNED_PATHS_FILE" "$RUNTIME_GUARD_DIR/owned-paths.nul" || return 1
+    rm -f "$RUNTIME_GUARD_DIR/owned-paths.nul.absent"
+    return 0
+}
+
+capture_scaffold_ownership() {
+    local path signature
+    local empty="$RUNTIME_GUARD_DIR/scaffold-before.manifest" current="$RUNTIME_GUARD_DIR/scaffold-after.manifest"
+    : > "$empty" || return 1
+    phase_capture_worktree_manifest "$current" || return 1
+    # The untouched operator baseline was captured before these files existed.
+    # Record only generated files, excluding every originally dirty path.
+    record_phase_owned_paths "$empty" "$current"
+}
+
+checkpoint_current_phase_worktree() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] && [ -f "${ACTIVE_PHASE_MANIFEST_BEFORE:-}" ] || return 0
+    local after="$RUNTIME_GUARD_DIR/interrupted-project.manifest"
+    phase_capture_worktree_manifest "$after" || return 1
+    shell_note_local_work "$ACTIVE_PHASE_MANIFEST_BEFORE" "$after"
+    record_session_changed_paths_from_manifest "$ACTIVE_PHASE_MANIFEST_BEFORE" "$after" || return 1
+    record_phase_owned_paths "$ACTIVE_PHASE_MANIFEST_BEFORE" "$after"
+}
+
+phase_capture_worktree_manifest() {
+    local manifest_file="$1" mode record status_code target_path signature raw
+    [ -n "$manifest_file" ] || return 1
+    : > "$manifest_file" || return 1
+    git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
     mode="$(normalize_phase_manifest_mode "$PHASE_MANIFEST_MODE")"
-    {
-        git -C "$PROJECT_DIR" -c core.quotePath=false status --porcelain=v1 --untracked-files=all -- . | \
-        while IFS= read -r line; do
-            [ -n "$line" ] || continue
-            status_code="${line:0:2}"
-            rel_path="${line:3}"
-            target_path="$rel_path"
-            if [[ "$rel_path" == *" -> "* ]]; then
-                target_path="${rel_path##* -> }"
-            fi
-            target_path="$(path_relative_to_project "$target_path")"
-            signature="$(phase_manifest_file_signature "$target_path" "$mode")"
-            printf 'P %s %s\t%s\n' "$status_code" "$signature" "$target_path"
-        done
-    } | sort > "$manifest_file"
+    raw="$(mktemp "$CONFIG_DIR/manifest-paths.XXXXXX")" || return 1
+    if ! git --literal-pathspecs -C "$PROJECT_DIR" -c status.renames=false status --porcelain=v1 -z --untracked-files=all -- . > "$raw"; then
+        rm -f "$raw"
+        return 1
+    fi
+    # Git's NUL protocol carries raw names. Hex keys keep the existing sortable,
+    # line-oriented manifest without losing tabs, newlines or non-ASCII bytes.
+    while IFS= read -r -d '' record; do
+        status_code="${record:0:2}"
+        target_path="${record:3}"
+        signature="$(phase_manifest_file_signature "$target_path" "$mode")"
+        printf 'P %s %s\th:%s\n' "$status_code" "$signature" "$(path_to_hex "$target_path")"
+    done < "$raw" | LC_ALL=C sort > "$manifest_file"
+    rm -f "$raw"
     return 0
 }
 
@@ -6612,55 +7253,38 @@ phase_manifest_changed() {
 }
 
 phase_manifest_extract_path_from_line() {
-    local line="${1:-}"
+    local line="${1:-}" path
     line="${line#$'\t'}"
     case "$line" in
-        P\ *$'\t'*)
-            printf '%s\n' "${line#*$'\t'}"
+        P\ *$'\t'h:*)
+            IFS= read -r -d '' path < <(hex_path_to_nul "${line#*$'\t'h:}") || return 1
+            printf '%s\n' "$path"
             ;;
-        *)
-            printf '%s\n' ""
-            ;;
+        P\ *$'\t'*) printf '%s\n' "${line#*$'\t'}" ;;
+        *) return 1 ;;
     esac
 }
 
 phase_manifest_changed_paths() {
-    local before_file="$1"
-    local after_file="$2"
-    local line path
-
-    if [ ! -f "$before_file" ] || [ ! -f "$after_file" ]; then
-        return 0
-    fi
-
-    while IFS= read -r line; do
-        path="$(phase_manifest_extract_path_from_line "$line")"
-        [ -n "$path" ] && printf '%s\n' "$path"
-    done < <(comm -3 "$before_file" "$after_file")
+    local path
+    while IFS= read -r -d '' path; do
+        printf '%s\n' "$path"
+    done < <(phase_manifest_changed_paths_nul "$1" "$2")
 }
 
 record_session_changed_paths_from_manifest() {
-    local before_file="$1"
-    local after_file="$2"
-    local tmp_file
-
-    mkdir -p "$(dirname "$SESSION_CHANGED_PATHS_FILE")"
-    touch "$SESSION_CHANGED_PATHS_FILE"
-    tmp_file="$(mktemp "$CONFIG_DIR/session-changed-paths.XXXXXX")" || return 1
-
-    {
-        cat "$SESSION_CHANGED_PATHS_FILE"
-        phase_manifest_changed_paths "$before_file" "$after_file"
-    } | sed '/^$/d' | sort -u > "$tmp_file"
-
-    mv "$tmp_file" "$SESSION_CHANGED_PATHS_FILE"
+    local before_file="$1" after_file="$2" path
+    mkdir -p "$(dirname "$SESSION_CHANGED_PATHS_FILE")" || return 1
+    ensure_runtime_file "$SESSION_CHANGED_PATHS_FILE" || return 1
+    touch "$SESSION_CHANGED_PATHS_FILE" || return 1
+    while IFS= read -r -d '' path; do
+        nul_file_contains "$SESSION_CHANGED_PATHS_FILE" "$path" || printf '%s\0' "$path" >> "$SESSION_CHANGED_PATHS_FILE"
+    done < <(phase_manifest_changed_paths_nul "$before_file" "$after_file")
     return 0
 }
 
 session_changed_paths_contains() {
-    local rel_path="$1"
-    [ -f "$SESSION_CHANGED_PATHS_FILE" ] || return 1
-    grep -Fxq -- "$rel_path" "$SESSION_CHANGED_PATHS_FILE" 2>/dev/null
+    nul_file_contains "$SESSION_CHANGED_PATHS_FILE" "$1"
 }
 
 phase_noop_policy() {
@@ -6771,6 +7395,8 @@ consensus_clean_terminal_hold_reroute_allowed() {
     local candidate_next="${2:-}"
 
     [ "$candidate_next" = "done" ] || return 1
+    case "${SHELL_GATES_STATUS:-absent}" in failed|timeout|tampered) return 1;; esac
+    shell_terminal_verified || return 1
     [ "$phase" != "done" ] || return 1
     is_true "${LAST_CONSENSUS_PASS:-false}" || return 1
     [ "${LAST_CONSENSUS_FAILURE_KIND:-}" = "none" ] || return 1
@@ -6949,26 +7575,25 @@ build_phase_commit_message() {
 
 prepare_phase_auto_commit_mode() {
     AUTO_COMMIT_SESSION_ENABLED="false"
-    AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
     if ! is_true "$AUTO_COMMIT_ON_PHASE_PASS"; then
         info "Phase auto-commit is disabled."
         return 0
     fi
 
     if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        warn "Phase auto-commit requested, but project is not a git repository. Disabling auto-commit."
-        return 0
+        err "Phase auto-commit requires a Git repository; enable auto-init or explicitly disable auto-commit."
+        return 1
     fi
 
     if ! detect_git_identity; then
-        warn "Phase auto-commit requested, but git identity is not ready (${GIT_IDENTITY_SOURCE})."
-        warn "Set git user.name/user.email (or GIT_COMMITTER_* env vars), then restart with --resume."
-        return 0
+        err "Phase auto-commit requires a Git identity (${GIT_IDENTITY_SOURCE})."
+        err "Set Git user.name/user.email or explicitly use --auto-commit-on-phase-pass false."
+        return 1
     fi
 
-    AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE="$(mktemp "$CONFIG_DIR/autocommit-baseline.XXXXXX")" || AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE=""
-    if [ -n "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
-        collect_git_dirty_paths > "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" 2>/dev/null || true
+    if [ -z "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ]; then
+        AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE="$(mktemp "$CONFIG_DIR/autocommit-baseline.XXXXXX")" || return 1
+        collect_git_dirty_paths > "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" || return 1
     fi
     if [ -n "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ] && [ -s "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
         warn "Auto-commit starting from a dirty worktree; phase commits will be skipped if they overlap pre-existing dirty paths."
@@ -6980,134 +7605,117 @@ prepare_phase_auto_commit_mode() {
 }
 
 collect_git_dirty_paths() {
-    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        return 0
-    fi
-    {
-        git -C "$PROJECT_DIR" diff --name-only -- . 2>/dev/null || true
-        git -C "$PROJECT_DIR" diff --cached --name-only -- . 2>/dev/null || true
-        git -C "$PROJECT_DIR" ls-files --others --exclude-standard -- . 2>/dev/null || true
-    } | sed '/^$/d' | sort -u
+    git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    git --literal-pathspecs -C "$PROJECT_DIR" diff --no-ext-diff --name-only -z -- . || return 1
+    git --literal-pathspecs -C "$PROJECT_DIR" diff --no-ext-diff --cached --name-only -z -- . || return 1
+    git --literal-pathspecs -C "$PROJECT_DIR" ls-files --others --exclude-standard -z -- . || return 1
 }
 
 collect_manifest_delta_commit_paths() {
-    local manifest_before="$1"
-    local manifest_after="$2"
-    local output_file="$3"
-
+    local before_file="$1" after_file="$2" output_file="$3" path
     [ -n "$output_file" ] || return 1
-    : > "$output_file"
-    if [ ! -f "$manifest_before" ] || [ ! -f "$manifest_after" ]; then
-        return 1
-    fi
-    phase_manifest_changed_paths "$manifest_before" "$manifest_after" | sed '/^$/d' | sort -u > "$output_file"
+    : > "$output_file" || return 1
+    [ -f "$before_file" ] && [ -f "$after_file" ] || return 1
+    while IFS= read -r -d '' path; do
+        [ -n "$path" ] || continue
+        case "$path" in .ralphie|.ralphie/*|.git|.git/*) continue;; esac
+        nul_file_contains "$output_file" "$path" || printf '%s\0' "$path" >> "$output_file"
+    done < <(phase_manifest_changed_paths_nul "$before_file" "$after_file")
     [ -s "$output_file" ]
 }
 
 stage_commit_paths_from_file() {
-    local paths_file="$1"
-    local rel_path
-    local staged_any=false
-
+    local paths_file="$1" path staged_any=false
     [ -f "$paths_file" ] || return 1
-    while IFS= read -r rel_path; do
-        [ -n "$rel_path" ] || continue
-        if git -C "$PROJECT_DIR" add -A -- "$rel_path" 2>/dev/null; then
+    while IFS= read -r -d '' path; do
+        [ -n "$path" ] || continue
+        if git --literal-pathspecs -C "$PROJECT_DIR" add -A -- "$path"; then
             staged_any=true
         else
-            warn "Auto-commit staging skipped path '$rel_path' (path no longer resolvable)."
+            warn "Auto-commit could not stage a phase path: $(printf '%q' "$path")"
+            return 1
         fi
     done < "$paths_file"
-
-    [ "$staged_any" = true ]
+    is_true "$staged_any"
 }
 
 commit_phase_approved_changes() {
-    local phase="$1"
-    local next_phase="$2"
-    local manifest_before="${3:-}"
-    local manifest_after="${4:-}"
-    local commit_paths_file=""
-
-    if ! is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
+    local phase="$1" next_phase="$2" manifest_before="${3:-}" manifest_after="${4:-}"
+    local paths_file path before_head after_head commit_message error_file
+    PHASE_SAVE_REQUIRED=false
+    PHASE_SAVE_OK=true
+    PHASE_SAVE_REASON=''
+    is_true "$AUTO_COMMIT_SESSION_ENABLED" || return 0
+    paths_file="$(mktemp "$CONFIG_DIR/commit-paths.XXXXXX")" || return 1
+    collect_manifest_delta_commit_paths "$manifest_before" "$manifest_after" "$paths_file" || true
+    while IFS= read -r -d '' path; do
+        case "$path" in .ralphie|.ralphie/*|.git|.git/*) continue;; esac
+        if owned_path_matches "$path"; then
+            nul_file_contains "$paths_file" "$path" || printf '%s\0' "$path" >> "$paths_file"
+        fi
+    done < <(collect_git_dirty_paths)
+    if [ ! -s "$paths_file" ]; then
+        rm -f "$paths_file"
         return 0
     fi
-    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        warn "Auto-commit skipped for phase '$phase': not a git repository."
-        return 0
-    fi
-    if ! detect_git_identity; then
-        warn "Auto-commit skipped for phase '$phase': git identity unavailable (${GIT_IDENTITY_SOURCE})."
-        return 0
-    fi
-    if ! git_has_local_changes; then
-        info "Phase $phase gate approved: no local changes to commit."
-        return 0
-    fi
-
-    if ! git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
-        warn "Auto-commit skipped for phase '$phase': pre-staged changes detected; refusing to mix unrelated index state."
-        return 0
-    fi
-
-    commit_paths_file="$(mktemp "$CONFIG_DIR/commit-paths.XXXXXX")" || commit_paths_file=""
-    if [ -z "$commit_paths_file" ] || ! collect_manifest_delta_commit_paths "$manifest_before" "$manifest_after" "$commit_paths_file"; then
-        warn "Auto-commit skipped for phase '$phase': no reliable manifest delta paths were captured for this attempt."
-        rm -f "$commit_paths_file"
-        return 0
-    fi
-    if [ -n "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ] && [ -s "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" ]; then
-        local overlap_file
-        overlap_file="$(mktemp "$CONFIG_DIR/commit-overlap.XXXXXX")" || overlap_file=""
-        if [ -n "$overlap_file" ]; then
-            comm -12 "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$commit_paths_file" > "$overlap_file" 2>/dev/null || true
-            if [ -s "$overlap_file" ]; then
-                warn "Auto-commit skipped for phase '$phase': phase delta overlaps paths dirty before Ralphie started."
-                sed 's/^/  - /' "$overlap_file" >&2 || true
-                rm -f "$overlap_file" "$commit_paths_file"
-                return 0
+    PHASE_SAVE_REQUIRED=true
+    PHASE_SAVE_OK=false
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || ! detect_git_identity; then
+        PHASE_SAVE_REASON='Git repository or identity is unavailable.'
+    elif ! git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
+        PHASE_SAVE_REASON='Pre-staged operator changes must be saved separately before an automatic phase commit.'
+    else
+        while IFS= read -r -d '' path; do
+            if [ -n "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ] && nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$path"; then
+                PHASE_SAVE_REASON='Phase changes overlap operator paths dirty before Ralphie started.'
+                break
             fi
-            rm -f "$overlap_file"
-        fi
+        done < "$paths_file"
     fi
-
-    if ! stage_commit_paths_from_file "$commit_paths_file"; then
-        info "Phase $phase gate approved: no stageable files detected in phase manifest delta."
-        rm -f "$commit_paths_file"
+    if [ -n "$PHASE_SAVE_REASON" ]; then
+        warn "$PHASE_SAVE_REASON Work is on disk but was not saved in a phase commit."
+        rm -f "$paths_file"
+        # The caller owns the acceptance postcondition, including benign no-work
+        # and deliberate --auto-commit-on-phase-pass false cases.
         return 0
     fi
-    if git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
-        info "Phase $phase gate approved: nothing staged for commit."
-        rm -f "$commit_paths_file"
-        return 0
-    fi
-
-    local commit_message commit_sha commit_err_file
-    commit_message="$(build_phase_commit_message "$phase" "$next_phase")"
-    commit_err_file="$(mktemp "$CONFIG_DIR/commit-error.XXXXXX")" || commit_err_file=""
-    if ! git -C "$PROJECT_DIR" commit -m "$commit_message" >"${commit_err_file:-/dev/null}" 2>&1; then
-        if [ -n "$commit_err_file" ] && grep -qiE "author identity unknown|unable to auto-detect email address|please tell me who you are" "$commit_err_file" 2>/dev/null; then
-            GIT_IDENTITY_READY="false"
-            GIT_IDENTITY_SOURCE="git commit reported missing identity"
-            warn "Auto-commit skipped for phase '$phase': git identity is missing."
-            warn "Set git user.name/user.email (or GIT_COMMITTER_* env vars), then restart with --resume."
-            rm -f "$commit_err_file"
-            rm -f "$commit_paths_file"
-            return 0
-        fi
-        err "Auto-commit failed for phase '$phase'."
-        if [ -n "$commit_err_file" ] && [ -s "$commit_err_file" ]; then
-            tail -n 3 "$commit_err_file" >&2 || true
-        fi
-        rm -f "$commit_err_file"
-        rm -f "$commit_paths_file"
+    before_head="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    if ! stage_commit_paths_from_file "$paths_file"; then
+        PHASE_SAVE_REASON='Git could not stage all phase changes.'
+        rm -f "$paths_file"
         return 1
     fi
-    rm -f "$commit_err_file"
-    rm -f "$commit_paths_file"
-
-    commit_sha="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
-    info "Phase $phase committed (${commit_sha:-unknown}): $commit_message"
+    if git -C "$PROJECT_DIR" diff --cached --quiet -- .; then
+        PHASE_SAVE_REASON='The phase changed files, but no changes reached the commit index.'
+        rm -f "$paths_file"
+        return 0
+    fi
+    commit_message="$(build_phase_commit_message "$phase" "$next_phase")"
+    error_file="$(mktemp "$CONFIG_DIR/commit-error.XXXXXX")" || { rm -f "$paths_file"; return 1; }
+    if ! run_command_with_timeout "$GATE_TIMEOUT_SECONDS" git -C "$PROJECT_DIR" commit -m "$commit_message" > "$error_file" 2>&1; then
+        PHASE_SAVE_REASON='Git refused the phase commit.'
+        safe_print_file_tail "$error_file" 12
+        rm -f "$error_file" "$paths_file"
+        return 1
+    fi
+    rm -f "$error_file"
+    after_head="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    if [ -z "$after_head" ] || [ "$after_head" = "$before_head" ]; then
+        PHASE_SAVE_REASON='Git reported success but HEAD did not move.'
+        err "$PHASE_SAVE_REASON"
+        rm -f "$paths_file"
+        return 1
+    fi
+    while IFS= read -r -d '' path; do
+        if [ -n "$(git --literal-pathspecs -C "$PROJECT_DIR" status --porcelain --untracked-files=all -- "$path")" ]; then
+            PHASE_SAVE_REASON='Phase paths remain unsaved after the commit; review hooks and working-tree changes.'
+            rm -f "$paths_file"
+            return 1
+        fi
+    done < "$paths_file"
+    rm -f "$paths_file"
+    PHASE_SAVE_OK=true
+    info "Phase $phase committed (${after_head:0:8}): $commit_message"
     return 0
 }
 
@@ -7578,7 +8186,7 @@ enforce_terminal_done_requirements() {
         document_satisfied=true
     fi
 
-    if is_true "$current_phase_passed" && project_terminal_or_handoff_ready; then
+    if is_true "$current_phase_passed" && project_terminal_or_handoff_ready && shell_no_local_work_proven; then
         LAST_DONE_GUARD_NEXT_PHASE="done"
         LAST_DONE_GUARD_REASON="terminal guard allowed done: plan declares no local work or handoff-ready state and local backlog is clear"
         echo "done"
@@ -7604,6 +8212,10 @@ enforce_terminal_done_requirements() {
         missing_required+=("plan_backlog")
     fi
 
+    if [ "${#missing_required[@]}" -eq 0 ] && ! shell_terminal_verified; then
+        missing_required+=("test")
+        LAST_DONE_GUARD_REASON="terminal verification missing or failed: ${SHELL_GATES_FAILURE:-unknown check outcome}"
+    fi
     if [ "${#missing_required[@]}" -eq 0 ]; then
         LAST_DONE_GUARD_NEXT_PHASE="done"
         echo "done"
@@ -7678,7 +8290,7 @@ phase_transition_history_append() {
         return 0
     fi
 
-    normalized_reason="$(printf '%s' "$reason" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//; s/ *$//')"
+    normalized_reason="$(printf '%s' "$reason" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | sed 's/^ *//; s/ *$//')"
     normalized_reason="${normalized_reason:-no explicit rationale}"
     PHASE_TRANSITION_HISTORY+=("${phase}(attempt ${attempt})->${next_phase}|${outcome}|${normalized_reason}")
 }
@@ -7992,7 +8604,7 @@ sanitize_markdown_artifacts() {
     fi
 
     if is_true "$AUTO_REPAIR_MARKDOWN_ONLY_SESSION_CHANGED"; then
-        for file in "${targets[@]}"; do
+        for file in "${targets[@]+"${targets[@]}"}"; do
             [ -f "$file" ] || continue
             local rel_target
             rel_target="$(path_relative_to_project "$file")"
@@ -8003,7 +8615,7 @@ sanitize_markdown_artifacts() {
         targets=("${scoped_targets[@]+"${scoped_targets[@]}"}")
     fi
 
-    for file in "${targets[@]}"; do
+    for file in "${targets[@]+"${targets[@]}"}"; do
         [ -f "$file" ] || continue
         sanitize_markdown_artifact_file "$file" || true
     done
@@ -8886,6 +9498,352 @@ EOF
 
 plan_prompt_for_iteration() { echo "$1"; }
 run_idle_plan_refresh() { return 0; }
+# Mission intake and verification remain shell-owned. Reviewers judge the design;
+# executable checks and protected operator inputs decide what can be accepted.
+ensure_runtime_file() {
+    local path="$1"
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        err "Refusing unsafe runtime file: $(path_for_display "$path")"
+        return 1
+    fi
+    [ ! -e "$path" ] || [ -r "$path" ] || return 1
+    return 0
+}
+
+runtime_guard_prepare() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] && return 0
+    RUNTIME_GUARD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ralphie-inputs.XXXXXX")" || return 1
+    chmod 700 "$RUNTIME_GUARD_DIR" || return 1
+    : > "$RUNTIME_GUARD_DIR/tampered"
+}
+
+prepare_mission_seed() {
+    local resuming="${1:-false}"
+    local objective source_spec requested_hash project_type consent
+    local candidate="$RUNTIME_GUARD_DIR/seed-goals"
+    local objective_candidate="$RUNTIME_GUARD_DIR/seed-objective"
+    if [ -z "${OBJECTIVE_TEXT:-}" ] && [ -z "${SPEC_FILE:-}" ]; then
+        if [ -n "${MISSION_SEED_SHA:-}" ]; then
+            NO_TERMINAL_INPUT=true
+            ensure_runtime_file "$MISSION_OBJECTIVE_FILE" || return 1
+            ensure_runtime_file "$PROJECT_GOALS_FILE" || return 1
+            [ -f "$MISSION_OBJECTIVE_FILE" ] && [ -f "$PROJECT_GOALS_FILE" ] || {
+                err "Saved mission seed is missing; restore it or use --no-resume with an explicit seed."
+                return 1
+            }
+            requested_hash="$( { cat "$MISSION_OBJECTIVE_FILE"; printf '\0'; cat "$PROJECT_GOALS_FILE"; } | sha256_stream_sum)" || return 1
+            [ "$requested_hash" = "$MISSION_SEED_SHA" ] || {
+                err "Saved objective/spec changed; use --no-resume with the intended seed."
+                return 1
+            }
+        fi
+        return 0
+    fi
+    NO_TERMINAL_INPUT=true
+    objective="${OBJECTIVE_TEXT:-Complete the project described in the supplied specification.}"
+    printf '%s' "$objective" > "$objective_candidate" || return 1
+    if [ -n "${SPEC_FILE:-}" ]; then
+        source_spec="$SPEC_FILE"
+        case "$source_spec" in /*) ;; *) source_spec="$INVOCATION_DIR/$source_spec";; esac
+        [ -f "$source_spec" ] && [ -r "$source_spec" ] && [ -s "$source_spec" ] || {
+            err "--spec requires a readable, nonempty regular file: $SPEC_FILE"
+            return 1
+        }
+        cp "$source_spec" "$candidate" || return 1
+    else
+        printf '%s' "$OBJECTIVE_TEXT" > "$candidate" || return 1
+    fi
+    grep -q '[^[:space:]]' "$candidate" || { err "The mission seed must contain text."; return 1; }
+    requested_hash="$( { cat "$objective_candidate"; printf '\0'; cat "$candidate"; } | sha256_stream_sum)" || return 1
+    if is_true "$resuming" && [ "$requested_hash" != "${MISSION_SEED_SHA:-}" ]; then
+        err "The objective/spec differs from the saved mission. Use --no-resume to start the replacement mission."
+        return 1
+    fi
+    ensure_runtime_file "$MISSION_OBJECTIVE_FILE" || return 1
+    ensure_runtime_file "$PROJECT_GOALS_FILE" || return 1
+    ensure_runtime_file "$PROJECT_BOOTSTRAP_FILE" || return 1
+    cp "$objective_candidate" "$MISSION_OBJECTIVE_FILE" || return 1
+    cp "$candidate" "$PROJECT_GOALS_FILE" || return 1
+    project_type="existing"
+    if [ -z "$(git -C "$PROJECT_DIR" ls-files 2>/dev/null)" ] && [ ! -f "$PROJECT_DIR/package.json" ] && [ ! -d "$PROJECT_DIR/src" ]; then
+        project_type="new"
+    fi
+    consent=true
+    is_true "${PLAN_ONLY:-false}" && consent=false
+    write_bootstrap_context_file "$project_type" "$(sanitize_text_for_log "$objective")" "$consent" true \
+        'Preserve operator work and project instructions; make only changes required by the supplied objective.' \
+        'The supplied objective is complete and shell-owned project checks pass.' true '' \
+        'Follow the existing project; choose the simplest suitable structure for a new project.' \
+        'Follow existing project tooling; research and justify choices needed for a new project.' || return 1
+    MISSION_SEED_SHA="$requested_hash"
+    REBOOTSTRAP_REQUESTED=false
+    info "Loaded explicit mission seed; autonomous lifecycle is $(is_true "$consent" && printf authorized || printf planning-only)."
+    return 0
+}
+
+snapshot_operator_inputs() {
+    local path name
+    for path in "$PROJECT_BOOTSTRAP_FILE" "$PROJECT_GOALS_FILE" "$MISSION_OBJECTIVE_FILE" "$OWNED_PATHS_FILE" "$SHELL_VERIFICATION_LOG"; do
+        name="${path##*/}"
+        ensure_runtime_file "$path" || return 1
+        if [ -f "$path" ]; then
+            cp "$path" "$RUNTIME_GUARD_DIR/$name" || return 1
+        else
+            : > "$RUNTIME_GUARD_DIR/$name.absent"
+        fi
+    done
+    return 0
+}
+
+restore_operator_input() {
+    local path="$1" snapshot="$2"
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        # Preserve unexpected replacement objects instead of following a symlink
+        # or deleting a directory supplied by the worker.
+        mv "$path" "$CONFIG_DIR/rejected-${path##*/}.$$.${RANDOM:-0}" || return 1
+    fi
+    cp "$snapshot" "$path" || return 1
+    chmod u+rw "$path" || return 1
+}
+
+guard_operator_inputs() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] || return 0
+    local path name snapshot changed=false
+    for path in "$PROJECT_BOOTSTRAP_FILE" "$PROJECT_GOALS_FILE" "$MISSION_OBJECTIVE_FILE" "$SHELL_GATES_FILE" "$OWNED_PATHS_FILE" "$SHELL_VERIFICATION_LOG"; do
+        name="${path##*/}"
+        snapshot="$RUNTIME_GUARD_DIR/$name"
+        if [ -f "$snapshot" ]; then
+            if [ -L "$path" ] || [ ! -f "$path" ] || ! cmp -s "$snapshot" "$path"; then
+                printf '%s\n' "$name" >> "$RUNTIME_GUARD_DIR/tampered"
+                restore_operator_input "$path" "$snapshot" || return 1
+                changed=true
+            fi
+        elif [ -f "$snapshot.absent" ] && { [ -e "$path" ] || [ -L "$path" ]; }; then
+            printf '%s\n' "$name" >> "$RUNTIME_GUARD_DIR/tampered"
+            mv "$path" "$CONFIG_DIR/rejected-$name.$$.${RANDOM:-0}" || return 1
+            changed=true
+        fi
+    done
+    if is_true "$changed"; then
+        err "Operator objective, consent or gate definitions changed during an engine call; restored and rejected."
+        return 1
+    fi
+    [ ! -s "$RUNTIME_GUARD_DIR/tampered" ]
+}
+
+shell_gate_commands() {
+    [ -f "$SHELL_GATES_FILE" ] || return 0
+    sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$SHELL_GATES_FILE"
+}
+
+discover_shell_gates() {
+    # Fixed project-tool contracts, never shell commands proposed by a model.
+    # Tools are project dependencies, not dependencies of Ralphie's loop.
+    if [ -f "$PROJECT_DIR/test.sh" ] && [ ! -L "$PROJECT_DIR/test.sh" ]; then
+        printf '%s\n' 'bash ./test.sh'
+    elif [ -f "$PROJECT_DIR/package.json" ] && command -v node >/dev/null 2>&1; then
+        local pm=npm script
+        [ ! -f "$PROJECT_DIR/pnpm-lock.yaml" ] || pm=pnpm
+        [ ! -f "$PROJECT_DIR/yarn.lock" ] || pm=yarn
+        for script in test check typecheck lint; do
+            if node -e 'const p=require(process.argv[1]); const s=p.scripts&&p.scripts[process.argv[2]]; process.exit(typeof s === "string" && s.trim() ? 0 : 1)' "$PROJECT_DIR/package.json" "$script" >/dev/null 2>&1; then
+                printf '%s run %s\n' "$pm" "$script"
+            fi
+        done
+    elif [ -f "$PROJECT_DIR/go.mod" ]; then
+        printf '%s\n' 'go test ./...'
+    elif [ -f "$PROJECT_DIR/Cargo.toml" ]; then
+        printf '%s\n' 'cargo test --workspace'
+    elif [ -f "$PROJECT_DIR/pytest.ini" ] || [ -f "$PROJECT_DIR/pyproject.toml" ] || [ -f "$PROJECT_DIR/setup.py" ]; then
+        if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+            printf '%s\n' './.venv/bin/python -m pytest -q'
+        else
+            printf '%s\n' 'python3 -m pytest -q'
+        fi
+    elif [ -f "$PROJECT_DIR/Makefile" ] && grep -qE '^test[[:space:]]*:' "$PROJECT_DIR/Makefile"; then
+        printf '%s\n' 'make test'
+    fi
+    return 0
+}
+
+snapshot_shell_gates() {
+    cp "$SHELL_GATES_FILE" "$RUNTIME_GUARD_DIR/gates" || return 1
+    SHELL_GATES_FINGERPRINT="$(sha256_file_sum "$SHELL_GATES_FILE")" || return 1
+}
+
+prepare_shell_gates() {
+    ensure_runtime_file "$SHELL_GATES_FILE" || return 1
+    local cmd candidate="$RUNTIME_GUARD_DIR/gates-candidate" requested_fingerprint
+    local saved_fingerprint="${SHELL_GATES_FINGERPRINT:-}"
+    if [ -f "$SHELL_GATES_FILE" ]; then cp "$SHELL_GATES_FILE" "$candidate" || return 1; else : > "$candidate"; fi
+    for cmd in "${ACCEPT_COMMANDS[@]+"${ACCEPT_COMMANDS[@]}"}"; do
+        grep -qxF -- "$cmd" "$candidate" || printf '\n%s\n' "$cmd" >> "$candidate"
+    done
+    if [ -z "$(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$candidate")" ]; then
+        discover_shell_gates >> "$candidate" || return 1
+    fi
+    requested_fingerprint="$(sha256_file_sum "$candidate")" || return 1
+    if is_true "${RESUME_REQUESTED:-true}" && [ -n "$saved_fingerprint" ] && [ "$saved_fingerprint" != "$requested_fingerprint" ]; then
+        err "Gate definitions differ from the saved mission. Use --no-resume after reviewing the new checks."
+        return 1
+    fi
+    cp "$candidate" "$SHELL_GATES_FILE" || return 1
+    snapshot_shell_gates || return 1
+    return 0
+}
+
+refresh_shell_gates() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] && [ -d "$RUNTIME_GUARD_DIR" ] || return 1
+    guard_operator_inputs || return 1
+    if [ -z "$(shell_gate_commands)" ]; then
+        discover_shell_gates >> "$SHELL_GATES_FILE" || return 1
+        snapshot_shell_gates || return 1
+        save_state_or_exit "discovered verification gate checkpoint"
+    fi
+    return 0
+}
+
+run_shell_gates() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] && [ -d "$RUNTIME_GUARD_DIR" ] || return 1
+    local phase="${1:-verification}" cmd rc n=0 output head_before head_after
+    local before="$RUNTIME_GUARD_DIR/gate-before.manifest" after="$RUNTIME_GUARD_DIR/gate-after.manifest"
+    local COMMAND_TIMEOUT_SECONDS="$GATE_TIMEOUT_SECONDS" gate_pid
+    local PHASE_MANIFEST_MODE=deep
+    local capture_limit_marker="$RUNTIME_GUARD_DIR/gate-overflow"
+    SHELL_GATES_STATUS=absent
+    SHELL_GATES_FAILURE='No executable project checks exist; add a real test/check command with --accept or .ralphie/gates.'
+    guard_operator_inputs || { SHELL_GATES_STATUS=tampered; SHELL_GATES_FAILURE='Protected operator inputs changed during execution.'; return 1; }
+    while IFS= read -r cmd || [ -n "$cmd" ]; do
+        [ -n "$cmd" ] || continue
+        n=$((n + 1))
+        output="$RUNTIME_GUARD_DIR/gate-$n.log"
+        phase_capture_worktree_manifest "$before" || return 1
+        head_before="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+        rm -f "$capture_limit_marker"
+        (
+            cd "$PROJECT_DIR" || exit 1
+            set -o pipefail
+            "$BASH" -o pipefail -c "$cmd" < /dev/null 2>&1 | stream_engine_output "$output" "" false
+        ) &
+        gate_pid=$!
+        register_managed_pid "$gate_pid"
+        if wait_for_process_with_idle_output_watchdog "$gate_pid" 0 "project check" "$output"; then
+            rc=0
+        else
+            rc=$?
+        fi
+        unregister_managed_pid "$gate_pid"
+        rm -f "$capture_limit_marker"
+        if ! guard_operator_inputs; then
+            SHELL_GATES_STATUS=tampered
+            SHELL_GATES_FAILURE='A project check changed protected operator inputs.'
+            return 1
+        fi
+        ensure_runtime_file "$SHELL_VERIFICATION_LOG" || return 1
+        printf '{"at":"%s","phase":"%s","command":"%s","exit":%s}\n' \
+            "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(json_escape_string "$phase")" "$(json_escape_string "$cmd")" "$rc" >> "$SHELL_VERIFICATION_LOG" || return 1
+        cp "$SHELL_VERIFICATION_LOG" "$RUNTIME_GUARD_DIR/verification.jsonl" || return 1
+        rm -f "$RUNTIME_GUARD_DIR/verification.jsonl.absent"
+        if ! guard_operator_inputs; then
+            SHELL_GATES_STATUS=tampered
+            SHELL_GATES_FAILURE='A project check changed protected operator inputs.'
+            return 1
+        fi
+        phase_capture_worktree_manifest "$after" || return 1
+        head_after="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+        if [ "$head_before" != "$head_after" ] || ! cmp -s "$before" "$after"; then
+            SHELL_GATES_STATUS=failed
+            SHELL_GATES_FAILURE="Shell check changed the nonignored project tree; verification must examine a stable tree: $cmd"
+            warn "$SHELL_GATES_FAILURE"
+            return 1
+        fi
+        if [ "$rc" -ne 0 ]; then
+            SHELL_GATES_STATUS=failed
+            [ "$rc" -ne 124 ] || SHELL_GATES_STATUS=timeout
+            SHELL_GATES_FAILURE="Shell check failed (exit $rc): $cmd"
+            warn "$SHELL_GATES_FAILURE"
+            safe_print_file_tail "$output" 24
+            return 1
+        fi
+    done < <(shell_gate_commands)
+    [ "$n" -gt 0 ] || return 1
+    SHELL_GATES_STATUS=pass
+    SHELL_GATES_FAILURE=''
+    info "Shell verification passed ($n check(s), $phase)."
+    return 0
+}
+
+shell_note_local_work() {
+    local before="$1" after="$2" path
+    while IFS= read -r -d '' path; do
+        case "$path" in
+            .ralphie/*|logs/*|completion_log/*|consensus/*|research/*|specs/*|.specify/*|PROMPT_*.md|IMPLEMENTATION_PLAN.md|*.md|.gitignore) ;;
+            *) SHELL_LOCAL_WORK_SEEN=true ;;
+        esac
+    done < <(phase_manifest_changed_paths_nul "$before" "$after")
+    if [ -n "${SESSION_INITIAL_HEAD:-}" ]; then
+        while IFS= read -r -d '' path; do
+            case "$path" in
+                .ralphie/*|logs/*|completion_log/*|consensus/*|research/*|specs/*|.specify/*|PROMPT_*.md|IMPLEMENTATION_PLAN.md|*.md|.gitignore) ;;
+                *) SHELL_LOCAL_WORK_SEEN=true ;;
+            esac
+        done < <(git --literal-pathspecs -C "$PROJECT_DIR" diff --no-ext-diff --name-only -z "$SESSION_INITIAL_HEAD" HEAD -- . 2>/dev/null)
+    elif git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+        # An initially unborn repository may have been committed by the engine.
+        while IFS= read -r -d '' path; do
+            case "$path" in
+                .ralphie/*|logs/*|completion_log/*|consensus/*|research/*|specs/*|.specify/*|PROMPT_*.md|IMPLEMENTATION_PLAN.md|*.md|.gitignore) ;;
+                *) SHELL_LOCAL_WORK_SEEN=true ;;
+            esac
+        done < <(git -C "$PROJECT_DIR" ls-files -z)
+    fi
+}
+
+shell_no_local_work_proven() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] || return 1
+    is_true "${SHELL_DEVELOPMENT_PHASE_STARTED:-false}" && return 1
+    is_true "${SHELL_LOCAL_WORK_SEEN:-false}" && return 1
+    project_terminal_or_handoff_ready || return 1
+    local PHASE_MANIFEST_MODE=deep
+    local path current="$RUNTIME_GUARD_DIR/handoff-project.manifest"
+    [ -f "$RUNTIME_GUARD_DIR/original-project.manifest" ] || return 1
+    phase_capture_worktree_manifest "$current" || return 1
+    while IFS= read -r -d '' path; do
+        case "$path" in
+            .ralphie/*|logs/*|completion_log/*|consensus/*|research/*|specs/*|.specify/*|PROMPT_*.md|IMPLEMENTATION_PLAN.md|*.md|.gitignore) ;;
+            *) return 1 ;;
+        esac
+    done < <(phase_manifest_changed_paths_nul "$RUNTIME_GUARD_DIR/original-project.manifest" "$current")
+    guard_operator_inputs
+}
+
+session_work_is_saved() {
+    is_true "${AUTO_COMMIT_SESSION_ENABLED:-false}" || return 0
+    local path paths="$RUNTIME_GUARD_DIR/final-dirty.nul"
+    collect_git_dirty_paths > "$paths" || return 1
+    while IFS= read -r -d '' path; do
+        case "$path" in .ralphie|.ralphie/*|.git|.git/*) continue;; esac
+        if [ -n "${AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE:-}" ] && nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$path"; then
+            continue
+        fi
+        SHELL_GATES_STATUS=failed
+        SHELL_GATES_FAILURE="Verified project work is still unsaved: $(printf '%q' "$path")"
+        return 1
+    done < "$paths"
+    return 0
+}
+
+shell_terminal_verified() {
+    refresh_shell_gates || return 1
+    if [ -z "$(shell_gate_commands)" ] && shell_no_local_work_proven; then
+        session_work_is_saved || return 1
+        info "No local implementation was performed; completing the reviewed planning/document handoff without claiming tested software."
+        return 0
+    fi
+    run_shell_gates final || return 1
+    session_work_is_saved
+}
+
 print_session_config_banner() {
     info "=== Ralphie Session Budget & Retry Configuration ==="
     info "script_version: ${SCRIPT_VERSION}"
@@ -8914,6 +9872,10 @@ print_session_config_banner() {
     info "auto_commit_on_phase_pass: ${AUTO_COMMIT_ON_PHASE_PASS:-false}"
     info "auto_engine_preference: ${AUTO_ENGINE_PREFERENCE:-$DEFAULT_AUTO_ENGINE_PREFERENCE}"
     info "codex_endpoint: $(redact_endpoint_for_log "$CODEX_ENDPOINT")"
+    info "prime_provider: ${PRIME_PROVIDER:-<default>}"
+    info "prime_model: ${PRIME_MODEL:-<default>}"
+    info "prime_thinking_override: ${PRIME_THINKING_OVERRIDE:-<default>}"
+    info "engine_output_max_bytes: ${ENGINE_OUTPUT_MAX_BYTES:-$DEFAULT_ENGINE_OUTPUT_MAX_BYTES}"
     info "codex_model: ${CODEX_MODEL:-<default>}"
     info "codex_use_responses_schema: ${CODEX_USE_RESPONSES_SCHEMA:-false}"
     info "codex_responses_schema_file: ${CODEX_RESPONSES_SCHEMA_FILE:-<unset>}"
@@ -8993,6 +9955,9 @@ format_retry_budget_block_reason() {
 
 main() {
     parse_args "$@"
+    cd "$PROJECT_DIR" || return 1
+    is_number "$GATE_TIMEOUT_SECONDS" && [ "$GATE_TIMEOUT_SECONDS" -gt 0 ] || { err 'Gate timeout must be a positive integer'; return 1; }
+    validate_engine_options || return 1
     self_update_check_and_reexec "$@"
     if [ "${RALPHIE_SELF_UPDATE_TEST:-}" = "1" ]; then
         echo "RALPHIE_SELF_UPDATE_CURRENT_OK"
@@ -9063,6 +10028,10 @@ main() {
     if ! is_number "$COMMAND_TIMEOUT_SECONDS" || [ "$COMMAND_TIMEOUT_SECONDS" -lt 0 ]; then
         COMMAND_TIMEOUT_SECONDS="$DEFAULT_COMMAND_TIMEOUT_SECONDS"
     fi
+    if ! is_number "$ENGINE_OUTPUT_MAX_BYTES" || [ "$ENGINE_OUTPUT_MAX_BYTES" -lt 1 ]; then
+        err "ENGINE_OUTPUT_MAX_BYTES must be a positive integer."
+        return 1
+    fi
     warn_timeout_binary_unavailable_if_needed
     if ! is_number "$SWARM_CONSENSUS_TIMEOUT" || [ "$SWARM_CONSENSUS_TIMEOUT" -lt 1 ]; then
         SWARM_CONSENSUS_TIMEOUT="$DEFAULT_SWARM_CONSENSUS_TIMEOUT"
@@ -9072,8 +10041,12 @@ main() {
     fi
 
     local should_exit="false"
-    if ! enforce_session_budget "session init"; then
-        should_exit="true"
+    # A saved completion is rechecked by the shell below, without inference.
+    # A spent inference allowance cannot prevent that local verification.
+    if [ "$resume_reentry_pending" != true ] || [ "$CURRENT_PHASE" != done ] || is_true "$PLAN_ONLY"; then
+        if ! enforce_session_budget "session init"; then
+            should_exit="true"
+        fi
     fi
     if is_true "$should_exit"; then
         save_state_or_exit "session budget preflight failure"
@@ -9081,6 +10054,18 @@ main() {
         exit 1
     fi
 
+    runtime_guard_prepare || return 1
+    prepare_mission_seed "$resume_reentry_pending" || return 1
+    if is_true "$PLAN_ONLY" && [ -z "${MISSION_SEED_SHA:-}" ] && [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
+        err '--plan-only requires --objective, --spec, or a saved bootstrap objective.'
+        return 1
+    fi
+    if ! ensure_git_repository_initialized; then
+        release_lock
+        return 1
+    fi
+    capture_operator_baseline || return 1
+    [ -n "$SESSION_INITIAL_HEAD" ] || SESSION_INITIAL_HEAD="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
     print_session_config_banner
     if is_true "$STARTUP_OPERATIONAL_PROBE"; then
         if ! run_startup_operational_probe; then
@@ -9091,15 +10076,17 @@ main() {
     ensure_core_artifacts
     setup_phase_prompts
     ensure_gitignore_guardrails
-    ensure_project_bootstrap
-    if ! ensure_git_repository_initialized; then
-        release_lock
-        exit 1
+    if [ -z "${MISSION_SEED_SHA:-}" ]; then
+        ensure_project_bootstrap
     fi
+    prepare_shell_gates || return 1
+    capture_scaffold_ownership || return 1
+    snapshot_operator_inputs || return 1
     refresh_git_identity_status || true
-    prepare_phase_auto_commit_mode
+    prepare_phase_auto_commit_mode || return 1
     save_state_or_exit "post-startup bootstrap"
 
+    local plan_only_completed=false
     local -a phases=("plan" "build" "test" "refactor" "lint" "document")
     local phase_index=0
     local start_phase_index=0
@@ -9141,6 +10128,12 @@ main() {
         fi
     fi
 
+    if is_true "$PLAN_ONLY"; then
+        start_phase_index=0
+        CURRENT_PHASE=plan
+        CURRENT_PHASE_INDEX=0
+        PHASE_ATTEMPT_IN_PROGRESS=false
+    fi
     local consensus_route_count=0
     local routing_stagnation_signature=""
     local routing_stagnation_count=0
@@ -9150,6 +10143,7 @@ main() {
     local notification_wizard_bootstrap_checked="false"
     local session_start_notified="false"
     while true; do
+        if [ "$start_phase_index" -lt "${#phases[@]}" ]; then
         ENGINE_CAPABILITIES_PROBED=false  # force fresh probe (including smoke test) each iteration
         if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
             should_exit="true"
@@ -9176,6 +10170,7 @@ main() {
         if [ "$session_start_notified" = "false" ]; then
             session_start_notified="true"
             notify_event "session_start" "ok" "engine_request=$ENGINE_SELECTION_REQUESTED active_engine=$ACTIVE_ENGINE channels=$(notification_channels_for_display)" || true
+        fi
         fi
         for ((phase_index = start_phase_index; phase_index < ${#phases[@]}; phase_index++)); do
             local phase="${phases[$phase_index]}"
@@ -9209,6 +10204,7 @@ main() {
                 should_exit="true"
                 break
             fi
+            case "$phase" in build|test|refactor|lint) SHELL_DEVELOPMENT_PHASE_STARTED=true;; esac
             emit_phase_transition_banner "$phase"
             if [ ! -f "$pfile" ]; then
                 ensure_prompt_file "$phase" "$pfile"
@@ -9281,7 +10277,13 @@ main() {
 
                 manifest_before_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_before.txt"
                 manifest_after_file="$LOG_DIR/${phase}_${SESSION_ID}_${ITERATION_COUNT}_attempt_${phase_attempt}_manifest_after.txt"
-                phase_capture_worktree_manifest "$manifest_before_file" || true
+                if ! phase_capture_worktree_manifest "$manifest_before_file"; then
+                    err "Could not snapshot the project before phase execution."
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    break
+                fi
+                ACTIVE_PHASE_MANIFEST_BEFORE="$manifest_before_file"
                 render_status_dashboard "$phase" "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS" "$ITERATION_COUNT"
 
                 if [ "$phase_attempt" -gt 1 ]; then
@@ -9358,6 +10360,10 @@ main() {
                     fi
                 fi
 
+                : > "$RUNTIME_GUARD_DIR/tampered"
+                PHASE_SAVE_REQUIRED=false
+                PHASE_SAVE_OK=true
+                PHASE_SAVE_REASON=''
                 local agent_run_ok=false
                 if [ "${#phase_failures[@]}" -eq 0 ]; then
                     local saved_command_timeout_for_phase="$COMMAND_TIMEOUT_SECONDS"
@@ -9377,14 +10383,32 @@ main() {
                     fi
                     COMMAND_TIMEOUT_SECONDS="$saved_command_timeout_for_phase"
                 fi
+                if ! checkpoint_current_phase_worktree; then
+                    phase_failures+=("could not persist returned phase ownership")
+                fi
+                save_state_or_exit "post-dispatch ownership checkpoint"
+                if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    err "${ENGINE_PERMANENT_FAILURE_REASON:-Engine configuration needs operator repair.}"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    log_reason_code RB_ENGINE_CONFIGURATION_FAILED "${ENGINE_PERMANENT_FAILURE_REASON:-engine configuration failure}"
+                    save_state_or_exit "permanent engine configuration failure"
+                    break
+                fi
+                if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then
+                    err "${ENGINE_BUDGET_FAILURE_REASON:-Session inference budget exhausted.}"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    save_state_or_exit "engine budget exhausted"
+                    break
+                fi
                 if [ "${#phase_failures[@]}" -eq 0 ] && is_true "$agent_run_ok"; then
                     # Verify agent produced meaningful output
                     if [ ! -f "$ofile" ] || [ ! -s "$ofile" ]; then
                         phase_failures+=("agent completed with exit 0 but produced no output artifact")
                     fi
-                    if [ "${#phase_failures[@]}" -eq 0 ] && phase_requires_command_evidence "$phase" && ! phase_output_has_command_evidence "$ofile" "$lfile"; then
-                        phase_failures+=("$phase output did not include deterministic command/check evidence")
-                    fi
+                    # Worker prose can describe its work; only run_shell_gates
+                    # supplies deterministic execution evidence below.
 
                     if [ -n "$previous_attempt_output_hash" ] && [ "${#phase_failures[@]}" -eq 0 ]; then
                         local phase_output_hash
@@ -9452,6 +10476,7 @@ main() {
 
                     phase_capture_worktree_manifest "$manifest_after_file" || true
                     if [ -f "$manifest_before_file" ] && [ -f "$manifest_after_file" ]; then
+                        shell_note_local_work "$manifest_before_file" "$manifest_after_file"
                         if phase_manifest_changed "$manifest_before_file" "$manifest_after_file"; then
                             record_session_changed_paths_from_manifest "$manifest_before_file" "$manifest_after_file" || true
                             phase_delta_preview="$(phase_manifest_delta_preview "$manifest_before_file" "$manifest_after_file" 8)"
@@ -9486,53 +10511,25 @@ main() {
                         "$phase_warnings_text" \
                         "$previous_attempt_output_file"
 
-                    local handoff_engine_request="${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
-                    handoff_engine_request="$(to_lower "$handoff_engine_request")"
-                    if [ "$handoff_engine_request" = "codex" ]; then
-                        handoff_validator_primary="$CODEX_CMD"
-                        handoff_validator_fallback=""
-                        info "Handoff reviewer policy: pinned:codex"
-                    elif [ "$handoff_engine_request" = "claude" ]; then
-                        handoff_validator_primary="$CLAUDE_CMD"
-                        handoff_validator_fallback=""
-                        info "Handoff reviewer policy: pinned:claude"
-                    else
-                        if [ "${ACTIVE_ENGINE}" = "codex" ]; then
-                            handoff_validator_primary="$CLAUDE_CMD"
-                            handoff_validator_fallback="$CODEX_CMD"
-                            info "Handoff reviewer policy: mixed:auto (active=codex, primary=claude, fallback=codex)"
-                        else
-                            handoff_validator_primary="$CODEX_CMD"
-                            handoff_validator_fallback="$CLAUDE_CMD"
-                            info "Handoff reviewer policy: mixed:auto (active=claude, primary=codex, fallback=claude)"
+                    local handoff_candidate
+                    handoff_validator_primary=""
+                    handoff_validator_fallback=""
+                    while IFS= read -r handoff_candidate; do
+                        [ -n "$handoff_candidate" ] || continue
+                        if [ -z "$handoff_validator_primary" ]; then
+                            handoff_validator_primary="$handoff_candidate"
+                        elif [ -z "$handoff_validator_fallback" ]; then
+                            handoff_validator_fallback="$handoff_candidate"
                         fi
+                    done < <(reviewer_command_candidates)
+                    # In AUTO, a different available engine gets the first look.
+                    # Explicit engine/model choices return only one candidate.
+                    if [ "$handoff_validator_primary" = "$ACTIVE_CMD" ] && [ -n "$handoff_validator_fallback" ]; then
+                        handoff_candidate="$handoff_validator_primary"
+                        handoff_validator_primary="$handoff_validator_fallback"
+                        handoff_validator_fallback="$handoff_candidate"
                     fi
-
-                    if [ "$handoff_validator_primary" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
-                        handoff_validator_primary=""
-                    fi
-                    if [ "$handoff_validator_primary" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
-                        handoff_validator_primary=""
-                    fi
-                    [ -n "$handoff_validator_primary" ] && command -v "$handoff_validator_primary" >/dev/null 2>&1 || handoff_validator_primary=""
-
-                    if [ -z "$handoff_validator_primary" ]; then
-                        if [ "${ACTIVE_ENGINE}" = "codex" ] && [ "$CODEX_HEALTHY" = "true" ] && command -v "$CODEX_CMD" >/dev/null 2>&1; then
-                            handoff_validator_primary="$CODEX_CMD"
-                        elif [ "${ACTIVE_ENGINE}" = "claude" ] && [ "$CLAUDE_HEALTHY" = "true" ] && command -v "$CLAUDE_CMD" >/dev/null 2>&1; then
-                            handoff_validator_primary="$CLAUDE_CMD"
-                        fi
-                    fi
-
-                    if [ "$handoff_validator_fallback" = "$handoff_validator_primary" ] || [ -z "$handoff_validator_fallback" ]; then
-                        handoff_validator_fallback=""
-                    elif [ "$handoff_validator_fallback" = "$CODEX_CMD" ] && [ "$CODEX_HEALTHY" != "true" ]; then
-                        handoff_validator_fallback=""
-                    elif [ "$handoff_validator_fallback" = "$CLAUDE_CMD" ] && [ "$CLAUDE_HEALTHY" != "true" ]; then
-                        handoff_validator_fallback=""
-                    elif ! command -v "$handoff_validator_fallback" >/dev/null 2>&1; then
-                        handoff_validator_fallback=""
-                    fi
+                    info "Handoff reviewer policy: ${ENGINE_SELECTION_REQUESTED:-auto}"
 
                     if ! run_handoff_validation \
                         "$phase" \
@@ -9544,6 +10541,21 @@ main() {
                         "$handoff_validator_fallback"; then
                         phase_failures+=("handoff validation failed after $phase")
                         phase_failures+=("handoff review: verdict=$LAST_HANDOFF_VERDICT score=$LAST_HANDOFF_SCORE gaps=$LAST_HANDOFF_GAPS")
+                    fi
+                    if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                        err "${ENGINE_PERMANENT_FAILURE_REASON:-Reviewer configuration needs operator repair.}"
+                        should_exit=true
+                        PHASE_ATTEMPT_IN_PROGRESS=false
+                        log_reason_code RB_ENGINE_CONFIGURATION_FAILED "${ENGINE_PERMANENT_FAILURE_REASON:-reviewer configuration failure}"
+                        save_state_or_exit "permanent handoff reviewer configuration failure"
+                        break
+                    fi
+                    if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then
+                        err "${ENGINE_BUDGET_FAILURE_REASON:-Session inference budget exhausted.}"
+                        should_exit=true
+                        PHASE_ATTEMPT_IN_PROGRESS=false
+                        save_state_or_exit "handoff reviewer budget exhausted"
+                        break
                     fi
 
                     consensus_evaluated="true"
@@ -9566,6 +10578,8 @@ main() {
                             record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "pass"
                             break
                         fi
+                        is_true "${ENGINE_PERMANENT_FAILURE:-false}" && break
+                        is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && break
                         record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "hold"
 
                         if [ "$LAST_CONSENSUS_FAILURE_KIND" = "infra" ]; then
@@ -9615,12 +10629,62 @@ main() {
                     fi
                 fi
 
+                if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    err "${ENGINE_PERMANENT_FAILURE_REASON:-Reviewer configuration needs operator repair.}"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    log_reason_code RB_ENGINE_CONFIGURATION_FAILED "${ENGINE_PERMANENT_FAILURE_REASON:-reviewer configuration failure}"
+                    save_state_or_exit "permanent consensus reviewer configuration failure"
+                    break
+                fi
+                if is_true "${ENGINE_BUDGET_EXHAUSTED:-false}"; then
+                    err "${ENGINE_BUDGET_FAILURE_REASON:-Session inference budget exhausted.}"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    save_state_or_exit "consensus reviewer budget exhausted"
+                    break
+                fi
+
+                if [ "${#phase_failures[@]}" -eq 0 ]; then
+                    if ! guard_operator_inputs; then
+                        phase_failures+=("protected operator objective, consent or gate definitions changed")
+                    elif ! phase_capture_worktree_manifest "$manifest_after_file"; then
+                        phase_failures+=("could not capture the final reviewed tree")
+                    else
+                        shell_note_local_work "$manifest_before_file" "$manifest_after_file"
+                        record_phase_owned_paths "$manifest_before_file" "$manifest_after_file" || phase_failures+=("could not persist reviewed phase ownership")
+                        if [ "$phase" != plan ]; then
+                            if ! refresh_shell_gates; then
+                                phase_failures+=("protected verification inputs changed")
+                            elif ! run_shell_gates "$phase"; then
+                                if [ "$SHELL_GATES_STATUS" != absent ] || [ "$phase" != build ]; then
+                                    phase_failures+=("${SHELL_GATES_FAILURE:-shell verification failed}")
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+
                 if [ "${#phase_failures[@]}" -eq 0 ] && is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
                     phase_commit_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                     [ -n "$phase_commit_target" ] || phase_commit_target="$(phase_default_next "$phase")"
                     if ! commit_phase_approved_changes "$phase" "$phase_commit_target" "$manifest_before_file" "$manifest_after_file"; then
                         phase_failures+=("auto commit failed after $phase gate approval")
                         phase_failures+=("configure git user.name/user.email or disable auto commit")
+                    fi
+                    if ! session_work_is_saved; then
+                        PHASE_SAVE_REQUIRED=true
+                        PHASE_SAVE_OK=false
+                        PHASE_SAVE_REASON="$SHELL_GATES_FAILURE"
+                    fi
+                    if is_true "$PHASE_SAVE_REQUIRED" && ! is_true "$PHASE_SAVE_OK"; then
+                        warn "Phase $phase was verified but not saved: $PHASE_SAVE_REASON"
+                        write_gate_feedback "$phase" "phase work was not saved: $PHASE_SAVE_REASON"
+                        log_reason_code RB_PHASE_UNSAVED "$phase: $PHASE_SAVE_REASON"
+                        should_exit=true
+                        PHASE_ATTEMPT_IN_PROGRESS=false
+                        save_state_or_exit "unsaved phase checkpoint"
+                        break
                     fi
                 fi
 
@@ -9874,8 +10938,19 @@ main() {
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1
                 save_state_or_exit "phase completion checkpoint ($phase)"
+                ACTIVE_PHASE_MANIFEST_BEFORE=""
 
                 success "Phase $phase completed."
+                if is_true "$PLAN_ONLY" && [ "$phase" = plan ]; then
+                    CURRENT_PHASE=build
+                    CURRENT_PHASE_INDEX=1
+                    CURRENT_PHASE_ATTEMPT=1
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    plan_only_completed=true
+                    save_state_or_exit "planning-only completion checkpoint"
+                    info "Planning complete; build was not authorized."
+                    break 2
+                fi
                 notify_event "phase_complete" "go" "phase=$phase next=${phase_next_target:-unknown} route_reason=${phase_route_reason:-none}" || true
                 break
             done
@@ -9975,12 +11050,21 @@ main() {
         if ! is_true "$should_exit" && [ "$phase_index" -ge "${#phases[@]}" ] && [ "$start_phase_index" -lt "${#phases[@]}" ]; then
             start_phase_index="${#phases[@]}"
         fi
-        if is_true "$should_exit"; then
+        if is_true "$should_exit" || is_true "$plan_only_completed"; then
             break
         fi
         # If start_phase_index is past all phases (consensus routed to "done"
         # or natural completion of all phases), exit the outer loop
         if [ "$start_phase_index" -ge "${#phases[@]}" ]; then
+            if ! shell_terminal_verified; then
+                err "Final accepted tree is not verified: ${SHELL_GATES_FAILURE:-protected input changed}"
+                log_reason_code RB_FINAL_VERIFICATION_FAILED "${SHELL_GATES_FAILURE:-protected input changed}"
+                should_exit=true
+                CURRENT_PHASE=test
+                CURRENT_PHASE_INDEX=2
+                PHASE_ATTEMPT_IN_PROGRESS=false
+                break
+            fi
             info "All phases completed. Session done."
             notify_event "session_done" "ok" "all phases completed successfully" || true
             CURRENT_PHASE="done"
@@ -10002,6 +11086,8 @@ main() {
     fi
     save_state_or_exit "final session checkpoint"
     release_lock
+    is_true "$plan_only_completed" && return 0
+    [ "$CURRENT_PHASE" = done ] && ! is_true "$should_exit"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

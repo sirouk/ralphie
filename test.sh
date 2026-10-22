@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 LIVE_ENGINE="${LIVE_ENGINE:-claude}"
-LIVE_MODE="auto" # auto|on|off
+LIVE_MODE="off" # auto|on|off; inference is always an explicit test option
 LIVE_TIMEOUT_SECONDS="${LIVE_TIMEOUT_SECONDS:-120}"
 STRESS_SCENARIOS="${STRESS_SCENARIOS:-full,retry,resume}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
@@ -26,14 +26,15 @@ Runs the pre-ship validation sequence:
   2) shellcheck support scripts when available
   3) offline setup-agent-subrepos fixture check
   4) tests/durability/run-durability-suite.sh
-  5) tests/durability/run-claude-phase-stress.sh
-  6) tests/durability/run-live-smoke.sh (optional, controlled by flags)
+  5) tests/durability/run-continuation-suite.sh
+  6) tests/durability/run-claude-phase-stress.sh
+  7) tests/durability/run-live-smoke.sh (optional, controlled by flags)
 
 Options:
   --live-engine codex|claude     Live smoke provider API path (default: claude)
   --live                         Require and run live smoke (fail if creds missing)
-  --auto-live                    Run live smoke only when creds are available (default)
-  --skip-live                    Skip live smoke
+  --auto-live                    Explicitly allow live smoke when credentials are available
+  --skip-live                    Skip live smoke (default)
   --live-timeout-seconds N       Timeout wrapper for live smoke (default: 120)
   --stress-scenarios LIST        Stress scenarios (default: full,retry,resume)
   --discord-webhook-url URL      Optional Discord webhook for stress run notifications
@@ -41,7 +42,7 @@ Options:
   --help, -h                     Show this help
 
 Environment variables (optional):
-  LIVE_ENGINE, LIVE_MODE, LIVE_TIMEOUT_SECONDS, STRESS_SCENARIOS, DISCORD_WEBHOOK_URL
+  LIVE_ENGINE, LIVE_TIMEOUT_SECONDS, STRESS_SCENARIOS, DISCORD_WEBHOOK_URL
 EOF
 }
 
@@ -195,6 +196,9 @@ run_support_bash_syntax_checks() {
         ./tests/durability/run-claude-phase-stress.sh
         ./tests/durability/run-live-smoke.sh
         ./tests/durability/mock-claude-control.sh
+        ./tests/durability/mock-prime-control.sh
+        ./tests/durability/offline-test-guards.sh
+        ./tests/durability/run-continuation-suite.sh
         ./engines/setup-agent-subrepos.sh
     )
     local file
@@ -206,10 +210,11 @@ run_support_bash_syntax_checks() {
 
 run_support_shellcheck_if_available() {
     local -a shell_files=(
-        ./test.sh
         ./tests/durability/run-claude-phase-stress.sh
         ./tests/durability/run-live-smoke.sh
         ./tests/durability/mock-claude-control.sh
+        ./tests/durability/mock-prime-control.sh
+        ./tests/durability/offline-test-guards.sh
         ./engines/setup-agent-subrepos.sh
     )
 
@@ -355,13 +360,17 @@ run_self_update_fixture_check() {
         cat > "$tmpd/remote-ralphie.sh" <<'EOF_REMOTE'
 #!/usr/bin/env bash
 #
-# Ralphie - Unified autonomous loop for Codex and Claude Code.
-# Fixture update used by the self-update regression test.
+# Ralphie - Autonomous lifecycle orchestration fixture.
+# fixture-self-update
 set -euo pipefail
-SCRIPT_VERSION="fixture-self-update"
+SCRIPT_VERSION="999.0.0"
 parse_args() { :; }
+ensure_project_bootstrap() { :; }
+run_swarm_consensus() { :; }
+enforce_terminal_done_requirements() { :; }
 self_update_check_and_reexec() { :; }
 main() {
+    local -a phases=("plan" "build" "test" "refactor" "lint" "document")
     parse_args "$@"
     self_update_check_and_reexec "$@"
     [ "${RALPHIE_SKIP_AUTO_UPDATE:-}" = "1" ] || exit 11
@@ -379,18 +388,17 @@ main "$@"
 EOF_REMOTE
         chmod +x "$tmpd/remote-ralphie.sh"
 
-        mkdir -p "$tmpd/default-on"
-        cp ./ralphie.sh "$tmpd/default-on/ralphie.sh"
-        chmod +x "$tmpd/default-on/ralphie.sh"
+        mkdir -p "$tmpd/default-off"
+        cp ./ralphie.sh "$tmpd/default-off/ralphie.sh"
+        chmod +x "$tmpd/default-off/ralphie.sh"
         if [ -n "$timeout_cmd" ]; then
-            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/default-on/ralphie.sh" --no-resume 2>&1)"
+            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/default-off/ralphie.sh" --no-resume 2>&1)"
         else
-            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/default-on/ralphie.sh" --no-resume 2>&1)"
+            output="$(env -u AUTO_UPDATE -u RALPHIE_AUTO_UPDATE HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/default-off/ralphie.sh" --no-resume 2>&1)"
         fi
-        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
-        grep -q 'SCRIPT_VERSION="fixture-self-update"' "$tmpd/default-on/ralphie.sh"
-        ls "$tmpd/default-on/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
-        test ! -e "$tmpd/default-on/.ralphie/self-update/update.lock"
+        printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
+        if grep -q '^# fixture-self-update$' "$tmpd/default-off/ralphie.sh"; then return 1; fi
+        test ! -d "$tmpd/default-off/.ralphie/self-update"
 
         if [ -n "$timeout_cmd" ]; then
             output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$timeout_cmd" 20 "$tmpd/project/ralphie.sh" --no-resume 2>&1)"
@@ -398,7 +406,7 @@ EOF_REMOTE
             output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" "$tmpd/project/ralphie.sh" --no-resume 2>&1)"
         fi
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
-        grep -q 'SCRIPT_VERSION="fixture-self-update"' "$tmpd/project/ralphie.sh"
+        grep -q '^# fixture-self-update$' "$tmpd/project/ralphie.sh"
         ls "$tmpd/project/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
         test ! -e "$tmpd/project/.ralphie/self-update/update.lock"
 
@@ -429,6 +437,32 @@ EOF_REMOTE
             return 1
         fi
         test ! -e "$tmpd/invalid/.ralphie/self-update/update.lock"
+
+        mkdir -p "$tmpd/incompatible"
+        cp ./ralphie.sh "$tmpd/incompatible/ralphie.sh"
+        chmod +x "$tmpd/incompatible/ralphie.sh"
+        cat > "$tmpd/september-architecture.sh" <<'EOF_INCOMPATIBLE'
+#!/usr/bin/env bash
+# Ralphie - Capability-complement autonomy kernel fixture.
+set -euo pipefail
+VERSION="3.1.0"
+cycle_once() { :; }
+main() {
+    printf 'incompatible candidate executed\n' > "$RALPHIE_INCOMPATIBLE_EXECUTION_RECEIPT"
+}
+main "$@"
+# Padding keeps this fixture above the size guard, so architecture rejects it.
+# 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ
+EOF_INCOMPATIBLE
+        if [ -n "$timeout_cmd" ]; then
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 RALPHIE_INCOMPATIBLE_EXECUTION_RECEIPT="$tmpd/incompatible.executed" AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/september-architecture.sh" "$timeout_cmd" 20 "$tmpd/incompatible/ralphie.sh" --no-resume 2>&1)"
+        else
+            output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 RALPHIE_INCOMPATIBLE_EXECUTION_RECEIPT="$tmpd/incompatible.executed" AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/september-architecture.sh" "$tmpd/incompatible/ralphie.sh" --no-resume 2>&1)"
+        fi
+        printf '%s\n' "$output" | grep -q 'failed validation'
+        printf '%s\n' "$output" | grep -q 'RALPHIE_SELF_UPDATE_CURRENT_OK'
+        [ ! -e "$tmpd/incompatible.executed" ]
+        cmp ./ralphie.sh "$tmpd/incompatible/ralphie.sh"
 
         mkdir -p "$tmpd/insecure"
         cp ./ralphie.sh "$tmpd/insecure/ralphie.sh"
@@ -529,6 +563,10 @@ run_live_smoke_if_enabled() {
 main() {
     parse_args "$@"
     validate_args
+    # shellcheck source=tests/durability/offline-test-guards.sh
+    source "$ROOT_DIR/tests/durability/offline-test-guards.sh"
+    prepare_offline_test_guards
+    trap cleanup_offline_test_guards EXIT
 
     run_step "bash syntax checks" run_support_bash_syntax_checks
     run_step "shellcheck support scripts" run_support_shellcheck_if_available
@@ -536,6 +574,7 @@ main() {
     run_step "markdown hygiene fixture" run_markdown_hygiene_fixture_check
     run_step "self-update fixture" run_self_update_fixture_check
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
+    run_step "May continuation acceptance" /bin/bash ./tests/durability/run-continuation-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")
     if [ -n "$DISCORD_WEBHOOK_URL" ]; then
@@ -546,8 +585,11 @@ main() {
     fi
     run_step "claude phase stress ($STRESS_SCENARIOS)" "${stress_cmd[@]}"
 
+    leave_offline_test_guards
     run_live_smoke_if_enabled
     pass "pre-ship sequence complete"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
