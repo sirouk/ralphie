@@ -99,7 +99,9 @@ normal isolation and access controls when work requires them.
 
 Ralphie retains phase orchestration, retries, scoring, state, and verification.
 Reviewer personas provide judgment; their prose does not substitute for an
-executed project check. Prime calls use independent prompts rather than a
+executed project check. Consensus and handoff use private validated answer and
+status receipts, so a later role rewriting an earlier public artifact cannot
+change its vote. Unsupported raw control bytes make a review invalid. Prime calls use independent prompts rather than a
 shared continuation session or a second nested lifecycle loop.
 
 ## Usage
@@ -118,6 +120,12 @@ a project. The public `master` install URL follows the separate newer design;
 it does not install this local continuation branch.
 
 ### Start from an objective or document
+
+Script locations, the invocation directory, project roots and Ralphie's owned
+runtime roots (including `TMPDIR` and initialized submodules) must not contain
+carriage-return or newline bytes. Ralphie refuses those paths before setup so
+path canonicalization cannot select a different sibling directory. Project
+filenames within a supported root can contain tabs and newlines; their ownership and Git saves use exact paths.
 
 The target directory must already exist. If it is inside Git, select the
 repository root; a nested directory is refused before runtime setup. An empty
@@ -221,6 +229,10 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 ```bash
 ./ralphie.sh --no-resume
 ```
+
+State snapshots publish only after the full body and checksum have been written
+successfully. A failed checkpoint preserves the prior snapshot; finite-budget
+inference admission refuses dispatch if it cannot save that admission.
 
 An existing state file that fails validation is preserved and stops resume
 before inference. It is never treated as a new mission with zero spending.
@@ -476,7 +488,11 @@ Operator guidance:
 - Treat `./ralphie.sh --help` as the source of truth for supported options and compatibility aliases.
 - Exported environment values override project config, including across compatibility aliases; CLI values win over both.
 - Use the startup config banner as the source of truth for effective values.
-- Scalar config values preserve literal backslashes and quotes; multiline values are refused.
+- Only supported public settings and their compatibility aliases are loaded from
+  `config.env`; unknown and internal process keys are ignored with a diagnostic.
+- Scalar values preserve literal backslashes and quotes, including through CLI
+  overrides; multiline engine names and scalar settings are refused. Unsupported
+  reasoning values are rejected before inference instead of selecting a default.
 - Operator booleans accept true/false, yes/no, on/off, y/n and 1/0. Malformed values stop startup before updates or inference; they no longer select a default.
 
 Phase no-op profile precedence: explicit per-phase policy flags win over profile-derived policy values.
@@ -511,6 +527,11 @@ with a separate three-second and 64-KiB limit per command; `--help` does not
 probe installed engines. An enabled Codex output schema must name a readable
 regular file or the call is refused. Permanent provider, model or authentication
 failures stop paid retries without replacing an explicitly selected engine.
+A local output-recording failure also stops inference without provider retries
+or fallback; an admitted call continues to count toward the session budget even
+if its answer cannot be recorded. Notification cadence settings use bounded
+decimal integers; malformed or overflowing values stop startup before runtime
+setup.
 
 Successful lifecycle completion exits `0`. Successful `--plan-only` also exits
 `0`, reports planning completion and saves BUILD as the next phase. Failed or

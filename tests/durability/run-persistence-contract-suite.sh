@@ -389,11 +389,208 @@ EOF_LAUNCH
     )
 }
 
+test_state_io_failure_preserves_snapshot_and_refuses_inference() {
+    local ws output status
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    SESSION_ID=last-durable-session
+    SESSION_ATTEMPT_COUNT=0
+    save_state
+    cp "$STATE_FILE" "$ws/state-before"
+    MAX_SESSION_CYCLES=1
+    SESSION_TOKEN_BUDGET=0
+    SESSION_COST_BUDGET_CENTS=0
+    RALPHIE_CLEANUP_STATE_ENABLED=true
+    # Real filesystem write refusal, with stdout/stderr carried by a pipe so
+    # the fixture can still report its result. Conditional dispatch exercises
+    # the same disabled-errexit context used by the actual phase runner.
+    output="$(
+        trap '' XFSZ
+        ulimit -S -f 0
+        status=0
+        if admit_session_attempt 'fixture engine dispatch'; then
+            # A zero-byte mock receipt is possible even under this file limit.
+            : > "$ws/dispatch-admitted"
+        else
+            status=$?
+        fi
+        printf '\nfixture_status=%s\nfixture_budget_exhausted=%s\n' "$status" "$ENGINE_BUDGET_EXHAUSTED"
+    2>&1)"
+    printf '%s\n' "$output" > "$ws/io-failure.log"
+    grep -q '^fixture_status=75$' "$ws/io-failure.log"
+    grep -q '^fixture_budget_exhausted=true$' "$ws/io-failure.log"
+    cmp -s "$STATE_FILE" "$ws/state-before"
+    [ ! -e "$ws/dispatch-admitted" ] && [ ! -e "$PROJECT_DIR/.mock-prime/calls" ]
+    load_state
+    [ "$SESSION_ATTEMPT_COUNT" -eq 0 ] && [ "$SESSION_ID" = last-durable-session ]
+}
+
+test_state_checksum_append_failure_preserves_previous_bytes() {
+    local ws
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    SESSION_ID=last-durable-session
+    save_state
+    cp "$STATE_FILE" "$ws/state-before"
+    SESSION_ID=changed-session-must-not-publish
+    # Isolate the later append boundary, after the body was written normally.
+    printf() {
+        case "${1:-}" in STATE_CHECKSUM*) return 1 ;; esac
+        builtin printf "$@"
+    }
+    if save_state; then return 1; fi
+    unset -f printf
+    cmp -s "$STATE_FILE" "$ws/state-before"
+    load_state
+    [ "$SESSION_ID" = last-durable-session ]
+}
+
+test_checksum_and_owned_paths_preserve_delimiter_filenames() {
+    local ws path expected operator
+    local -a paths
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    paths=($'source\ninside.txt' $'source\tinside.txt' $'source-final\n')
+    operator=$'operator\nunsaved.txt'
+    printf 'operator sentinel\n' > "$PROJECT_DIR/$operator"
+    capture_operator_baseline
+    phase_capture_worktree_manifest "$ws/before"
+    for path in "${paths[@]}"; do printf 'worker source\n' > "$PROJECT_DIR/$path"; done
+    expected="$(printf 'worker source\n' | sha256_stream_sum)"
+    for path in "${paths[@]}"; do
+        [ "$(sha256_file_sum "$PROJECT_DIR/$path")" = "$expected" ]
+    done
+    phase_capture_worktree_manifest "$ws/after"
+    record_phase_owned_paths "$ws/before" "$ws/after"
+    save_state
+    OWNED_PATHS_SHA=""
+    load_state
+    for path in "${paths[@]}"; do owned_path_matches "$path"; done
+    capture_operator_baseline
+    nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$operator"
+    for path in "${paths[@]}"; do
+        if nul_file_contains "$AUTO_COMMIT_BASELINE_DIRTY_PATHS_FILE" "$path"; then return 1; fi
+    done
+    AUTO_COMMIT_SESSION_ENABLED=true
+    AUTO_COMMIT_ON_PHASE_PASS=true
+    commit_phase_approved_changes build test "$ws/before" "$ws/after"
+    [ "$PHASE_SAVE_REQUIRED" = true ] && [ "$PHASE_SAVE_OK" = true ]
+    for path in "${paths[@]}"; do
+        git -C "$PROJECT_DIR" show "HEAD:$path" > "$ws/saved-source"
+        cmp -s "$ws/saved-source" "$PROJECT_DIR/$path"
+    done
+    if git -C "$PROJECT_DIR" cat-file -e "HEAD:$operator" 2>/dev/null; then return 1; fi
+    [ "$(cat "$PROJECT_DIR/$operator")" = 'operator sentinel' ]
+    git -C "$PROJECT_DIR" diff --cached --quiet
+}
+
+test_delimiter_roots_are_refused_before_aliasing_or_writes() {
+    local ws target normal expected route delimiter status
+    for delimiter in $'\n' $'\r'; do
+        for route in explicit default invocation stream script; do
+            ws="$(new_continuation_workspace)"
+            normal="$ws/project with spaces"
+            target="${normal}${delimiter}"
+            cp "$ws/ralphie.sh" "$normal/ralphie.sh"
+            cp -R "$normal" "$target"
+            expected="$ws/expected-normal"
+            cp -R "$normal" "$expected"
+            cp -R "$target" "$ws/expected-delimiter"
+            status=0
+            case "$route" in
+                explicit)
+                    if run_continuation_fixture "$ws" --project "$target" --objective 'Must not bind sibling' --plan-only --max-session-cycles 1 > "$ws/root.log" 2>&1; then status=0; else status=$?; fi
+                    ;;
+                default)
+                    if (cd "$target" && env -i PATH="$RALPHIE_TEST_GUARD_DIR:/usr/bin:/bin" HOME="$ws/home" /bin/bash ./ralphie.sh --objective 'Must not bind sibling' --plan-only) > "$ws/root.log" 2>&1; then status=0; else status=$?; fi
+                    ;;
+                invocation)
+                    if (cd "$target" && env -i PATH="$RALPHIE_TEST_GUARD_DIR:/usr/bin:/bin" HOME="$ws/home" /bin/bash "$ws/ralphie.sh" --project "$normal" --objective 'Must not bind sibling' --plan-only) > "$ws/root.log" 2>&1; then status=0; else status=$?; fi
+                    ;;
+                stream)
+                    if (cd "$target" && env -i PATH="$RALPHIE_TEST_GUARD_DIR:/usr/bin:/bin" HOME="$ws/home" /bin/bash -s -- --objective 'Must not bind sibling' --plan-only < "$ws/ralphie.sh") > "$ws/root.log" 2>&1; then status=0; else status=$?; fi
+                    ;;
+                script)
+                    if env -i PATH="$RALPHIE_TEST_GUARD_DIR:/usr/bin:/bin" HOME="$ws/home" /bin/bash "$target/ralphie.sh" --project "$normal" --objective 'Must not bind sibling' --plan-only > "$ws/root.log" 2>&1; then status=0; else status=$?; fi
+                    ;;
+            esac
+            [ "$status" -ne 0 ]
+            grep -q 'cannot contain CR or LF path bytes' "$ws/root.log"
+            diff -r "$normal" "$expected"
+            diff -r "$target" "$ws/expected-delimiter"
+        done
+    done
+}
+
+test_owned_runtime_root_rejects_delimiters_without_writing_sibling() {
+    local ws directory
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    mkdir "$ws/runtime"
+    printf sentinel > "$ws/runtime/state.env"
+    for directory in "$ws/runtime"$'\n' "$ws/runtime"$'\r'; do
+        mkdir "$directory"
+        if ensure_runtime_directory "$directory/subdir"; then return 1; fi
+        if ensure_runtime_file "$directory/state.env"; then return 1; fi
+        if env TMPDIR="$directory" /bin/bash "$RALPHIE_FILE" --help > "$ws/temp-root.log" 2>&1; then return 1; fi
+        grep -q 'Temporary runtime root cannot contain CR or LF path bytes' "$ws/temp-root.log"
+        [ ! -e "$directory/subdir" ] && [ ! -e "$directory/state.env" ]
+        [ "$(cat "$ws/runtime/state.env")" = sentinel ]
+    done
+}
+
+test_owner_metadata_write_failure_cannot_admit_lock() {
+    local ws lock_dir
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    lock_dir="${LOCK_FILE}.d"
+    mkdir "$lock_dir"
+    printf() {
+        # The first owner write fails; later writes would succeed. Testing this
+        # separately catches compound writers that only inspect their last call.
+        case "${1:-}" in pid=*) return 1 ;; esac
+        builtin printf "$@"
+    }
+    if write_lock_owner_files "$lock_dir" fixture-token; then return 1; fi
+    unset -f printf
+    [ ! -e "$lock_dir/owner" ] && [ ! -e "$LOCK_FILE" ]
+}
+
+test_owned_record_write_failure_preserves_previous_ownership() {
+    local ws signature
+    ws="$(make_workspace)"
+    persistence_load_fixture "$ws"
+    printf 'retained source\n' > "$PROJECT_DIR/retained.txt"
+    git -C "$PROJECT_DIR" add -- retained.txt
+    git -C "$PROJECT_DIR" commit -qm 'retained source baseline'
+    capture_operator_baseline
+    signature="$(owned_path_signature retained.txt)"
+    builtin printf '%s\0%s\0' retained.txt "$signature" > "$OWNED_PATHS_FILE"
+    cp "$OWNED_PATHS_FILE" "$ws/owned-before"
+    phase_capture_worktree_manifest "$ws/before"
+    builtin printf 'new worker source\n' > "$PROJECT_DIR/worker.txt"
+    phase_capture_worktree_manifest "$ws/after"
+    printf() {
+        if [ "${1:-}" = '%s\0%s\0' ] && [ "${2:-}" = retained.txt ]; then return 1; fi
+        builtin printf "$@"
+    }
+    if record_phase_owned_paths "$ws/before" "$ws/after"; then return 1; fi
+    unset -f printf
+    cmp -s "$OWNED_PATHS_FILE" "$ws/owned-before"
+}
+
 main() {
     CONTINUATION_FILTER="${1:-}"
     prepare_isolated_target
     trap 'cleanup_isolated_target; cleanup_offline_test_guards' EXIT
     capture_repo_tracked_status_baseline
+    continuation_case persistence_boundary_lock_owner_io_failure test_owner_metadata_write_failure_cannot_admit_lock
+    continuation_case persistence_boundary_owned_record_io_failure test_owned_record_write_failure_preserves_previous_ownership
+    continuation_case persistence_boundary_state_io_failure test_state_io_failure_preserves_snapshot_and_refuses_inference
+    continuation_case persistence_boundary_state_checksum_append_failure test_state_checksum_append_failure_preserves_previous_bytes
+    continuation_case persistence_boundary_delimiter_filenames test_checksum_and_owned_paths_preserve_delimiter_filenames
+    continuation_case persistence_boundary_delimiter_roots test_delimiter_roots_are_refused_before_aliasing_or_writes
+    continuation_case persistence_boundary_owned_runtime_roots test_owned_runtime_root_rejects_delimiters_without_writing_sibling
     continuation_case invalid_state_never_restarts_paid_budget test_invalid_state_never_restarts_paid_budget
     continuation_case runtime_aliases_are_refused_before_any_write test_runtime_aliases_are_refused_before_any_write
     continuation_case late_log_aliases_cannot_modify_external_files test_late_log_aliases_cannot_modify_external_files

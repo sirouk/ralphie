@@ -196,6 +196,55 @@ test_tts_http_error_is_not_audio() {
     )
 }
 
+test_notification_cadence_is_bounded_decimal() {
+    # shellcheck source=/dev/null
+    source "$RALPHIE_FILE"
+    local ws now=1000 value
+    ws="$(make_workspace)"
+    PROJECT_DIR="$ws" CONFIG_DIR="$ws/.ralphie"
+    NOTIFICATION_LOG_FILE="$CONFIG_DIR/notifications.log"
+    mkdir "$CONFIG_DIR"
+    NOTIFICATIONS_ENABLED=true NOTIFY_TELEGRAM_ENABLED=false NOTIFY_DISCORD_ENABLED=false NOTIFY_TTS_ENABLED=false
+    NOTIFY_EVENT_DEDUP_WINDOW_SECONDS=0008 NOTIFY_INCIDENT_REMINDER_MINUTES=0008
+    validate_effective_engine_config
+    [ "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" = 8 ]
+    [ "$NOTIFY_INCIDENT_REMINDER_MINUTES" = 8 ]
+    notification_now_epoch() { printf '%s' "$now"; }
+    notify_event session_error stopped 'fixture incident'
+    [ "$NOTIFY_INCIDENT_LAST_SENT_AT" -eq 1000 ]
+    now=1479
+    notify_event session_error stopped 'same incident'
+    [ "$NOTIFY_INCIDENT_LAST_SENT_AT" -eq 1000 ]
+    now=1480
+    notify_event session_error stopped 'same incident'
+    [ "$NOTIFY_INCIDENT_LAST_SENT_AT" -eq 1480 ]
+    NOTIFY_INCIDENT_REMINDER_MINUTES=153722867280912930
+    validate_effective_engine_config
+    now=1481
+    notify_event session_error stopped 'same incident'
+    [ "$NOTIFY_INCIDENT_LAST_SENT_AT" -eq 1480 ]
+    for value in 153722867280912931 9223372036854775807 malformed; do
+        NOTIFY_INCIDENT_REMINDER_MINUTES="$value"
+        if validate_effective_engine_config > "$ws/rejected.log" 2>&1; then return 1; fi
+        grep -q 'Invalid NOTIFY_INCIDENT_REMINDER_MINUTES' "$ws/rejected.log"
+    done
+    NOTIFY_INCIDENT_REMINDER_MINUTES=8
+    for value in 9223372036854775808 malformed; do
+        NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$value"
+        if validate_effective_engine_config > "$ws/rejected.log" 2>&1; then return 1; fi
+        grep -q 'Invalid NOTIFY_EVENT_DEDUP_WINDOW_SECONDS' "$ws/rejected.log"
+    done
+    mkdir "$ws/never-started"
+    local result=0
+    env -i PATH="$PATH" HOME="$ws" RALPHIE_SELF_UPDATE_TEST=1 \
+        AUTO_UPDATE=true AUTO_UPDATE_URL="file://$ws/not-present" \
+        RALPHIE_NOTIFY_INCIDENT_REMINDER_MINUTES=malformed \
+        /bin/bash "$ws/ralphie.sh" --project "$ws/never-started" > "$ws/early-rejection.log" 2>&1 || result=$?
+    [ "$result" -ne 0 ]
+    [ ! -e "$ws/never-started/.ralphie" ]
+    grep -q 'Invalid NOTIFY_INCIDENT_REMINDER_MINUTES' "$ws/early-rejection.log"
+}
+
 main() {
     prepare_isolated_target
     trap 'cleanup_isolated_target; cleanup_offline_test_guards' EXIT
@@ -210,7 +259,8 @@ main() {
         stream_truncation_cannot_replace_current_script \
         json_escapes_all_controls_and_preserves_unicode \
         telegram_discovery_stdout_is_only_identifier \
-        tts_http_error_is_not_audio; do
+        tts_http_error_is_not_audio \
+        notification_cadence_is_bounded_decimal; do
         if [ -n "${1:-}" ] && [[ "$name" != *"$1"* ]]; then continue; fi
         run_case "$name" "test_$name"
     done

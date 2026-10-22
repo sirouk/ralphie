@@ -4,11 +4,41 @@
 # One script handles first-run setup, prompt generation, and iterative execution.
 #
 
+# Root paths pass through line-oriented operating-system tools. Reject CR/LF
+# before any canonicalization can trim them into a different existing path.
+validate_root_path() {
+    case "$1" in
+        *$'\r'*|*$'\n'*)
+            printf '%s cannot contain CR or LF path bytes.\n' "${2:-Runtime root}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+canonical_root_path() {
+    local directory="$1" label="${2:-Runtime root}" physical
+    validate_root_path "$directory" "$label" || return 1
+    # A sentinel preserves the actual trailing bytes produced by pwd. Remove
+    # its separator only after capturing; then validate the physical root too.
+    if ! physical="$(cd -- "$directory" 2>/dev/null && pwd -P && printf '.')"; then
+        printf 'Cannot open %s directory.\n' "$label" >&2
+        return 1
+    fi
+    physical="${physical%.}"
+    physical="${physical%$'\n'}"
+    validate_root_path "$physical" "$label" || return 1
+    printf '%s' "$physical"
+}
+
+validate_root_path "${TMPDIR:-/tmp}" "Temporary runtime root" || exit 1
+
 # Stream bootstrap:
 # When executed via stdin (for example: curl ... | bash), persist the script into
 # the current directory and re-exec from disk so relative paths work consistently.
 if [ "${RALPHIE_LIB:-0}" != "1" ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
-    rb_target_script="$(pwd -P)/ralphie.sh"
+    rb_stream_dir="$(canonical_root_path . "Stream install root")" || exit 1
+    rb_target_script="$rb_stream_dir/ralphie.sh"
     if [ -L "$rb_target_script" ] || { [ -e "$rb_target_script" ] && [ ! -f "$rb_target_script" ]; }; then
         printf 'Refusing to replace a symlink or non-file: %s\n' "$rb_target_script" >&2
         exit 1
@@ -18,11 +48,13 @@ if [ "${RALPHIE_LIB:-0}" != "1" ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     if {
-        printf '%s\n' '#!/usr/bin/env bash'
-        printf '%s\n' '#'
-        printf '%s\n' '# Ralphie - Autonomous lifecycle orchestration for Prime Agent, Codex and Claude Code.'
-        printf '%s\n' '# Installed from stdin stream.'
-        printf '%s\n' '#'
+        printf '%s\n' '#!/usr/bin/env bash' '#' \
+            '# Ralphie - Autonomous lifecycle orchestration for Prime Agent, Codex and Claude Code.' \
+            '# Installed from stdin stream.' '#' &&
+        # The persisted tail starts below this bootstrap block. Retain the
+        # early path validators it needs, and check every header write.
+        declare -f validate_root_path canonical_root_path &&
+        printf '%s\n' 'validate_root_path "${TMPDIR:-/tmp}" "Temporary runtime root" || exit 1' &&
         head -c 2000001
     } > "$rb_tmp_script" &&
         [ "$(wc -c < "$rb_tmp_script" | tr -d ' ')" -le 2000000 ] &&
@@ -47,8 +79,15 @@ set -euo pipefail
 
 SCRIPT_VERSION="2.0.0"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-INVOCATION_DIR="$(pwd -P)"
+validate_root_path "${BASH_SOURCE[0]}" "Script path" || exit 1
+rb_source_parent="${BASH_SOURCE[0]}"
+case "$rb_source_parent" in
+    */*) rb_source_parent="${rb_source_parent%/*}"; [ -n "$rb_source_parent" ] || rb_source_parent=/ ;;
+    *) rb_source_parent=. ;;
+esac
+SCRIPT_DIR="$(canonical_root_path "$rb_source_parent" "Script root")" || exit 1
+INVOCATION_DIR="$(canonical_root_path . "Invocation root")" || exit 1
+unset rb_source_parent
 PROJECT_DIR="$SCRIPT_DIR"
 # Project binding precedes every runtime path and config read. Library sourcing
 # keeps its fixture/source root; executable invocations may target any existing root.
@@ -67,7 +106,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 rb_early_index=$((rb_early_index + 1))
                 rb_project_arg="${rb_early_args[$rb_early_index]:-}"
                 [ -n "$rb_project_arg" ] || { printf '%s\n' '--project requires an existing directory' >&2; exit 1; }
-                if ! PROJECT_DIR="$(cd -- "$rb_project_arg" 2>/dev/null && pwd -P)"; then
+                if ! PROJECT_DIR="$(canonical_root_path "$rb_project_arg" "Project root")"; then
                     printf 'Cannot open project directory: %s\n' "$rb_project_arg" >&2
                     exit 1
                 fi
@@ -183,6 +222,7 @@ path_for_display() {
 # replaced a parent directory. Validate before creating or writing anything.
 validate_runtime_directory() {
     local path="${1%/}" anchor current root
+    validate_root_path "$1" "Owned runtime directory" || return 1
     [ -n "$path" ] || path=/
     anchor="$path"
     for root in "${PROJECT_DIR:-}" "${SCRIPT_DIR:-}" "${CONFIG_DIR:-}"; do
@@ -207,8 +247,14 @@ ensure_runtime_directory() {
 }
 
 ensure_runtime_file() {
-    local path="$1"
-    validate_runtime_directory "$(dirname "$path")" || return 1
+    local path="$1" parent
+    # dirname through command substitution would trim a parent's final LF
+    # before the runtime-root validator could refuse the original bytes.
+    case "$path" in
+        */*) parent="${path%/*}"; [ -n "$parent" ] || parent=/ ;;
+        *) parent=. ;;
+    esac
+    validate_runtime_directory "$parent" || return 1
     if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
         err "Refusing unsafe runtime file: $(path_for_display "$path")"
         return 1
@@ -613,7 +659,10 @@ file_looks_like_auth_or_html_challenge() {
 review_fields_are_well_formed() {
     # Known fields are flat pairs. Counting tags alone accepts reversed or
     # crossing fields and lets an incomplete gaps value disappear as empty.
-    awk '
+    # Compare raw bytes before log redaction. BSD awk cannot reliably match
+    # NUL in a regex; a stream comparison also keeps it out of shell variables.
+    LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' < "$1" | cmp -s "$1" - || return 1
+    LC_ALL=C awk '
         BEGIN { opened = ""; invalid = 0 }
         {
             line = $0
@@ -749,34 +798,75 @@ safe_print_file_tail() {
     tail -n "$lines" "$file"
 }
 
+mark_engine_capture_failed() {
+    # Removing a precreated empty witness needs no data write after ENOSPC.
+    [ -z "${capture_recording_marker:-}" ] || rm -f -- "$capture_recording_marker" || return 74
+    return 0
+}
+
 stream_engine_output() (
     local log_file="$1"
     local output_file="${2:-}"
     local stdout_enabled="${3:-true}"
     if is_true "$stdout_enabled"; then stdout_enabled=true; else stdout_enabled=false; fi
-    local ceiling capture stream_exit captured_bytes
-    ensure_runtime_file "$log_file" || return 1
-    [ -z "$output_file" ] || ensure_runtime_file "$output_file" || return 1
+    local ceiling capture="" stream_exit captured_bytes copy_status
+    local capture_error_pipe="" capture_error_pid="" capture_error_byte capture_cleanup_status
+    trap '
+        capture_cleanup_status=$?
+        if [ "$capture_cleanup_status" -eq 74 ]; then mark_engine_capture_failed || true; fi
+        if [ -n "$capture_error_pid" ]; then
+            kill "$capture_error_pid" 2>/dev/null || true
+            wait "$capture_error_pid" 2>/dev/null || true
+        fi
+        [ -z "$capture_error_pipe" ] || rm -f -- "$capture_error_pipe"
+        [ -z "$capture" ] || rm -f -- "$capture"
+    ' EXIT
+    trap 'exit 143' HUP INT TERM
+    ensure_runtime_file "$log_file" || return 74
+    [ -z "$output_file" ] || ensure_runtime_file "$output_file" || return 74
     ceiling="${ENGINE_OUTPUT_MAX_BYTES:-16777216}"
     is_number "$ceiling" && [ "$ceiling" -gt 0 ] || ceiling=16777216
-    capture="$(mktemp "${engine_scratch_dir:-${TMPDIR:-/tmp}}/capture.XXXXXX")" || return 1
-    trap "$(printf 'rm -f -- %q' "$capture")" EXIT
-    trap 'exit 143' HUP INT TERM
+    capture="$(mktemp "${engine_scratch_dir:-${TMPDIR:-/tmp}}/capture.XXXXXX")" || return 74
     stream_exit=0
 
     if [ -n "$output_file" ]; then
-        : > "$output_file"
+        : > "$output_file" || return 74
     fi
+
+    # tee may report a write error and keep reading. Signal that error before
+    # either tee or its producer finishes, including when the producer pauses.
+    capture_error_pipe="$capture.errors"
+    mkfifo "$capture_error_pipe" || return 74
+    (
+        if IFS= read -r -n 1 capture_error_byte; then
+            mark_engine_capture_failed || exit 74
+            cat >/dev/null || exit 74
+        fi
+        exit 0
+    ) < "$capture_error_pipe" &
+    capture_error_pid=$!
 
     # Bound bytes before line parsing: even an endless line cannot fill the
     # log or awk's buffer. Drain excess so the child can finish or be timed out.
     {
-        head -c "$((ceiling + 1))" | tee "$capture"
-        if [ "$(wc -c < "$capture" | tr -d ' ')" -gt "$ceiling" ] && [ -n "${capture_limit_marker:-}" ]; then
-            : > "$capture_limit_marker"
+        copy_status=0
+        if head -c "$((ceiling + 1))" | {
+            if tee "$capture" 2> "$capture_error_pipe"; then :; else
+                mark_engine_capture_failed || exit 74
+                exit 74
+            fi
+        }; then :; else copy_status=74; fi
+        if captured_bytes="$(wc -c < "$capture" | tr -d ' ')" && is_number "$captured_bytes"; then
+            if [ "$captured_bytes" -gt "$ceiling" ] && [ -n "${capture_limit_marker:-}" ]; then
+                : > "$capture_limit_marker" || copy_status=74
+            fi
+        else
+            copy_status=74
         fi
-        cat >/dev/null
-    } | RB_CAPTURE_LOG="$log_file" RB_CAPTURE_OUTPUT="$output_file" RB_CAPTURE_STDOUT="$stdout_enabled" \
+        if [ "$copy_status" -ne 0 ]; then mark_engine_capture_failed || exit 74; exit 74; fi
+        cat >/dev/null || { mark_engine_capture_failed || exit 74; exit 74; }
+    } | {
+        if RB_CAPTURE_LOG="$log_file" RB_CAPTURE_OUTPUT="$output_file" RB_CAPTURE_STDOUT="$stdout_enabled" \
         RB_CAPTURE_PERMANENT="${capture_permanent_marker:-}" awk '
         function emit(line) {
             if (stdout_enabled == "true") {
@@ -873,15 +963,23 @@ stream_engine_output() (
                 flush_buffer()
             }
         }
-    ' || stream_exit=$?
-    captured_bytes="$(wc -c < "$capture" | tr -d ' ')"
+        '; then exit 0; fi
+        mark_engine_capture_failed || exit 74
+        exit 74
+    } || stream_exit=$?
+    if wait "$capture_error_pid"; then :; else stream_exit=74; fi
+    capture_error_pid=""
+    captured_bytes="$(wc -c < "$capture" | tr -d ' ')" && is_number "$captured_bytes" || return 74
     rm -f "$capture"
     if [ "$captured_bytes" -gt "$ceiling" ]; then
         warn "Engine output exceeded ${ceiling} bytes; this attempt is not accepted."
         [ -z "$output_file" ] || : > "$output_file"
         return 125
     fi
-    return "$stream_exit"
+    # Conditional callers disable errexit inside functions. A local recording
+    # failure must survive the drain and must never become provider retry fuel.
+    [ "$stream_exit" -eq 0 ] || return 74
+    return 0
 )
 
 is_phase_or_done() {
@@ -1012,10 +1110,11 @@ normalize_phase_manifest_mode() {
 }
 
 to_lower() {
-    echo "$1" | tr '[:upper:]' '[:lower:]'
+    printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 normalize_engine_name() {
+    config_scalar_is_supported "${1:-}" || { err 'Unsupported multiline engine name.'; return 1; }
     case "$(to_lower "${1:-}")" in
         prime) printf 'prime-agent' ;;
         *) to_lower "${1:-}" ;;
@@ -1040,10 +1139,15 @@ awk_regex_is_valid() {
 is_allowed_config_key() {
     local key="${1:-}"
     case "$key" in
-        # Preferred, namespaced settings surface.
-        RALPHIE_*)
+        RALPHIE_ENGINE|RALPHIE_QUALITY_LEVEL|RALPHIE_GATE_TIMEOUT_SECONDS|RALPHIE_RESUME_REQUESTED|RALPHIE_REBOOTSTRAP_REQUESTED)
             return 0
             ;;
+        RALPHIE_*)
+            # A namespace is not permission to replace process bookkeeping.
+            key="${key#RALPHIE_}"
+            ;;
+    esac
+    case "$key" in
         # Explicitly supported non-prefixed compatibility keys.
         COMMAND_TIMEOUT_SECONDS|MAX_ITERATIONS|MAX_SESSION_CYCLES|YOLO|AUTO_UPDATE|AUTO_UPDATE_URL|\
         AUTO_UPDATE_ALLOW_DIRTY|AUTO_UPDATE_ALLOW_INSECURE|AUTO_UPDATE_TIMEOUT_SECONDS|AUTO_UPDATE_LOCK_TIMEOUT_SECONDS|\
@@ -1507,23 +1611,27 @@ parse_args() {
             exit 0
             ;;
         --engine)
-            ENGINE_SELECTION_REQUESTED="$(normalize_engine_name "$(parse_arg_value "--engine" "${2:-}")")"
+            parse_arg_value "--engine" "${2:-}" >/dev/null
+            ENGINE_SELECTION_REQUESTED="$(normalize_engine_name "$2")" || return 1
             ACTIVE_ENGINE="$ENGINE_SELECTION_REQUESTED"
             ENGINE_SELECTION_EXPLICIT=true
             shift 2
             ;;
         --prime-provider)
-            PRIME_PROVIDER="$(parse_arg_value "--prime-provider" "${2:-}")"
+            parse_arg_value "--prime-provider" "${2:-}" >/dev/null
+            PRIME_PROVIDER="$2"
             PRIME_OPTIONS_EXPLICIT=true
             shift 2
             ;;
         --prime-model)
-            PRIME_MODEL="$(parse_arg_value "--prime-model" "${2:-}")"
+            parse_arg_value "--prime-model" "${2:-}" >/dev/null
+            PRIME_MODEL="$2"
             PRIME_OPTIONS_EXPLICIT=true
             shift 2
             ;;
         --prime-thinking)
-            PRIME_THINKING_OVERRIDE="$(to_lower "$(parse_arg_value "--prime-thinking" "${2:-}")")"
+            parse_arg_value "--prime-thinking" "${2:-}" >/dev/null
+            PRIME_THINKING_OVERRIDE="$2"
             PRIME_OPTIONS_EXPLICIT=true
             shift 2
             ;;
@@ -1701,7 +1809,8 @@ parse_args() {
                 shift 2
                 ;;
             --auto-engine-preference)
-                AUTO_ENGINE_PREFERENCE="$(normalize_engine_name "$(parse_arg_value "--auto-engine-preference" "${2:-}")")"
+                parse_arg_value "--auto-engine-preference" "${2:-}" >/dev/null
+                AUTO_ENGINE_PREFERENCE="$(normalize_engine_name "$2")" || return 1
                 ENGINE_SELECTION_EXPLICIT=true
                 case "$AUTO_ENGINE_PREFERENCE" in
                     prime-agent|codex|claude) ;;
@@ -2177,24 +2286,6 @@ fi
 PHASE_MANIFEST_MODE="$(normalize_phase_manifest_mode "$PHASE_MANIFEST_MODE")"
 
 
-CODEX_THINKING_OVERRIDE="$(to_lower "$CODEX_THINKING_OVERRIDE")"
-case "$CODEX_THINKING_OVERRIDE" in
-    none|minimal|low|medium|high|xhigh|"") ;;
-    *)
-        warn "Invalid CODEX_THINKING_OVERRIDE '$CODEX_THINKING_OVERRIDE'. Falling back to '$DEFAULT_CODEX_THINKING_OVERRIDE'."
-        CODEX_THINKING_OVERRIDE="$DEFAULT_CODEX_THINKING_OVERRIDE"
-        ;;
-esac
-
-CLAUDE_THINKING_OVERRIDE="$(to_lower "$CLAUDE_THINKING_OVERRIDE")"
-case "$CLAUDE_THINKING_OVERRIDE" in
-    none|off|low|medium|high|xhigh|"") ;;
-    *)
-        warn "Invalid CLAUDE_THINKING_OVERRIDE '$CLAUDE_THINKING_OVERRIDE'. Falling back to '$DEFAULT_CLAUDE_THINKING_OVERRIDE'."
-        CLAUDE_THINKING_OVERRIDE="$DEFAULT_CLAUDE_THINKING_OVERRIDE"
-        ;;
-esac
-
 if [ -z "$(sanitize_text_for_log "$BACKLOG_SOURCES")" ]; then
     BACKLOG_SOURCES="$DEFAULT_BACKLOG_SOURCES"
 fi
@@ -2212,14 +2303,6 @@ esac
 if ! is_decimal_number "$NOTIFY_CHUTES_SPEED"; then
     warn "Invalid NOTIFY_CHUTES_SPEED '$NOTIFY_CHUTES_SPEED'. Falling back to '$DEFAULT_NOTIFY_CHUTES_SPEED'."
     NOTIFY_CHUTES_SPEED="$DEFAULT_NOTIFY_CHUTES_SPEED"
-fi
-if ! is_number "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" || [ "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS" -lt 0 ]; then
-    warn "Invalid NOTIFY_EVENT_DEDUP_WINDOW_SECONDS '$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS'. Falling back to '$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS'."
-    NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
-fi
-if ! is_number "$NOTIFY_INCIDENT_REMINDER_MINUTES" || [ "$NOTIFY_INCIDENT_REMINDER_MINUTES" -lt 0 ]; then
-    warn "Invalid NOTIFY_INCIDENT_REMINDER_MINUTES '$NOTIFY_INCIDENT_REMINDER_MINUTES'. Falling back to '$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES'."
-    NOTIFY_INCIDENT_REMINDER_MINUTES="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
 fi
 if [ -z "$NOTIFY_CHUTES_TTS_URL" ]; then
     NOTIFY_CHUTES_TTS_URL="$DEFAULT_NOTIFY_CHUTES_TTS_URL"
@@ -2422,19 +2505,9 @@ sha256sum_command() {
 }
 
 sha256_file_sum() {
-    local file="$1"
-    local checksum_cmd
-
-    checksum_cmd="$(sha256sum_command)" || {
-        warn "No SHA-256 command available for file checksum calculation."
-        return 1
-    }
-
-    if [ "$checksum_cmd" = "sha256sum" ]; then
-        "$checksum_cmd" "$file" | cut -d' ' -f1
-    else
-        "$checksum_cmd" -a 256 "$file" | cut -d' ' -f1
-    fi
+    # Hash stdin so checksum tools never append or escape a delimiter-bearing
+    # filename in their output (GNU sha256sum and BSD shasum differ here).
+    sha256_stream_sum < "$1"
 }
 
 sha256_stream_sum() {
@@ -2865,44 +2938,47 @@ save_state() {
         return 1
     }
 
-    {
-        printf 'MISSION_SEED_SHA="%s"\n' "$(state_escape_value "${MISSION_SEED_SHA:-}")"
-        printf 'OWNED_PATHS_SHA="%s"\n' "$(state_escape_value "${OWNED_PATHS_SHA:-}")"
-        printf 'SHELL_GATES_FINGERPRINT="%s"\n' "$(state_escape_value "${SHELL_GATES_FINGERPRINT:-}")"
-        printf 'SHELL_LOCAL_WORK_SEEN="%s"\n' "$(state_escape_value "${SHELL_LOCAL_WORK_SEEN:-}")"
-        printf 'SHELL_DEVELOPMENT_PHASE_STARTED="%s"\n' "$(state_escape_value "${SHELL_DEVELOPMENT_PHASE_STARTED:-}")"
-        printf 'SESSION_INITIAL_HEAD="%s"\n' "$(state_escape_value "${SESSION_INITIAL_HEAD:-}")"
-        printf 'CURRENT_PHASE="%s"\n' "$(state_escape_value "$CURRENT_PHASE")"
-        printf 'CURRENT_PHASE_INDEX="%s"\n' "$(state_escape_value "$CURRENT_PHASE_INDEX")"
-        printf 'CURRENT_PHASE_ATTEMPT="%s"\n' "$(state_escape_value "$CURRENT_PHASE_ATTEMPT")"
-        printf 'PHASE_ATTEMPT_IN_PROGRESS="%s"\n' "$(state_escape_value "$PHASE_ATTEMPT_IN_PROGRESS")"
-        printf 'ITERATION_COUNT="%s"\n' "$(state_escape_value "$ITERATION_COUNT")"
-        printf 'SESSION_ID="%s"\n' "$(state_escape_value "$SESSION_ID")"
-        printf 'SESSION_ATTEMPT_COUNT="%s"\n' "$(state_escape_value "$SESSION_ATTEMPT_COUNT")"
-        printf 'SESSION_TOKEN_COUNT="%s"\n' "$(state_escape_value "$SESSION_TOKEN_COUNT")"
-        printf 'SESSION_COST_CENTS="%s"\n' "$(state_escape_value "$SESSION_COST_CENTS")"
-        printf 'LAST_RUN_TOKEN_COUNT="%s"\n' "$(state_escape_value "$LAST_RUN_TOKEN_COUNT")"
-        printf 'ENGINE_OUTPUT_TO_STDOUT="%s"\n' "$(state_escape_value "$ENGINE_OUTPUT_TO_STDOUT")"
-        printf 'PHASE_TRANSITION_HISTORY_B64="%s"\n' "$(state_escape_value "$history_encoded")"
-        printf 'PLAN_FRESHNESS_FINGERPRINT="%s"\n' "$(state_escape_value "$PLAN_FRESHNESS_FINGERPRINT")"
-        printf 'GIT_IDENTITY_READY="%s"\n' "$(state_escape_value "$GIT_IDENTITY_READY")"
-        printf 'GIT_IDENTITY_SOURCE="%s"\n' "$(state_escape_value "$GIT_IDENTITY_SOURCE")"
-        printf 'LAST_GATE_DECISION_RECORDED_AT="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_RECORDED_AT")"
-        printf 'LAST_GATE_DECISION_PHASE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_PHASE")"
-        printf 'LAST_GATE_DECISION_ATTEMPT="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_ATTEMPT")"
-        printf 'LAST_GATE_DECISION_STAGE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_STAGE")"
-        printf 'LAST_GATE_DECISION_OUTCOME="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_OUTCOME")"
-        printf 'LAST_GATE_DECISION_SCORE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_SCORE")"
-        printf 'LAST_GATE_DECISION_PASS="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_PASS")"
-        printf 'LAST_GATE_DECISION_RESPONDED_VOTES="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_RESPONDED_VOTES")"
-        printf 'LAST_GATE_DECISION_NEXT_PHASE="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_NEXT_PHASE")"
-        printf 'LAST_GATE_DECISION_SUMMARY="%s"\n' "$(state_escape_value "$LAST_GATE_DECISION_SUMMARY")"
-    } > "$tmp_state_file"
-    # Append SHA-256 checksum to the end
-    if checksum="$(sha256_file_sum "$tmp_state_file")"; then
-        echo "STATE_CHECKSUM=\"$checksum\"" >> "$tmp_state_file"
-    else
-        warn "Could not calculate state checksum; refusing an unverifiable state snapshot."
+    # One checked write covers every record. A compound writer's final
+    # successful command must not conceal an earlier serialization failure.
+    if ! printf '%s="%s"\n' \
+        MISSION_SEED_SHA "$(state_escape_value "${MISSION_SEED_SHA:-}")" \
+        OWNED_PATHS_SHA "$(state_escape_value "${OWNED_PATHS_SHA:-}")" \
+        SHELL_GATES_FINGERPRINT "$(state_escape_value "${SHELL_GATES_FINGERPRINT:-}")" \
+        SHELL_LOCAL_WORK_SEEN "$(state_escape_value "${SHELL_LOCAL_WORK_SEEN:-}")" \
+        SHELL_DEVELOPMENT_PHASE_STARTED "$(state_escape_value "${SHELL_DEVELOPMENT_PHASE_STARTED:-}")" \
+        SESSION_INITIAL_HEAD "$(state_escape_value "${SESSION_INITIAL_HEAD:-}")" \
+        CURRENT_PHASE "$(state_escape_value "$CURRENT_PHASE")" \
+        CURRENT_PHASE_INDEX "$(state_escape_value "$CURRENT_PHASE_INDEX")" \
+        CURRENT_PHASE_ATTEMPT "$(state_escape_value "$CURRENT_PHASE_ATTEMPT")" \
+        PHASE_ATTEMPT_IN_PROGRESS "$(state_escape_value "$PHASE_ATTEMPT_IN_PROGRESS")" \
+        ITERATION_COUNT "$(state_escape_value "$ITERATION_COUNT")" \
+        SESSION_ID "$(state_escape_value "$SESSION_ID")" \
+        SESSION_ATTEMPT_COUNT "$(state_escape_value "$SESSION_ATTEMPT_COUNT")" \
+        SESSION_TOKEN_COUNT "$(state_escape_value "$SESSION_TOKEN_COUNT")" \
+        SESSION_COST_CENTS "$(state_escape_value "$SESSION_COST_CENTS")" \
+        LAST_RUN_TOKEN_COUNT "$(state_escape_value "$LAST_RUN_TOKEN_COUNT")" \
+        ENGINE_OUTPUT_TO_STDOUT "$(state_escape_value "$ENGINE_OUTPUT_TO_STDOUT")" \
+        PHASE_TRANSITION_HISTORY_B64 "$(state_escape_value "$history_encoded")" \
+        PLAN_FRESHNESS_FINGERPRINT "$(state_escape_value "$PLAN_FRESHNESS_FINGERPRINT")" \
+        GIT_IDENTITY_READY "$(state_escape_value "$GIT_IDENTITY_READY")" \
+        GIT_IDENTITY_SOURCE "$(state_escape_value "$GIT_IDENTITY_SOURCE")" \
+        LAST_GATE_DECISION_RECORDED_AT "$(state_escape_value "$LAST_GATE_DECISION_RECORDED_AT")" \
+        LAST_GATE_DECISION_PHASE "$(state_escape_value "$LAST_GATE_DECISION_PHASE")" \
+        LAST_GATE_DECISION_ATTEMPT "$(state_escape_value "$LAST_GATE_DECISION_ATTEMPT")" \
+        LAST_GATE_DECISION_STAGE "$(state_escape_value "$LAST_GATE_DECISION_STAGE")" \
+        LAST_GATE_DECISION_OUTCOME "$(state_escape_value "$LAST_GATE_DECISION_OUTCOME")" \
+        LAST_GATE_DECISION_SCORE "$(state_escape_value "$LAST_GATE_DECISION_SCORE")" \
+        LAST_GATE_DECISION_PASS "$(state_escape_value "$LAST_GATE_DECISION_PASS")" \
+        LAST_GATE_DECISION_RESPONDED_VOTES "$(state_escape_value "$LAST_GATE_DECISION_RESPONDED_VOTES")" \
+        LAST_GATE_DECISION_NEXT_PHASE "$(state_escape_value "$LAST_GATE_DECISION_NEXT_PHASE")" \
+        LAST_GATE_DECISION_SUMMARY "$(state_escape_value "$LAST_GATE_DECISION_SUMMARY")" > "$tmp_state_file"; then
+        warn "Could not serialize state; preserving the previous snapshot."
+        rm -f "$tmp_state_file"
+        return 1
+    fi
+    if ! checksum="$(sha256_file_sum "$tmp_state_file")" \
+        || ! printf 'STATE_CHECKSUM="%s"\n' "$checksum" >> "$tmp_state_file"; then
+        warn "Could not seal state; preserving the previous snapshot."
         rm -f "$tmp_state_file"
         return 1
     fi
@@ -4626,16 +4702,8 @@ notify_event() {
     fi
 
     now_epoch="$(notification_now_epoch)"
-    dedup_window="$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
-    reminder_minutes="$NOTIFY_INCIDENT_REMINDER_MINUTES"
-    is_number "$dedup_window" || dedup_window="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
-    is_number "$reminder_minutes" || reminder_minutes="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
-    if [ "$dedup_window" -lt 0 ]; then
-        dedup_window="$DEFAULT_NOTIFY_EVENT_DEDUP_WINDOW_SECONDS"
-    fi
-    if [ "$reminder_minutes" -lt 0 ]; then
-        reminder_minutes="$DEFAULT_NOTIFY_INCIDENT_REMINDER_MINUTES"
-    fi
+    dedup_window="$(normalize_non_negative_decimal "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS")" || return 1
+    reminder_minutes="$(normalize_non_negative_decimal "$NOTIFY_INCIDENT_REMINDER_MINUTES" 153722867280912930)" || return 1
     reminder_seconds=$((reminder_minutes * 60))
     effective_details="$details"
 
@@ -4911,12 +4979,12 @@ run_first_deploy_notification_wizard() {
         local dedup_candidate reminder_candidate
         dedup_candidate="$(prompt_optional_line "Duplicate-event suppression window seconds (0 disables suppression)" "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS")"
         reminder_candidate="$(prompt_optional_line "Incident reminder interval minutes (0 disables reminders)" "$NOTIFY_INCIDENT_REMINDER_MINUTES")"
-        if is_number "$dedup_candidate" && [ "$dedup_candidate" -ge 0 ]; then
+        if dedup_candidate="$(normalize_non_negative_decimal "$dedup_candidate")"; then
             NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$dedup_candidate"
         else
             warn "Invalid dedup window '$dedup_candidate'; keeping ${NOTIFY_EVENT_DEDUP_WINDOW_SECONDS}."
         fi
-        if is_number "$reminder_candidate" && [ "$reminder_candidate" -ge 0 ]; then
+        if reminder_candidate="$(normalize_non_negative_decimal "$reminder_candidate" 153722867280912930)"; then
             NOTIFY_INCIDENT_REMINDER_MINUTES="$reminder_candidate"
         else
             warn "Invalid incident reminder interval '$reminder_candidate'; keeping ${NOTIFY_INCIDENT_REMINDER_MINUTES}."
@@ -5199,7 +5267,7 @@ smoke_test_engine() {
     local timeout_seconds="${ENGINE_SMOKE_TEST_TIMEOUT:-15}"
     local COMMAND_TIMEOUT_SECONDS="$timeout_seconds"
     local -a smoke_prefix=() smoke_args=()
-    local engine_scratch_dir capture_limit_marker capture_permanent_marker
+    local engine_scratch_dir capture_limit_marker capture_permanent_marker capture_recording_marker
     local prompt_file output_file log_file stream_output_file canary_token smoke_pid
     local smoke_exit=1 result=1 permanent=false
 
@@ -5208,6 +5276,13 @@ smoke_test_engine() {
     engine_scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralphie_engine.XXXXXX")" || return 1
     prompt_file="$engine_scratch_dir/prompt"; output_file="$engine_scratch_dir/answer"; log_file="$engine_scratch_dir/log"
     capture_limit_marker="$engine_scratch_dir/limit"; capture_permanent_marker="$engine_scratch_dir/permanent"
+    capture_recording_marker="$engine_scratch_dir/recording-ok"
+    if ! : > "$capture_recording_marker"; then
+        cleanup_engine_attempt_files "$engine_scratch_dir"
+        ENGINE_PERMANENT_FAILURE=true
+        ENGINE_PERMANENT_FAILURE_REASON='Could not prepare engine readiness output capture; refusing further inference.'
+        return 126
+    fi
     stream_output_file="$output_file"
     canary_token="ralphie_smoke_$(date +%s)_${RANDOM:-0}"
     printf 'Reply with ONLY this exact token on a single line, nothing else: %s\n' "$canary_token" > "$prompt_file"
@@ -5246,6 +5321,13 @@ smoke_test_engine() {
     unregister_managed_pid "$smoke_pid"
     if [ "$smoke_exit" -ne 0 ] && [ -f "$capture_permanent_marker" ]; then permanent=true; fi
     if ! charge_session_budget "$(estimate_run_tokens "$prompt_file" "" "$output_file")"; then cleanup_engine_attempt_files "$engine_scratch_dir"; return 75; fi
+    if [ "$smoke_exit" -eq 74 ]; then
+        cleanup_engine_attempt_files "$engine_scratch_dir"
+        ENGINE_PERMANENT_FAILURE=true
+        ENGINE_PERMANENT_FAILURE_REASON='Could not record engine readiness output; refusing further inference.'
+        err "$ENGINE_PERMANENT_FAILURE_REASON"
+        return 126
+    fi
     # A token cannot turn an oversized or permanent-failure attempt into PASS.
     if [ "$smoke_exit" -ne 125 ] && ! is_true "$permanent" && [ -s "$output_file" ]; then
         if tr -d '\n\r' < "$output_file" | grep -qF "$canary_token"; then result=0; fi
@@ -5284,6 +5366,8 @@ validate_effective_engine_config() {
     validate_engine_budget_settings || return 1
     normalize_integer_setting AUTO_UPDATE_TIMEOUT_SECONDS 1 || return 1
     normalize_integer_setting AUTO_UPDATE_LOCK_TIMEOUT_SECONDS 0 || return 1
+    normalize_integer_setting NOTIFY_EVENT_DEDUP_WINDOW_SECONDS 0 || return 1
+    normalize_integer_setting NOTIFY_INCIDENT_REMINDER_MINUTES 0 153722867280912930 || return 1
     for name in COMMAND_TIMEOUT_SECONDS MAX_ITERATIONS ENGINE_IDLE_OUTPUT_TIMEOUT_SECONDS RUN_AGENT_RETRY_DELAY_SECONDS \
         ENGINE_HEALTH_RETRY_DELAY_SECONDS PHASE_WALLCLOCK_LIMIT_SECONDS PHASE_COMPLETION_MAX_ATTEMPTS \
         PHASE_COMPLETION_RETRY_DELAY_SECONDS MAX_CONSENSUS_ROUTING_ATTEMPTS PHASE_PAIR_CYCLE_LIMIT; do
@@ -5308,9 +5392,20 @@ validate_effective_engine_config() {
     done
     if is_true "$ENGINE_OUTPUT_TO_STDOUT_EXPLICIT"; then ENGINE_OUTPUT_TO_STDOUT_OVERRIDE="$ENGINE_OUTPUT_TO_STDOUT"; fi
     for name in PRIME_CMD CODEX_CMD CLAUDE_CMD PRIME_PROVIDER PRIME_MODEL PRIME_THINKING_OVERRIDE \
-        CODEX_MODEL CLAUDE_MODEL CODEX_ENDPOINT CLAUDE_ENDPOINT CODEX_RESPONSES_SCHEMA_FILE; do
+        CODEX_MODEL CLAUDE_MODEL CODEX_ENDPOINT CLAUDE_ENDPOINT CODEX_RESPONSES_SCHEMA_FILE \
+        CODEX_THINKING_OVERRIDE CLAUDE_THINKING_OVERRIDE; do
         config_scalar_is_supported "${!name}" || { err "Unsupported multiline value for $name."; return 1; }
     done
+    CODEX_THINKING_OVERRIDE="$(to_lower "$CODEX_THINKING_OVERRIDE")"
+    case "$CODEX_THINKING_OVERRIDE" in
+        none|minimal|low|medium|high|xhigh|"") ;;
+        *) err "Unsupported CODEX_THINKING_OVERRIDE '$CODEX_THINKING_OVERRIDE'."; return 1 ;;
+    esac
+    CLAUDE_THINKING_OVERRIDE="$(to_lower "$CLAUDE_THINKING_OVERRIDE")"
+    case "$CLAUDE_THINKING_OVERRIDE" in
+        none|off|low|medium|high|xhigh|"") ;;
+        *) err "Unsupported CLAUDE_THINKING_OVERRIDE '$CLAUDE_THINKING_OVERRIDE'."; return 1 ;;
+    esac
     return 0
 }
 
@@ -5328,13 +5423,21 @@ run_bounded_engine_metadata() (
     local COMMAND_TIMEOUT_SECONDS=3 ENGINE_OUTPUT_MAX_BYTES=65536
     metadata_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralphie_metadata.XXXXXX")" || return 1
     local capture_limit_marker="$metadata_dir/limit"
-    trap 'if [ -n "$metadata_pid" ] && kill -0 "$metadata_pid" 2>/dev/null; then stop_process_tree "$metadata_pid"; fi; rm -f "$metadata_dir/output" "$metadata_dir/limit"; rmdir "$metadata_dir" 2>/dev/null || true' EXIT
+    local capture_recording_marker="$metadata_dir/recording-ok"
+    trap 'if [ -n "$metadata_pid" ] && kill -0 "$metadata_pid" 2>/dev/null; then stop_process_tree "$metadata_pid"; fi; rm -f "$metadata_dir/output" "$metadata_dir/limit" "$metadata_dir/recording-ok"; rmdir "$metadata_dir" 2>/dev/null || true' EXIT
     trap 'exit 143' HUP INT TERM
+    : > "$capture_recording_marker" || return 74
     (
         "$@" 2>&1 | {
-            head -c 65537 > "$metadata_dir/output"
-            if [ "$(file_size_bytes_safe "$metadata_dir/output")" -gt 65536 ]; then : > "$capture_limit_marker"; fi
-            cat >/dev/null
+            metadata_copy_status=0
+            head -c 65537 > "$metadata_dir/output" || metadata_copy_status=74
+            if metadata_bytes="$(wc -c < "$metadata_dir/output" | tr -d ' ')" && is_number "$metadata_bytes"; then
+                if [ "$metadata_bytes" -gt 65536 ]; then : > "$capture_limit_marker" || metadata_copy_status=74; fi
+            else
+                metadata_copy_status=74
+            fi
+            if [ "$metadata_copy_status" -ne 0 ]; then mark_engine_capture_failed || exit 74; exit 74; fi
+            cat >/dev/null || { mark_engine_capture_failed || exit 74; exit 74; }
         }
     ) &
     metadata_pid=$!
@@ -5768,23 +5871,16 @@ release_lock_claim() {
 write_lock_owner_files() {
     local lock_dir="$1"
     local token="$2"
-    local owner_tmp
+    local owner_tmp created_at
     ensure_runtime_directory "$lock_dir" || return 1
     ensure_runtime_file "$lock_dir/owner" || return 1
     ensure_runtime_file "$LOCK_FILE" || return 1
     owner_tmp="$lock_dir/owner.tmp.$$"
     ensure_runtime_file "$owner_tmp" || return 1
-    {
-        printf 'pid=%s\n' "$$"
-        printf 'token=%s\n' "$token"
-        printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
-    } > "$owner_tmp" || return 1
+    created_at="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
+    printf 'pid=%s\ntoken=%s\ncreated_at=%s\n' "$$" "$token" "$created_at" > "$owner_tmp" || return 1
     mv "$owner_tmp" "$lock_dir/owner" || return 1
-    {
-        printf '%s\n' "$$"
-        date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown
-        printf 'token=%s\n' "$token"
-    } > "$LOCK_FILE"
+    printf '%s\n%s\ntoken=%s\n' "$$" "$created_at" "$token" > "$LOCK_FILE"
 }
 
 lock_owner_pid() {
@@ -5942,7 +6038,7 @@ stop_process_tree() {
 cleanup_engine_attempt_files() {
     local dir="${1:-}"
     [ -n "$dir" ] || return 0
-    rm -f "$dir"/capture.* "$dir/limit" "$dir/permanent" "$dir/stderr" "$dir/stderr-input" "$dir/log" "$dir/prompt" "$dir/answer"
+    rm -f "$dir"/capture.* "$dir/limit" "$dir/permanent" "$dir/recording-ok" "$dir/stderr" "$dir/stderr-input" "$dir/log" "$dir/prompt" "$dir/answer"
     rmdir "$dir" 2>/dev/null || true
 }
 
@@ -5972,6 +6068,7 @@ cleanup_resources() {
     RALPHIE_CLEANUP_IN_PROGRESS="true"
     cleanup_managed_processes
     finish_swarm_session_budget 2>/dev/null || warn "Could not import interrupted reviewer inference usage."
+    cleanup_review_receipts 2>/dev/null || warn "Could not remove private reviewer receipts."
     if [ -n "${RUNTIME_GUARD_DIR:-}" ]; then
         guard_operator_inputs 2>/dev/null || true
         checkpoint_current_phase_worktree 2>/dev/null || warn "Could not checkpoint interrupted phase ownership."
@@ -6139,6 +6236,12 @@ wait_for_process_with_idle_output_watchdog() {
         else
             sleep 1
         fi
+        if [ -n "${capture_recording_marker:-}" ] && [ ! -f "$capture_recording_marker" ]; then
+            warn "Could not record output for ${label}."
+            stop_process_tree "$pid"
+            wait "$pid" 2>/dev/null || true
+            return 74
+        fi
         if [ -n "${capture_limit_marker:-}" ] && [ -f "$capture_limit_marker" ]; then
             warn "Output limit exceeded for ${label} (${ceiling} bytes)."
             stop_process_tree "$pid"
@@ -6181,6 +6284,7 @@ wait_for_process_with_idle_output_watchdog() {
     done
 
     if wait "$pid"; then status=0; else status=$?; fi
+    if [ -n "${capture_recording_marker:-}" ] && [ ! -f "$capture_recording_marker" ]; then return 74; fi
     if [ -n "${capture_limit_marker:-}" ] && [ -f "$capture_limit_marker" ]; then return 125; fi
     # Fast file-answer producers may exit between polls.
     for file in "${watch_files[@]+"${watch_files[@]}"}"; do
@@ -6202,7 +6306,7 @@ run_agent_with_prompt() {
     local -a engine_prefix=()
     local stream_output_file="$output_file"
     local stderr_file="" stderr_pipe="" stream_status stderr_status stderr_pid trimmed_log
-    local capture_limit_marker="" capture_permanent_marker="" engine_scratch_dir="" permanent_detected=false
+    local capture_limit_marker="" capture_permanent_marker="" capture_recording_marker="" engine_scratch_dir="" permanent_detected=false
     ensure_runtime_file "$log_file" && ensure_runtime_file "$output_file" || return 2
     ensure_runtime_directory "$(dirname "$log_file")" && ensure_runtime_directory "$(dirname "$output_file")" || return 2
 
@@ -6334,6 +6438,13 @@ run_agent_with_prompt() {
         engine_scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralphie_engine.XXXXXX")" || return 1
         capture_limit_marker="$engine_scratch_dir/limit"
         capture_permanent_marker="$engine_scratch_dir/permanent"
+        capture_recording_marker="$engine_scratch_dir/recording-ok"
+        if ! : > "$capture_recording_marker"; then
+            cleanup_engine_attempt_files "$engine_scratch_dir"
+            ENGINE_PERMANENT_FAILURE=true
+            ENGINE_PERMANENT_FAILURE_REASON='Could not prepare engine output capture; refusing further inference.'
+            return 126
+        fi
         permanent_detected=false
         if [ "$ACTIVE_ENGINE" = prime-agent ]; then
             stderr_file="$engine_scratch_dir/stderr"
@@ -6385,14 +6496,15 @@ run_agent_with_prompt() {
         fi
         unregister_managed_pid "$agent_pid"
         if [ -n "$stderr_file" ] && [ -f "$stderr_file" ]; then
-            cat "$stderr_file" >> "$log_file"
+            cat "$stderr_file" >> "$log_file" || exit_code=74
             stderr_file=""
             stderr_pipe=""
             if [ "$(file_size_bytes_safe "$log_file")" -gt "$ENGINE_OUTPUT_MAX_BYTES" ]; then
-                exit_code=125
+                [ "$exit_code" -eq 74 ] || exit_code=125
                 trimmed_log="$engine_scratch_dir/log"
-                head -c "$ENGINE_OUTPUT_MAX_BYTES" "$log_file" > "$trimmed_log"
-                cat "$trimmed_log" > "$log_file"
+                if ! head -c "$ENGINE_OUTPUT_MAX_BYTES" "$log_file" > "$trimmed_log" || ! cat "$trimmed_log" > "$log_file"; then
+                    exit_code=74
+                fi
             fi
         fi
         [ ! -f "$capture_permanent_marker" ] || permanent_detected=true
@@ -6400,11 +6512,19 @@ run_agent_with_prompt() {
         engine_scratch_dir=""
         capture_limit_marker=""
         capture_permanent_marker=""
+        capture_recording_marker=""
         if ! guard_operator_inputs; then
             charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")" || return 75
             return 1
         fi
         charge_session_budget "$(estimate_run_tokens "$prompt_file" "$log_file" "$output_file")" || return 75
+        if [ "$exit_code" -eq 74 ]; then
+            ENGINE_PERMANENT_FAILURE=true
+            ENGINE_PERMANENT_FAILURE_REASON='Could not record engine output; refusing further inference.'
+            : > "$output_file" || true
+            err "$ENGINE_PERMANENT_FAILURE_REASON"
+            return 126
+        fi
         if [ "$exit_code" -eq 0 ]; then
             break
         fi
@@ -6504,6 +6624,30 @@ consensus_reviewer_persona() {
     esac
 }
 
+cleanup_review_receipts() {
+    [ -n "${RUNTIME_GUARD_DIR:-}" ] || return 0
+    [ -d "$RUNTIME_GUARD_DIR" ] && [ ! -L "$RUNTIME_GUARD_DIR" ] || return 1
+    local receipt
+    for receipt in "$RUNTIME_GUARD_DIR"/swarm-review.* "$RUNTIME_GUARD_DIR"/handoff-review.*; do
+        [ -e "$receipt" ] || [ -L "$receipt" ] || continue
+        [ -d "$receipt" ] && [ ! -L "$receipt" ] || return 1
+        # find does not follow links; remove only these private receipt trees.
+        find "$receipt" -depth -mindepth 1 -delete || return 1
+        rmdir "$receipt" || return 1
+    done
+    return 0
+}
+
+write_reviewer_status() {
+    local path="$1" reviewer_index="$2" engine="$3" command="$4" exit_code="$5" reason="$6"
+    local status=failure failure_kind=''
+    [ "$exit_code" -ne 0 ] || status=success
+    case "$exit_code" in 75) failure_kind=budget;; 126) failure_kind=permanent;; esac
+    printf 'reviewer_index=%s\nengine=%s\ncommand=%s\nexit_code=%s\nfailure_kind=%s\nfailure_reason=%s\nstatus=%s\n' \
+        "$reviewer_index" "$engine" "$command" "$exit_code" "$failure_kind" \
+        "$(sanitize_text_for_log "$reason")" "$status" > "$path"
+}
+
 run_swarm_reviewer() {
     local reviewer_index="$1"
     local prompt_file="$2"
@@ -6512,6 +6656,14 @@ run_swarm_reviewer() {
     local status_file="$5"
     local primary_cmd="$6"
     local fallback_cmd="$7"
+    local receipt_dir="${8:-}"
+    local public_output_file="$output_file" public_status_file="$status_file"
+    if [ -n "$receipt_dir" ]; then
+        ensure_runtime_directory "$receipt_dir" || return 1
+        output_file="$receipt_dir/answer"
+        status_file="$receipt_dir/status"
+    fi
+    ensure_runtime_file "$output_file" && ensure_runtime_file "$status_file" || return 1
     local COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-0}"
     local reviewer_timeout="${SWARM_CONSENSUS_TIMEOUT:-600}"
     is_number "$reviewer_timeout" && [ "$reviewer_timeout" -gt 0 ] || reviewer_timeout=600
@@ -6522,7 +6674,7 @@ run_swarm_reviewer() {
     local -a candidate_cmds=("$primary_cmd")
     [ -n "$fallback_cmd" ] && [ "$fallback_cmd" != "$primary_cmd" ] && candidate_cmds+=("$fallback_cmd")
 
-    rm -f "$status_file"
+    rm -f "$status_file" || return 1
     local attempt_cmd
     local attempt_exit=1
     local used_cmd="${primary_cmd}"
@@ -6553,7 +6705,7 @@ run_swarm_reviewer() {
         ACTIVE_CMD="$attempt_cmd"
         used_cmd="$attempt_cmd"
 
-        rm -f "$output_file"
+        rm -f "$output_file" || return 1
         if run_agent_with_prompt "$prompt_file" "$log_file" "$output_file" "false" "$reviewer_index"; then
             invalid_reason="$(review_output_invalid_reason "$output_file" "$validation_mode")"
             if [ -z "$invalid_reason" ]; then
@@ -6561,8 +6713,8 @@ run_swarm_reviewer() {
                 break
             fi
             local raw_invalid_output=""
-            raw_invalid_output="${output_file}.invalid.${ACTIVE_ENGINE}.${reviewer_index}"
-            mv "$output_file" "$raw_invalid_output" 2>/dev/null || raw_invalid_output=""
+            raw_invalid_output="${public_output_file}.invalid.${ACTIVE_ENGINE}.${reviewer_index}"
+            ensure_runtime_file "$raw_invalid_output" && mv "$output_file" "$raw_invalid_output" 2>/dev/null || raw_invalid_output=""
             write_invalid_reviewer_output_placeholder "$output_file" "$invalid_reason" "$raw_invalid_output"
             warn "Reviewer $reviewer_index output from ${ACTIVE_ENGINE:-unknown} was rejected: $invalid_reason"
             attempt_exit=1
@@ -6579,23 +6731,23 @@ run_swarm_reviewer() {
         fi
     done
 
-    {
-        echo "reviewer_index=$reviewer_index"
-        echo "engine=${ACTIVE_ENGINE:-unknown}"
-        echo "command=$used_cmd"
-        if [ "$attempt_exit" -eq 0 ]; then
-            echo "status=success"
-            echo "exit_code=0"
-        else
-            echo "status=failure"
-            echo "exit_code=$attempt_exit"
-            [ "$attempt_exit" -ne 126 ] || echo "failure_kind=permanent"
-            [ "$attempt_exit" -ne 75 ] || echo "failure_kind=budget"
-            if [ -n "$invalid_reason" ]; then
-                echo "failure_reason=$(sanitize_text_for_log "$invalid_reason")"
-            fi
+    if [ -n "$receipt_dir" ]; then
+        if [ -f "$output_file" ] && { ! ensure_runtime_file "$public_output_file" || ! cp "$output_file" "$public_output_file"; }; then
+            [ "$attempt_exit" -ne 0 ] || attempt_exit=1
+            invalid_reason="could not publish reviewer output"
         fi
-    } > "$status_file"
+        if ! ensure_runtime_file "$public_status_file" || ! write_reviewer_status "$public_status_file" "$reviewer_index" "${ACTIVE_ENGINE:-unknown}" "$used_cmd" "$attempt_exit" "$invalid_reason"; then
+            [ "$attempt_exit" -ne 0 ] || attempt_exit=1
+            invalid_reason="could not publish reviewer status"
+        fi
+        # Publish complete private receipts last. A failed/partial write cannot
+        # leave a success record for the reducer, even inside a conditional call.
+        write_reviewer_status "$status_file.tmp" "$reviewer_index" "${ACTIVE_ENGINE:-unknown}" "$used_cmd" "$attempt_exit" "$invalid_reason" || return 1
+        mv "$status_file.tmp" "$status_file" || return 1
+    else
+        ensure_runtime_file "$status_file" || return 1
+        write_reviewer_status "$status_file" "$reviewer_index" "${ACTIVE_ENGINE:-unknown}" "$used_cmd" "$attempt_exit" "$invalid_reason" || return 1
+    fi
     return "$attempt_exit"
 }
 
@@ -6701,8 +6853,12 @@ run_swarm_consensus() {
     LAST_CONSENSUS_FAILURE_KIND="none"
     LAST_CONSENSUS_FAILURE_REASON=""
     ensure_runtime_directory "$consensus_dir" || return 1
+    runtime_guard_prepare || return 1
+    local review_receipts_dir
+    cleanup_review_receipts || return 1
+    review_receipts_dir="$(mktemp -d "$RUNTIME_GUARD_DIR/swarm-review.XXXXXX")" || return 1
 
-    local -a prompts=() logs=() outputs=() status_files=()
+    local -a prompts=() logs=() outputs=() status_files=() review_outputs=() review_status_files=()
     local -a primary_cmds=() fallback_cmds=() summary_lines=()
     local reviewer_engine_request="${ENGINE_SELECTION_REQUESTED:-$DEFAULT_ENGINE}"
     local reviewer_engine_policy="mixed:auto"
@@ -6748,6 +6904,8 @@ run_swarm_consensus() {
         logs+=("$consensus_dir/reviewer_${i}.log")
         outputs+=("$consensus_dir/reviewer_${i}.out")
         status_files+=("$consensus_dir/reviewer_${i}.status")
+        review_outputs+=("$review_receipts_dir/reviewer_${i}/answer")
+        review_status_files+=("$review_receipts_dir/reviewer_${i}/status")
         ensure_runtime_file "${prompts[$((i - 1))]}" && ensure_runtime_file "${logs[$((i - 1))]}" \
             && ensure_runtime_file "${outputs[$((i - 1))]}" && ensure_runtime_file "${status_files[$((i - 1))]}" || return 1
         primary_cmds+=("$primary_cmd")
@@ -6772,7 +6930,8 @@ run_swarm_consensus() {
                 "${outputs[$i]}" \
                 "${status_files[$i]}" \
                 "${primary_cmds[$i]}" \
-                "${fallback_cmds[$i]}" || reviewer_exit=$?
+                "${fallback_cmds[$i]}" \
+                "$review_receipts_dir/reviewer_$((i + 1))" || reviewer_exit=$?
             case "$reviewer_exit" in 75|126) break;; esac
         done
     else
@@ -6794,7 +6953,8 @@ run_swarm_consensus() {
                     "${outputs[$i]}" \
                     "${status_files[$i]}" \
                     "${primary_cmds[$i]}" \
-                    "${fallback_cmds[$i]}"
+                    "${fallback_cmds[$i]}" \
+                    "$review_receipts_dir/reviewer_$((i + 1))"
             ) &
             register_managed_pid "$!"
             active=$((active + 1))
@@ -6873,7 +7033,7 @@ run_swarm_consensus() {
     local recommended_next="$default_next_phase"
     local highest_next_votes=0
     local candidate_votes=0
-    for ofile in "${outputs[@]}"; do
+    for ofile in "${review_outputs[@]}"; do
         status="failure"
         engine="unknown"
         failure_reason=""
@@ -6883,7 +7043,7 @@ run_swarm_consensus() {
         next_phase="$default_next_phase"
         next_phase_reason=""
 
-        status_file="${status_files[$idx]}"
+        status_file="${review_status_files[$idx]}"
         if [ -f "$status_file" ]; then
             if grep -qx 'exit_code=75' "$status_file"; then
                 ENGINE_BUDGET_EXHAUSTED=true
@@ -6896,7 +7056,7 @@ run_swarm_consensus() {
             fi
             if grep -qx 'exit_code=126' "$status_file"; then
                 ENGINE_PERMANENT_FAILURE=true
-                ENGINE_PERMANENT_FAILURE_REASON="Reviewer provider/model/authentication configuration failed; see $(path_for_display "$status_file")."
+                ENGINE_PERMANENT_FAILURE_REASON="Reviewer failed permanently; see $(path_for_display "${status_files[$idx]}")."
                 LAST_CONSENSUS_FAILURE_KIND=permanent
                 LAST_CONSENSUS_FAILURE_REASON="$ENGINE_PERMANENT_FAILURE_REASON"
                 ACTIVE_ENGINE="$saved_engine"
@@ -7176,6 +7336,10 @@ run_handoff_validation() {
     # Preserve engine state — run_swarm_reviewer mutates ACTIVE_ENGINE/ACTIVE_CMD
     local saved_engine="$ACTIVE_ENGINE"
     local saved_cmd="$ACTIVE_CMD"
+    local review_receipt_dir reviewer_exit=0
+    runtime_guard_prepare || return 1
+    cleanup_review_receipts || return 1
+    review_receipt_dir="$(mktemp -d "$RUNTIME_GUARD_DIR/handoff-review.XXXXXX")" || return 1
 
     run_swarm_reviewer \
         "handoff" \
@@ -7184,16 +7348,17 @@ run_handoff_validation() {
         "$output_file" \
         "$status_file" \
         "$primary_cmd" \
-        "$fallback_cmd"
-    read_handoff_review_output "$output_file"
+        "$fallback_cmd" \
+        "$review_receipt_dir" || reviewer_exit=$?
+    read_handoff_review_output "$review_receipt_dir/answer"
 
     # Restore engine state
     ACTIVE_ENGINE="$saved_engine"
     ACTIVE_CMD="$saved_cmd"
 
     local status="failure"
-    if [ -f "$status_file" ]; then
-        status="$(grep -E "^status=" "$status_file" | head -n 1 | cut -d'=' -f2-)"
+    if [ "$reviewer_exit" -eq 0 ] && [ -f "$review_receipt_dir/status" ]; then
+        status="$(grep -E "^status=" "$review_receipt_dir/status" | head -n 1 | cut -d'=' -f2- || true)"
         [ "$status" = "success" ] || status="failure"
     fi
 
@@ -7410,7 +7575,9 @@ record_phase_owned_paths() {
         cp "$replacement" "$RUNTIME_GUARD_DIR/owned-previous.nul" || return 1
         : > "$replacement" || return 1
         while IFS= read -r -d '' old && IFS= read -r -d '' record; do
-            [ "$old" = "$path" ] || printf '%s\0%s\0' "$old" "$record" >> "$replacement"
+            if [ "$old" != "$path" ]; then
+                printf '%s\0%s\0' "$old" "$record" >> "$replacement" || return 1
+            fi
         done < "$RUNTIME_GUARD_DIR/owned-previous.nul"
         printf '%s\0%s\0' "$path" "$signature" >> "$replacement" || return 1
     done < "$paths"

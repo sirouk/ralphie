@@ -439,6 +439,140 @@ EOF_PLAN
     project_terminal_or_handoff_ready
 }
 
+install_review_rewrite_mock() {
+    local mode="$1"
+    mv "$PRIME_CMD" "${PRIME_CMD}.before-rewrite"
+    printf '%s' "$mode" > "$(dirname "$PRIME_CMD")/rewrite-mode"
+    cat > "$PRIME_CMD" <<'EOF_REWRITE_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+case "${1:-}" in --help|--version) exec "$here/prime-agent.before-rewrite" "$@";; esac
+prompt="$(cat)"
+previous='' target=''
+for argument in "$@"; do
+    [ "$previous" != --cwd ] || target="$argument"
+    previous="$argument"
+done
+printf '%s\n' "$prompt" | "$here/prime-agent.before-rewrite" "$@" > "$here/original-answer.$$"
+mode="$(cat "$here/rewrite-mode")"
+if printf '%s\n' "$prompt" | grep -q '^Reviewer Persona: Architect:'; then
+    if [ "$mode" = failure ]; then
+        printf 'fixture worker crashed\n' >&2
+        exit 23
+    fi
+    printf '<score>100</score><verdict>HOLD</verdict><gaps>checkout correctness bug</gaps><next_phase>build</next_phase>\n'
+    exit 0
+fi
+if printf '%s\n' "$prompt" | grep -q '^Reviewer Persona: Skeptic:'; then
+    # The finished first review is deliberately writable inside the project.
+    # Wait for it in both serial and parallel runs, then forge a clean vote.
+    first=''
+    for ((i=0; i<100; i++)); do
+        first="$(find "$target/consensus" -type f -name reviewer_1.status | head -n 1)"
+        [ -z "$first" ] || break
+        sleep 0.1
+    done
+    [ -n "$first" ]
+    printf '<score>100</score><verdict>GO</verdict><gaps>none</gaps><next_phase>build</next_phase>\n' > "${first%.status}.out"
+    printf 'engine=prime-agent\nstatus=success\nexit_code=0\n' > "$first"
+    printf 'rewrote previous review\n' > "$here/rewrite-observed"
+fi
+printf '<score>100</score><verdict>GO</verdict><gaps>none</gaps><next_phase>build</next_phase>\n'
+EOF_REWRITE_MOCK
+    chmod +x "$PRIME_CMD"
+}
+
+review_rewrite_contract() {
+    local budget="$1" mode result
+    for mode in hold failure; do
+        prepare_phase_review_unit hold
+        CONSENSUS_DIR="$PROJECT_DIR/consensus"
+        RALPHIE_QUALITY_LEVEL=standard MAX_SESSION_CYCLES="$budget"
+        install_review_rewrite_mock "$mode"
+        result=0
+        run_swarm_consensus plan-gate > "$PROJECT_DIR/rewrite.log" 2>&1 || result=$?
+        [ "$result" -eq 1 ]
+        [ "$LAST_CONSENSUS_PASS" = false ]
+        [ -s "$(dirname "$PRIME_CMD")/rewrite-observed" ]
+        # The project mirror really was replaced. It cannot replace the vote.
+        grep -q '<verdict>GO</verdict>' "$LAST_CONSENSUS_DIR/reviewer_1.out"
+        if [ "$mode" = hold ]; then
+            [ "$LAST_CONSENSUS_RESPONDED_VOTES" -eq 3 ]
+            [ "$LAST_CONSENSUS_GO_VOTES" -eq 2 ]
+            [ "$LAST_CONSENSUS_BLOCKING_GAP_VOTES" -eq 1 ]
+            [ "$LAST_CONSENSUS_FAILURE_KIND" = quality ]
+        else
+            [ "$LAST_CONSENSUS_RESPONDED_VOTES" -eq 2 ]
+            [ "$LAST_CONSENSUS_FAILURE_KIND" = infra ]
+        fi
+    done
+}
+
+test_serial_reviewer_votes_survive_project_rewrite() { review_rewrite_contract 20; }
+test_parallel_reviewer_votes_survive_project_rewrite() { review_rewrite_contract 0; }
+
+test_reviewer_receipt_publication_failure_is_not_success() {
+    prepare_phase_review_unit handoff
+    local result=0 receipt="$RUNTIME_GUARD_DIR/failed-review"
+    local output="$PROJECT_DIR/review.out" status="$PROJECT_DIR/review.status"
+    # A directory where the public status belongs is an actual write failure,
+    # even with errexit disabled by the conditional call.
+    mkdir "$status"
+    printf '# Handoff Validation Prompt\nPhase: plan\n' > "$PROJECT_DIR/review-prompt"
+    run_swarm_reviewer handoff "$PROJECT_DIR/review-prompt" "$PROJECT_DIR/review.log" \
+        "$output" "$status" "$PRIME_CMD" '' "$receipt" > "$PROJECT_DIR/publication.log" 2>&1 || result=$?
+    [ "$result" -ne 0 ]
+    [ -d "$status" ]
+    grep -qx status=failure "$receipt/status"
+    grep -q 'could not publish reviewer status' "$receipt/status"
+}
+
+test_private_review_receipts_are_cleaned_after_plan() {
+    local ws
+    ws="$(new_continuation_workspace)"
+    phase_contract_run "$ws" --plan-only --objective 'Prepare the project plan' --accept 'bash check.sh'
+    [ "$PHASE_CONTRACT_EXIT" -eq 0 ] || { cat "$ws/run.out"; return 1; }
+    [ -z "$(find "$ws/engine-scratch" -mindepth 1 -print)" ]
+    [ -n "$(find "$ws/project with spaces/completion_log" -name 'plan_*.handoff.out' -type f -size +0c -print)" ]
+    [ -n "$(find "$ws/project with spaces/consensus" -name reviewer_1.out -type f -print)" ]
+}
+
+test_interrupted_cleanup_removes_private_receipts_without_following_links() {
+    # shellcheck source=/dev/null
+    source "$RALPHIE_FILE"
+    local ws private_root outside
+    ws="$(make_workspace)"
+    prepare_unit_terminal_contract "$ws"
+    private_root="$RUNTIME_GUARD_DIR"
+    outside="$ws/outside"
+    mkdir "$outside"
+    printf 'external sentinel\n' > "$outside/sentinel"
+    mkdir -p "$private_root/swarm-review.fixture/reviewer_1" "$private_root/handoff-review.fixture"
+    printf 'private unfinished answer\n' > "$private_root/swarm-review.fixture/reviewer_1/answer"
+    printf 'private unfinished answer\n' > "$private_root/handoff-review.fixture/answer"
+    ln -s "$outside" "$private_root/swarm-review.fixture/outside-link"
+    cleanup_resources
+    [ ! -e "$private_root" ]
+    [ "$(cat "$outside/sentinel")" = 'external sentinel' ]
+    [ "$(ls -A "$outside")" = sentinel ]
+}
+
+test_review_control_bytes_cannot_be_deleted_into_approval() {
+    # shellcheck source=/dev/null
+    source "$RALPHIE_FILE"
+    local file control
+    file="$(mktemp /tmp/ralphie-review-control.XXXXXX)"
+    for control in '\000' '\001' '\010' '\177'; do
+        printf '<score>9%b5</score><verdict>G%bO</verdict><gaps>none</gaps><next_phase>build</next_phase>\n' "$control" "$control" > "$file"
+        [ -n "$(review_output_invalid_reason "$file")" ]
+        printf '<score>95</score><verdict>GO</verdict><gaps>none</gaps><next_phase>build</next_phase>%b\n' "$control" > "$file"
+        [ -n "$(review_output_invalid_reason "$file")" ]
+    done
+    printf 'Unicode café. <score>\n95\t</score><verdict>GO</verdict><gaps></gaps><next_phase>build</next_phase>\n' > "$file"
+    [ -z "$(review_output_invalid_reason "$file")" ]
+}
+
 main() {
     prepare_isolated_target
     trap 'cleanup_isolated_target; cleanup_offline_test_guards' EXIT
@@ -454,6 +588,12 @@ main() {
     run_case forward_routes_cannot_bypass_legacy_consent test_forward_routes_cannot_bypass_legacy_consent
     run_case same_phase_routes_reenter_with_limits test_same_phase_routes_reenter_with_limits
     run_case valid_hold_with_gaps_is_quality test_valid_hold_with_gaps_is_quality
+    run_case serial_reviewer_votes_survive_project_rewrite test_serial_reviewer_votes_survive_project_rewrite
+    run_case parallel_reviewer_votes_survive_project_rewrite test_parallel_reviewer_votes_survive_project_rewrite
+    run_case reviewer_receipt_publication_failure_is_not_success test_reviewer_receipt_publication_failure_is_not_success
+    run_case review_control_bytes_cannot_be_deleted_into_approval test_review_control_bytes_cannot_be_deleted_into_approval
+    run_case private_review_receipts_are_cleaned_after_plan test_private_review_receipts_are_cleaned_after_plan
+    run_case interrupted_cleanup_removes_private_receipts_without_following_links test_interrupted_cleanup_removes_private_receipts_without_following_links
     run_case malformed_gaps_cannot_pass_consensus test_malformed_gaps_cannot_pass_consensus
     run_case review_fields_reject_reverse_gaps test_review_fields_reject_reverse_gaps
     run_case review_fields_reject_crossing_and_nesting test_review_fields_reject_crossing_and_nesting

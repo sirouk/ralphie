@@ -32,8 +32,11 @@ Start from an unattended objective:
 
 Use `--spec FILE` for an exact seed document, optionally `--plan-only` for
 research and approved planning without BUILD. Explicit seed launches do not
-read a terminal. The target directory must already exist and, if inside Git,
-must be that repository's root. A different seed
+read a terminal. Script locations, the invocation directory, project roots and
+owned runtime roots (including `TMPDIR` and initialized submodules) must not
+contain CR or LF bytes; those roots are refused before setup. Tab and LF filenames
+inside a supported project remain exact through ownership and Git saves. The
+target directory must already exist and, if inside Git, must be that repository's root. A different seed
 requires `--no-resume`. Prime-specific overrides use `--prime-provider`,
 `--prime-model` and `--prime-thinking`; explicit engine choices also bind
 handoff and consensus.
@@ -70,6 +73,15 @@ Important behavior:
 - Resume is enabled by default; `--no-resume` starts fresh.
 - Invalid existing state stops resume before inference and stays intact. It
   cannot silently become a fresh mission with reset spending counters.
+- Checkpoints preserve the previous state if serialization or checksum writes
+  fail; finite-budget inference cannot start without its admission checkpoint.
+- Only supported public config settings and aliases are loaded; internal or
+  unknown keys are ignored with diagnostics. Invalid reasoning and multiline
+  engine/scalar values fail before inference. Local capture failures stop paid
+  retries and fallback.
+- Consensus and handoff reduce private validated receipts. Public output/status
+  artifacts are diagnostic mirrors; later roles cannot rewrite earlier votes.
+  Unsupported raw review control bytes make that review invalid.
 - Automatic saves use a private Git index with hooks disabled. Required
   validation belongs in `--accept` or `.ralphie/gates`, and unrelated operator
   index entries remain intact on success and failure. Automatic saves refuse

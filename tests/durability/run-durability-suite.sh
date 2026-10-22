@@ -611,6 +611,11 @@ test_unit_consensus_requires_unanimous_reviewer_quorum() {
 
         run_swarm_reviewer() {
             local reviewer_index="$1" _prompt_file="$2" _log_file="$3" output_file="$4" status_file="$5"
+            if [ -n "${8:-}" ]; then
+                mkdir -p "$8"
+                output_file="$8/answer"
+                status_file="$8/status"
+            fi
             if [ "$reviewer_index" -eq 3 ]; then
                 printf 'status=failure\nengine=stub\nfailure_reason=simulated reviewer outage\n' > "$status_file"
                 return 1
@@ -657,6 +662,11 @@ test_unit_consensus_next_phase_requires_majority() {
 
         run_swarm_reviewer() {
             local reviewer_index="$1" _prompt_file="$2" _log_file="$3" output_file="$4" status_file="$5"
+            if [ -n "${8:-}" ]; then
+                mkdir -p "$8"
+                output_file="$8/answer"
+                status_file="$8/status"
+            fi
             local next_phase
             case "$reviewer_index" in
                 1) next_phase="test" ;;

@@ -6,6 +6,19 @@ This branch continues commit `e1c7d15` from May 26, 2026. It retains PLAN,
 BUILD, TEST, REFACTOR, LINT and DOCUMENT, scored consensus review, adaptive
 phase routing, plan freshness checks and interruption recovery.
 
+- Load only supported public configuration keys, preserve literal CLI scalar
+  bytes, and refuse malformed reasoning or multiline engine settings before
+  inference. Local output-recording failures stop retries and fallback.
+- Reduce consensus and handoff from private validated answer/status receipts;
+  rewriting public artifacts cannot change another reviewer's vote. Reject raw
+  unsupported control bytes and bound notification cadence arithmetic.
+- Preserve the previous state snapshot when body serialization or checksum writes
+  fail; refuse finite-budget inference before launch if admission cannot persist.
+- Reject CR/LF script, invocation, project and owned runtime roots before setup;
+  retain exact tab/newline filenames inside supported projects, including SHA
+  checks and approved Git saves.
+- Reject partial lock-owner and owned-path writes instead of publishing incomplete
+  metadata after an earlier failed write.
 - Add Prime Agent alongside Codex and Claude for phase execution, handoff and
   consensus. Automatic selection prefers Prime; explicit engine choices remain
   authoritative. Prime provider, model and thinking overrides are explicit.
