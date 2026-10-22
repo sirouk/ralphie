@@ -30,6 +30,23 @@ phase routing, plan freshness checks and interruption recovery.
   managed project's Git remote.
 - Make the test runner offline by default, protect it from real engine calls,
   and detect assertions hidden by later successful commands.
+- Refuse corrupt existing resume state and unsafe owned runtime paths instead
+  of resetting budgets or following aliases. Serialize stale-lock admission.
+- Isolate automatic Git saves from the operator's index and disable hooks for
+  those saves. Refuse pending Git operations rather than consume their history.
+  Include modes, index entries and submodule worktrees in checks.
+- Preserve environment precedence across configuration aliases, validate
+  effective numeric and boolean settings, round estimated request cost upward, and bound free
+  engine probes and paid readiness output. Permanent credential failures stop
+  retries without retaining the credential text.
+- Honor same-phase routes and consent on every development dispatch. Reject
+  malformed reviews, retain usable HOLD feedback, and require actual ordered
+  phase passes and a persistent raw-tree witness for no-work handoff.
+- Stage updates beside the installed file, use unique backups, preserve the
+  invocation directory/interpreter, and bound downloads. Stream installation
+  validates its input and refuses aliased or non-file destinations.
+- Escape all JSON control bytes, keep Telegram discovery output parseable, and
+  reject TTS HTTP errors so text fallback remains available.
 
 The September supervisor chat, companion, named-mission features and simplified
 execution loop are not part of this continuation.

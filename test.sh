@@ -27,8 +27,9 @@ Runs the pre-ship validation sequence:
   3) offline setup-agent-subrepos fixture check
   4) tests/durability/run-durability-suite.sh
   5) tests/durability/run-continuation-suite.sh
-  6) tests/durability/run-claude-phase-stress.sh
-  7) tests/durability/run-live-smoke.sh (optional, controlled by flags)
+  6) tests/durability/run-*-contract-suite.sh
+  7) tests/durability/run-claude-phase-stress.sh
+  8) tests/durability/run-live-smoke.sh (optional, controlled by flags)
 
 Options:
   --live-engine codex|claude     Live smoke provider API path (default: claude)
@@ -199,6 +200,10 @@ run_support_bash_syntax_checks() {
         ./tests/durability/mock-prime-control.sh
         ./tests/durability/offline-test-guards.sh
         ./tests/durability/run-continuation-suite.sh
+        ./tests/durability/run-engine-contract-suite.sh
+        ./tests/durability/run-persistence-contract-suite.sh
+        ./tests/durability/run-phase-contract-suite.sh
+        ./tests/durability/run-update-contract-suite.sh
         ./engines/setup-agent-subrepos.sh
     )
     local file
@@ -407,8 +412,8 @@ EOF_REMOTE
         fi
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_FIXTURE_OK"
         grep -q '^# fixture-self-update$' "$tmpd/project/ralphie.sh"
-        ls "$tmpd/project/.ralphie/self-update"/ralphie.sh.*.bak >/dev/null 2>&1
-        test ! -e "$tmpd/project/.ralphie/self-update/update.lock"
+        ls "$tmpd/project/.ralphie/self-update"/ralphie.sh.backup.* >/dev/null 2>&1
+        test ! -e "$tmpd/project/ralphie.sh.update.lock"
 
         mkdir -p "$tmpd/noop"
         cp ./ralphie.sh "$tmpd/noop/ralphie.sh"
@@ -420,7 +425,7 @@ EOF_REMOTE
         fi
         printf '%s\n' "$output" | grep -q "Auto-update: current ralphie.sh already matches remote."
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
-        test ! -e "$tmpd/noop/.ralphie/self-update/update.lock"
+        test ! -e "$tmpd/noop/ralphie.sh.update.lock"
 
         mkdir -p "$tmpd/invalid"
         cp ./ralphie.sh "$tmpd/invalid/ralphie.sh"
@@ -436,7 +441,7 @@ EOF_REMOTE
         if grep -q 'fixture-self-update' "$tmpd/invalid/ralphie.sh"; then
             return 1
         fi
-        test ! -e "$tmpd/invalid/.ralphie/self-update/update.lock"
+        test ! -e "$tmpd/invalid/ralphie.sh.update.lock"
 
         mkdir -p "$tmpd/incompatible"
         cp ./ralphie.sh "$tmpd/incompatible/ralphie.sh"
@@ -475,10 +480,10 @@ EOF_INCOMPATIBLE
         printf '%s\n' "$output" | grep -q "must be https"
         printf '%s\n' "$output" | grep -q "RALPHIE_SELF_UPDATE_CURRENT_OK"
 
-        mkdir -p "$tmpd/locked/.ralphie/self-update/update.lock"
+        mkdir -p "$tmpd/locked/ralphie.sh.update.lock"
         cp ./ralphie.sh "$tmpd/locked/ralphie.sh"
         chmod +x "$tmpd/locked/ralphie.sh"
-        printf '%s\n' "$$" > "$tmpd/locked/.ralphie/self-update/update.lock/pid"
+        printf '%s\n' "$$" > "$tmpd/locked/ralphie.sh.update.lock/pid"
         if [ -n "$timeout_cmd" ]; then
             output="$(HOME="$tmpd/home" RALPHIE_SELF_UPDATE_TEST=1 AUTO_UPDATE=true AUTO_UPDATE_URL="file://$tmpd/remote-ralphie.sh" AUTO_UPDATE_LOCK_TIMEOUT_SECONDS=0 "$timeout_cmd" 20 "$tmpd/locked/ralphie.sh" --no-resume 2>&1)"
         else
@@ -506,7 +511,7 @@ EOF_INCOMPATIBLE
             if grep -q 'fixture-self-update' "$tmpd/dirty/ralphie.sh"; then
                 return 1
             fi
-            test ! -e "$tmpd/dirty/.ralphie/self-update/update.lock"
+            test ! -e "$tmpd/dirty/ralphie.sh.update.lock"
         fi
     )
     rc=$?
@@ -575,6 +580,10 @@ main() {
     run_step "self-update fixture" run_self_update_fixture_check
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
     run_step "May continuation acceptance" /bin/bash ./tests/durability/run-continuation-suite.sh
+    run_step "engine/config contracts" /bin/bash ./tests/durability/run-engine-contract-suite.sh
+    run_step "persistence/Git contracts" /bin/bash ./tests/durability/run-persistence-contract-suite.sh
+    run_step "phase/completion contracts" /bin/bash ./tests/durability/run-phase-contract-suite.sh
+    run_step "update/input contracts" /bin/bash ./tests/durability/run-update-contract-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")
     if [ -n "$DISCORD_WEBHOOK_URL" ]; then

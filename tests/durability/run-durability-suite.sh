@@ -123,6 +123,7 @@ prepare_unit_terminal_contract() {
     capture_operator_baseline
     ACCEPT_COMMANDS=('bash -n ./ralphie.sh')
     prepare_shell_gates
+    prepare_no_local_work_witness false
     snapshot_operator_inputs
 }
 
@@ -197,6 +198,50 @@ EOF_HONESTY
     if grep -q 'UNREACHABLE_ASSERTION' "$result"; then
         return 1
     fi
+}
+
+test_stress_harness_does_not_report_failed_lifecycles() {
+    local ws result
+    ws="$(make_workspace)"
+    result="$ws/stress-honesty.out"
+    if ! /bin/bash -s -- "$ROOT_DIR/tests/durability/run-claude-phase-stress.sh" "$ws" > "$result" 2>&1 <<'EOF_HONESTY'
+set -euo pipefail
+source "$1"
+workspace="$2/fake-project"
+RUN_DIR="$2/stress-run"
+mkdir -p "$workspace/.ralphie" "$workspace/completion_log" "$workspace/logs" "$workspace/consensus" "$RUN_DIR"
+: > "$RUN_DIR/summary.tsv"
+for phase in plan build test refactor lint document; do
+    : > "$workspace/completion_log/${phase}_1.out"
+    : > "$workspace/completion_log/${phase}_1.handoff.status"
+    : > "$workspace/logs/${phase}_1.log"
+    : > "$workspace/consensus/reviewer_${phase}.out"
+done
+cat > "$workspace/ralphie.sh" <<'EOF_WORKER'
+#!/bin/bash
+printf 'PHASE_ATTEMPT_IN_PROGRESS="true"\nCURRENT_PHASE="plan"\n' > .ralphie/state.env
+EOF_WORKER
+chmod +x "$workspace/ralphie.sh"
+KEEP_WORKSPACES=true
+DISCORD_WEBHOOK_URL=""
+prepare_workspace() { printf '%s' "$workspace"; }
+run_with_timeout() {
+    printf 'retrying in 0s\nResuming in-progress phase\n'
+    return 23
+}
+# Matching retry/resume prose and plenty of artifacts must not hide exit 23.
+run_one retry
+run_one resume
+printf 'Recorded outcomes: total=%s pass=%s fail=%s\n' "$TOTAL_COUNT" "$PASS_COUNT" "$FAIL_COUNT"
+[ "$TOTAL_COUNT" -eq 2 ] && [ "$PASS_COUNT" -eq 0 ] && [ "$FAIL_COUNT" -eq 2 ] || exit 1
+# Missing completion prose/state must also fail when called conditionally.
+if assert_scenario_success "$workspace" "$RUN_DIR/retry.stdout.log"; then exit 1; fi
+EOF_HONESTY
+    then
+        cat "$result"
+        return 1
+    fi
+    grep -q 'Recorded outcomes: total=2 pass=0 fail=2' "$result" || return 1
 }
 
 test_shellcheck() {
@@ -299,6 +344,18 @@ test_unit_state_roundtrip_and_checksum() {
         printf '%s' "$LAST_GATE_DECISION_SUMMARY" | grep -q 'voting: reviewer agreement'
         grep -q '^LAST_GATE_DECISION_SUMMARY="score=91 pass=true votes=3 next=build outcome=pass\\nvoting: reviewer agreement\\nexplainer: route forward"$' "$STATE_FILE"
         grep -q '^STATE_CHECKSUM=' "$STATE_FILE"
+
+        # State uses escaped records independently of literal config values.
+        # Include control bytes at the end, where command substitution can
+        # otherwise discard decoded final newlines.
+        local final_control_value
+        final_control_value=$'literal\\n\\r\\t\nSESSION_ATTEMPT_COUNT="0"\nSTATE_CHECKSUM="bogus"\n\r\t\n'
+        SESSION_ID="$final_control_value"
+        save_state
+        SESSION_ID=""
+        load_state
+        [ "$SESSION_ID" = "$final_control_value" ]
+        [ "$SESSION_ATTEMPT_COUNT" = 4 ]
 
         # Embedded checksum-looking text in state values must not be treated as
         # the authoritative state checksum line.
@@ -2833,6 +2890,10 @@ run_startup_operational_probe() { return 0; }
 run_agent_with_prompt() { : > "$PWD/unexpected-inference"; return 99; }
 run_handoff_validation() { : > "$PWD/unexpected-inference"; return 99; }
 run_swarm_consensus() { : > "$PWD/unexpected-inference"; return 99; }
+# Main distinguishes a missing mission from an invalid existing snapshot.
+# Publish the fixture's saved-done state before exercising its resume path.
+load_state
+save_state
 main --resume --max-session-cycles 3 > "$PWD/$1.out" 2> "$PWD/$1.err"
 EOF
     chmod +x "$ws/harness.sh"
@@ -3032,6 +3093,7 @@ main() {
 
     run_case "syntax" test_syntax
     run_case "harness_does_not_swallow_assertions" test_harness_does_not_swallow_assertions
+    run_case "stress_harness_does_not_report_failed_lifecycles" test_stress_harness_does_not_report_failed_lifecycles
     run_case "shellcheck" test_shellcheck
     run_case "cli_help_does_not_mutate_state" test_cli_help_does_not_mutate_state
     run_case "unit_state_roundtrip_and_checksum" test_unit_state_roundtrip_and_checksum

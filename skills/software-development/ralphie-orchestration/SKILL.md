@@ -68,6 +68,12 @@ Important behavior:
 - Without a terminal or explicit seed, Ralphie uses deterministic fallback bootstrap values and keeps `build_consent: false`.
 - `--rebootstrap` refreshes legacy bootstrap context; seeded missions retain their exact supplied intent.
 - Resume is enabled by default; `--no-resume` starts fresh.
+- Invalid existing state stops resume before inference and stays intact. It
+  cannot silently become a fresh mission with reset spending counters.
+- Automatic saves use a private Git index with hooks disabled. Required
+  validation belongs in `--accept` or `.ralphie/gates`, and unrelated operator
+  index entries remain intact on success and failure. Automatic saves refuse
+  pending Git operations; finish or abort them outside Ralphie before resume.
 - Ralphie may initialize git if the managed directory is not already a repository, depending on configuration.
 
 ### Continuing With A New Focus
@@ -95,7 +101,8 @@ another focus:
    `research/RALPHIE_NEXT_FOCUS_STEERING.md` when the objective needs detail.
 4. Use unchecked markdown tasks for remaining work that must block `done`.
    Ralphie's terminal backlog guard scans configured backlog sources for
-   `- [ ]` tasks; prose-only future slices may not prevent terminal
+   unchecked list tasks, including `- [ ]`, `* [ ]` and `1. [ ]`;
+   prose-only future slices may not prevent terminal
    completion.
 5. Choose the right fresh-start mode.
 
@@ -238,6 +245,12 @@ When editing:
 - Preserve resume behavior.
 - Keep operator-supplied checks authoritative after reviewer activity; command-looking prose is not an execution receipt.
 - Checks must leave HEAD and nonignored project files unchanged; ignore generated test/build artifacts in Git.
+- Mode, staged-blob and initialized submodule worktree changes count as changes
+  during checks. A no-check handoff uses a separate persistent raw-tree witness,
+  independent of ignore rules, for paths outside defined planning/runtime
+  artifacts. Missing witness proof cannot authorize that exception on resume.
+- Never treat a reviewer explanation as phase history or let adaptive routes
+  bypass consent. A passing Test must follow the latest passing Refactor.
 - Keep explicit engine/model/provider selections authoritative across all phase and reviewer calls.
 - Preserve source-repo cleanliness during tests.
 - Do not commit generated runtime artifacts from ad hoc runs.

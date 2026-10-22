@@ -69,17 +69,26 @@ private mirror needs its own explicit raw source URL; the public `master`
 currently follows the separate newer design.
 
 Only `ralphie.sh` is downloaded. Ralphie validates the candidate without
-executing it, syntax-checks it, writes a timestamped backup under
+executing it, syntax-checks it, writes a unique backup under
 `.ralphie/self-update/`, atomically replaces the installed script, and re-execs
-once with an update loop guard.
+once with an update loop guard. Replacement staging and the transaction lock
+live beside the installed script, so different projects share the same lock and
+replacement stays on one filesystem. Re-execution preserves the original
+argument base directory and Bash interpreter, including `bash ralphie.sh` on
+a non-executable file.
 
 Safety defaults:
 
 - local uncommitted edits to `ralphie.sh` block self-update unless `AUTO_UPDATE_ALLOW_DIRTY=true`;
 - `https://`, `file://`, and local paths are accepted; plaintext `http://` requires `AUTO_UPDATE_ALLOW_INSECURE=true`;
 - concurrent starts share a short self-update lock so only one process can replace `ralphie.sh` at a time;
+- a symlink launcher is left intact; launch the actual regular script to update it;
+- fetches have a finite wall-clock deadline and a 2 MB ceiling. HTTPS redirects
+  cannot silently downgrade to HTTP; the wget-only fallback refuses redirects;
 - failed fetch, failed validation, or failed replacement leaves the current script in place;
-- `curl | bash` remains install-and-run bootstrap only and re-execs with auto-update skipped for that first persisted run.
+- `curl | bash` validates the complete stream before installation, refuses
+  symlink/directory destinations, and re-execs with auto-update skipped for that
+  first persisted run.
 
 ## Engine Authority
 
@@ -163,8 +172,14 @@ A reviewer mentioning `pytest`, inventing command output, or voting GO cannot
 overrule a failing check. A new project may PLAN and BUILD before a test command
 exists, but it cannot claim verified completion without executable checks.
 
-Checks run with your permissions. A check that changes HEAD or the nonignored
-project files fails verification, even if it exits successfully; generated
+The narrow no-check exception is a reviewed handoff with no project changes
+outside Ralphie's defined planning/runtime artifacts. Its original raw-tree
+witness is independent of Git ignore rules and remains bound to the mission
+across resume. Missing or changed proof cannot authorize that exception.
+
+Checks run with your permissions. A check that changes HEAD, staged blobs,
+file modes or nonignored project files (including initialized submodule
+worktrees) fails verification, even if it exits successfully; generated
 build and test artifacts should be ignored by Git. Each check has a 900-second
 default deadline, configurable with `--gate-timeout-seconds` or
 `RALPHIE_GATE_TIMEOUT_SECONDS`. CLI controls do not provide an operating-system
@@ -192,7 +207,7 @@ Startup bootstrap is interactive when a terminal is attached (`/dev/tty` is pres
   - finish with a line containing only `EOF` (or press `Ctrl+D`)
 - `build_consent`: proceed from PLAN to BUILD automatically when gates pass?
 
-When no terminal is available, bootstrap uses deterministic fallback values and records `interactive_prompted: false`. In that non-interactive fallback, `build_consent` defaults to `false`; Ralphie can complete planning but will not proceed into BUILD until you set consent intentionally, for example by rerunning `./ralphie.sh --rebootstrap` in a terminal or editing `.ralphie/project-bootstrap.md`.
+When no terminal is available, bootstrap uses deterministic fallback values and records `interactive_prompted: false`. In that non-interactive fallback, `build_consent` defaults to `false`; Ralphie can complete planning but will not dispatch any development phase until you set consent intentionally, for example by rerunning `./ralphie.sh --rebootstrap` in a terminal or editing `.ralphie/project-bootstrap.md`. Adaptive routing cannot bypass that choice.
 
 If `.ralphie/project-bootstrap.md` already exists and was created interactively, `ralphie.sh` will reuse it.
 If it was created non-interactively, the first interactive run will refresh it by default.
@@ -206,6 +221,20 @@ If a run is interrupted by a timeout or crash, Ralphie automatically resumes fro
 ```bash
 ./ralphie.sh --no-resume
 ```
+
+An existing state file that fails validation is preserved and stops resume
+before inference. It is never treated as a new mission with zero spending.
+Inspect the saved state before using `--no-resume`, which explicitly starts a
+fresh mission and resets its counters. Owned runtime paths must be ordinary
+files and directories; Ralphie refuses aliases rather than writing through them.
+
+Lock admission uses `.ralphie/run.lock.claim`, separate from the running worker
+lock. The updater uses `ABSOLUTE_SCRIPT_PATH.update.lock`, shared by all projects
+using that installation. If a launcher dies while holding a claim, Ralphie
+reports the path and refuses to guess that it is stale. Verify every launcher,
+worker and updater using that lock has stopped, inspect its owner/PID, then
+remove only the claim owner file and empty claim directory before retrying.
+Leave the primary worker lock and mission state intact.
 
 ### Continuing With A New Focus
 
@@ -316,8 +345,8 @@ With no flags, Ralphie:
 5. Reuses `.ralphie/project-bootstrap.md` if it is valid.
 6. Prompts only when interactive input is available **and** bootstrap or
    first-deploy setup needs attention.
-7. Enters the persisted phase/attempt, or starts at PLAN if there is no valid
-   state.
+7. Enters the persisted phase/attempt, or starts at PLAN if no state exists.
+   Invalid existing state stops resume without changing the saved file.
 
 So yes, Ralphie can ask questions, but it does not ask every time. A no-flag
 run is intentionally optimized for durable resumption. To force questions for a
@@ -388,7 +417,10 @@ each admission uses the current totals. Unbounded runs retain parallel review.
 Token and cost totals are byte-based estimates, not provider billing receipts;
 an admitted request can cross those estimated limits before its result is
 available, after which further inference is refused. Interrupted requests can
-lack a settled token or cost estimate.
+lack a settled token or cost estimate. A finite cost cap requires a positive
+`--session-token-rate-cents-per-million` value. Each request estimate is rounded
+up to whole cents; small requests can each consume one estimated cent.
+Accounting overflow refuses further inference.
 
 ### CLI Flags
 
@@ -442,7 +474,10 @@ Operator guidance:
 - Use CLI flags for run-scoped overrides.
 - Use `.ralphie/config.env` for stable project/operator defaults.
 - Treat `./ralphie.sh --help` as the source of truth for supported options and compatibility aliases.
-- Use the startup config banner as the source of truth for effective values after config/env/CLI precedence.
+- Exported environment values override project config, including across compatibility aliases; CLI values win over both.
+- Use the startup config banner as the source of truth for effective values.
+- Scalar config values preserve literal backslashes and quotes; multiline values are refused.
+- Operator booleans accept true/false, yes/no, on/off, y/n and 1/0. Malformed values stop startup before updates or inference; they no longer select a default.
 
 Phase no-op profile precedence: explicit per-phase policy flags win over profile-derived policy values.
 `--strict-validation-noop true` is a compatibility hardening switch for test and lint no-op handling after profile and explicit policy resolution; it does not make the plan phase require worktree mutation.
@@ -454,7 +489,8 @@ Supported no-op profiles:
 - `custom`: starts from balanced defaults; explicit per-phase policies override them.
 
 Behavior summary:
-- `0` values for retry/routing budgets are treated as unlimited loops with stagnation guards.
+- Zero disables session/iteration limits or leaves phase completion/routing retries unlimited with stagnation guards. Worker and engine-health attempt counts require at least one attempt.
+- Integer settings accept decimal digits, normalize leading zeroes and reject malformed or overflowing values before updates or inference. Confidence and consensus scores stay within 0–100.
 - Resume remains enabled by default (`--resume`); use `--no-resume --rebootstrap` when changing to a new mission or focus.
 - Terminal routing to `done` is guarded: lint and document must each pass at least once before completion.
 
@@ -470,7 +506,11 @@ than accepting a truncated answer. Prime and Claude print mode buffer output,
 so silence alone does not time them out. A positive
 `RALPHIE_COMMAND_TIMEOUT_SECONDS` enforces a whole-call deadline even without a
 `timeout` executable; `0` leaves that deadline disabled. Reviewers also have
-their own consensus timeout.
+their own consensus timeout. Free CLI capability probes run only when needed,
+with a separate three-second and 64-KiB limit per command; `--help` does not
+probe installed engines. An enabled Codex output schema must name a readable
+regular file or the call is refused. Permanent provider, model or authentication
+failures stop paid retries without replacing an explicitly selected engine.
 
 Successful lifecycle completion exits `0`. Successful `--plan-only` also exits
 `0`, reports planning completion and saves BUILD as the next phase. Failed or
@@ -529,7 +569,21 @@ Build transitions require the snapshot and clean artifact checks to pass.
   engine work. Configure `git user.name`/`user.email` or equivalent identity
   environment and resume; use `--auto-commit-on-phase-pass false` only when you
   intentionally want to manage saves yourself.
-- Commits are scoped to files touched in the current phase manifest delta; pre-staged index content is skipped to avoid accidental mixed commits.
+- Commits are scoped to approved phase paths. If the operator index already
+  contains staged changes, Ralphie refuses the automatic save until those
+  changes are saved separately.
+- Automatic saves use a private index and disable Git hooks. Put required
+  validation in `--accept` or `.ralphie/gates`; it runs independently before
+  phase promotion. Unrelated operator index entries remain intact, including
+  when a save fails. Repository-selection variables such as `GIT_DIR` and
+  `GIT_INDEX_FILE` are cleared for executable launches so `--project` remains
+  authoritative; ordinary identity, signing and transport settings still apply.
+- Older content-only ownership records cannot certify dirty paths under the
+  stronger mode/type checks. Such paths stay protected as operator work; review
+  and save them explicitly before resuming automatic saves.
+- Automatic saves refuse pending merge, cherry-pick, revert, rebase or sequencer
+  operations, including in linked worktrees. Finish or abort the operation
+  outside Ralphie before resuming; Ralphie leaves its metadata intact.
 - A required but unsuccessful save blocks the phase. Validation-only phases
   without savable changes do not need an empty commit.
 
@@ -673,6 +727,8 @@ Default sequence:
 - `tests/durability/run-durability-suite.sh`
 - `tests/durability/run-continuation-suite.sh` for Prime's CLI, seeded/headless
   use, executed gates, protected operator files and process cleanup
+- `tests/durability/run-*-contract-suite.sh` for configuration/resource limits,
+  persistence and Git ownership, phase/completion evidence, updates and outputs
 - `tests/durability/run-claude-phase-stress.sh --scenarios full,retry,resume`
 - Live provider smoke is disabled by default. `--live` and `--auto-live`
   explicitly enable the separate direct-provider smoke path and can incur cost.

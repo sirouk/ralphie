@@ -281,32 +281,33 @@ assert_scenario_success() {
     local ws="$1"
     local stdout_file="$2"
 
-    grep -q 'All phases completed. Session done.' "$stdout_file"
-    grep -q 'CURRENT_PHASE="done"' "$ws/.ralphie/state.env"
+    grep -q 'All phases completed. Session done.' "$stdout_file" || return 1
+    grep -q '^CURRENT_PHASE="done"$' "$ws/.ralphie/state.env" || return 1
 
     local phase
     for phase in plan build test refactor lint document; do
-        ls "$ws/completion_log/${phase}_"*.out >/dev/null 2>&1
-        ls "$ws/logs/${phase}_"*.log >/dev/null 2>&1
+        ls "$ws/completion_log/${phase}_"*.out >/dev/null 2>&1 || return 1
+        ls "$ws/logs/${phase}_"*.log >/dev/null 2>&1 || return 1
     done
 
     local handoff_count
-    handoff_count="$(find "$ws/completion_log" -type f -name '*handoff.status' | wc -l | tr -d ' ')"
+    handoff_count="$(find "$ws/completion_log" -type f -name '*handoff.status' | wc -l | tr -d ' ')" || return 1
     if ! is_number "$handoff_count" || [ "$handoff_count" -lt 6 ]; then
         return 1
     fi
 
     local consensus_count
-    consensus_count="$(find "$ws/consensus" -type f -name 'reviewer_*.out' | wc -l | tr -d ' ')"
+    consensus_count="$(find "$ws/consensus" -type f -name 'reviewer_*.out' | wc -l | tr -d ' ')" || return 1
     if ! is_number "$consensus_count" || [ "$consensus_count" -lt 6 ]; then
         return 1
     fi
 
     if [ -n "$DISCORD_WEBHOOK_URL" ]; then
         [ -f "$ws/.ralphie/notifications.log" ] || return 1
-        grep -q 'event=phase_complete' "$ws/.ralphie/notifications.log"
-        grep -q 'delivery=delivered' "$ws/.ralphie/notifications.log"
+        grep -q 'event=phase_complete' "$ws/.ralphie/notifications.log" || return 1
+        grep -q 'delivery=delivered' "$ws/.ralphie/notifications.log" || return 1
     fi
+    return 0
 }
 
 run_with_timeout() {
@@ -328,10 +329,11 @@ run_scenario_full() {
     local stderr_file="$4"
 
     (
-        cd "$ws"
+        cd "$ws" || exit 1
         MOCK_CLAUDE_STATE_DIR="$ws/.mock-claude" \
         run_with_timeout "$timeout_cmd" "$PER_SCENARIO_TIMEOUT_SECONDS" ./ralphie.sh --no-resume
-    ) >"$stdout_file" 2>"$stderr_file"
+    ) >"$stdout_file" 2>"$stderr_file" || return $?
+    return 0
 }
 
 run_scenario_retry() {
@@ -341,13 +343,14 @@ run_scenario_retry() {
     local stderr_file="$4"
 
     (
-        cd "$ws"
+        cd "$ws" || exit 1
         MOCK_CLAUDE_STATE_DIR="$ws/.mock-claude" \
         MOCK_CLAUDE_INJECT_HANDOFF_HOLD_ONCE=true \
         run_with_timeout "$timeout_cmd" "$PER_SCENARIO_TIMEOUT_SECONDS" ./ralphie.sh --no-resume
-    ) >"$stdout_file" 2>"$stderr_file"
+    ) >"$stdout_file" 2>"$stderr_file" || return $?
 
-    grep -q 'retrying in' "$stdout_file" || grep -q 'retrying in' "$stderr_file"
+    grep -q 'retrying in' "$stdout_file" || grep -q 'retrying in' "$stderr_file" || return 1
+    return 0
 }
 
 run_scenario_resume() {
@@ -360,7 +363,7 @@ run_scenario_resume() {
     local first_err="$ws/first_run.err"
 
     (
-        cd "$ws"
+        cd "$ws" || exit 1
         MOCK_CLAUDE_STATE_DIR="$ws/.mock-claude" \
         MOCK_CLAUDE_SLEEP_PLAN_SECONDS=15 \
         ./ralphie.sh --no-resume
@@ -400,12 +403,13 @@ run_scenario_resume() {
     fi
 
     (
-        cd "$ws"
+        cd "$ws" || exit 1
         MOCK_CLAUDE_STATE_DIR="$ws/.mock-claude" \
         run_with_timeout "$timeout_cmd" "$PER_SCENARIO_TIMEOUT_SECONDS" ./ralphie.sh --resume
-    ) >"$stdout_file" 2>"$stderr_file"
+    ) >"$stdout_file" 2>"$stderr_file" || return $?
 
-    grep -q 'Resuming in-progress phase' "$stdout_file"
+    grep -q 'Resuming in-progress phase' "$stdout_file" || return 1
+    return 0
 }
 
 record_summary_line() {
@@ -585,4 +589,4 @@ main() {
     send_discord "[ralphie-stress] run '$RUN_ID' completed successfully"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

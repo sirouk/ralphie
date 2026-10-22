@@ -15,8 +15,10 @@ default_next_phase() {
     case "${1:-}" in
         plan) echo "build" ;;
         build) echo "test" ;;
-        test) echo "refactor" ;;
-        refactor) echo "lint" ;;
+        test)
+            if [ -f "$STATE_DIR/refactor.count" ]; then echo "lint"; else echo "refactor"; fi
+            ;;
+        refactor) echo "test" ;;
         lint) echo "document" ;;
         document) echo "done" ;;
         *) echo "done" ;;
