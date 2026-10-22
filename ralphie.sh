@@ -1506,7 +1506,7 @@ Core options:
   --auto-init-git-if-missing bool         Initialize git repository at startup when missing (true|false)
   --auto-commit-on-phase-pass bool        Auto-commit local changes after phase gate pass (true|false, no push)
   --auto-update bool                      Check and replace ralphie.sh from remote before startup (true|false)
-  --auto-update-url URL                   Compatible continuation source; default: published sirouk/ralphie master
+  --auto-update-url URL                   Compatible continuation source; default: published sirouk/ralphie main
   --auto-update-allow-insecure bool       Allow non-HTTPS HTTP auto-update URLs (true|false; default false)
   --auto-update-lock-timeout-seconds N    Seconds to wait for another Ralphie self-update to finish
   --auto-engine-preference ENGINE        Preferred AUTO engine (default: prime-agent)
@@ -1976,7 +1976,7 @@ DEFAULT_AUTO_INIT_GIT_IF_MISSING="true"       # initialize git repo at startup w
 DEFAULT_AUTO_COMMIT_ON_PHASE_PASS="true"      # commit phase-approved local changes (no push)
 DEFAULT_YOLO="true"
 DEFAULT_AUTO_UPDATE="false"                  # self-update is an explicit operator action
-DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/master/ralphie.sh"
+DEFAULT_AUTO_UPDATE_URL="https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh"
 DEFAULT_AUTO_UPDATE_ALLOW_DIRTY="false"      # refuse to overwrite local ralphie.sh edits by default
 DEFAULT_AUTO_UPDATE_ALLOW_INSECURE="false"   # refuse plaintext HTTP update URLs by default
 DEFAULT_RALPHIE_QUALITY_LEVEL="standard"    # minimal|standard|high

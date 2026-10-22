@@ -5,6 +5,19 @@ SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/durability/run-durability-suite.sh
 source "$SUITE_DIR/run-durability-suite.sh"
 
+test_update_defaults_to_main_source() {
+    local ws
+    ws="$(make_workspace)"
+    (
+        unset AUTO_UPDATE_URL RALPHIE_UPDATE_URL RALPHIE_AUTO_UPDATE_URL
+        source "$ws/ralphie.sh"
+        [ "$DEFAULT_AUTO_UPDATE_URL" = 'https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh' ]
+        [ "$AUTO_UPDATE_URL" = "$DEFAULT_AUTO_UPDATE_URL" ]
+        print_usage > "$ws/help.log"
+        grep -q 'default: published sirouk/ralphie main$' "$ws/help.log"
+    )
+}
+
 new_update_workspace() {
     local ws
     ws="$(make_workspace)"
@@ -251,6 +264,7 @@ main() {
     capture_repo_tracked_status_baseline
     local name
     for name in \
+        update_defaults_to_main_source \
         update_preserves_relative_arguments_and_nonexecutable_mode \
         update_backup_alias_cannot_overwrite_external_file \
         update_refuses_symlink_launcher_and_abandoned_claim \

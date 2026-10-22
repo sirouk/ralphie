@@ -45,8 +45,11 @@ Check definitions are bound to the saved mission as well. Changing
 `.ralphie/gates` or adding a different `--accept` requires reviewed checks and
 `--no-resume`. Plan-only work resumes into BUILD with the same seed and checks.
 
-This branch continues the May 26 harness. The public `master` raw install URL
-follows the separate newer design and does not install this continuation.
+The default `main` branch continues the May 26 harness. Install and opt-in
+self-update use `https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh`.
+The old simplified harness is preserved at `tangent/simplified-harness` and a
+frozen nondefault `master` ref keeps its existing raw links working. It does not
+follow `main`; the old and current update contracts are incompatible.
 
 Local run:
 

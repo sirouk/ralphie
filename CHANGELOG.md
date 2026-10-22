@@ -6,6 +6,10 @@ This branch continues commit `e1c7d15` from May 26, 2026. It retains PLAN,
 BUILD, TEST, REFACTOR, LINT and DOCUMENT, scored consensus review, adaptive
 phase routing, plan freshness checks and interruption recovery.
 
+- Publish the May continuation on the default `main` branch and use its raw
+  source for opt-in self-update. Preserve the simplified harness at
+  `tangent/simplified-harness`; a frozen nondefault `master` keeps legacy raw
+  install/update links working without migrating incompatible installations.
 - Load only supported public configuration keys, preserve literal CLI scalar
   bytes, and refuse malformed reasoning or multiline engine settings before
   inference. Local output-recording failures stop retries and fallback.

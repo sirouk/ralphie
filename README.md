@@ -4,7 +4,7 @@ May continuation, based on the `2.0.0` checkpoint from May 26, 2026.
 
 Ralphie is a single-file autonomous engineering orchestrator for Prime Agent, Codex, and Claude Code. Give it an objective or a seed document for a new or existing project. It develops the research and plan, then works through implementation, testing, refactoring, linting, and documentation with scored consensus review and resumable state.
 
-This branch, `feature/may-autonomy-prime`, continues the May harness. It preserves its development phases and adaptive review routing while adapting useful correctness and engine-integration lessons from the later `master` implementation.
+The default branch, `main`, continues the May harness. It preserves its development phases and adaptive review routing while adapting useful correctness and engine-integration lessons from the later simplified harness, preserved at `tangent/simplified-harness`.
 
 ## Design Philosophy
 
@@ -62,11 +62,13 @@ AUTO_UPDATE=true ./ralphie.sh
 
 Updating is disabled by default. When enabled, Ralphie uses an explicit
 operator source (`RALPHIE_UPDATE_URL`, or `--auto-update-url`) or the canonical
-published Ralphie source. It never
+published [`main` source](https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh). It never
 derives an update from the managed project's Git remote, and project
-`config.env` cannot select the downloaded script. A published continuation or
-private mirror needs its own explicit raw source URL; the public `master`
-currently follows the separate newer design.
+`config.env` cannot select the downloaded script. Forks and private mirrors need
+their own explicit raw source URL. The nondefault `master` branch is frozen at
+the old simplified harness (`4.3.1`) so existing raw install/update links keep
+working. It does not follow `main` or migrate old installations to this
+continuation; their update contracts are incompatible.
 
 Only `ralphie.sh` is downloaded. Ralphie validates the candidate without
 executing it, syntax-checks it, writes a unique backup under
@@ -116,8 +118,15 @@ From this checkout, target the project you want to work on:
 ```
 
 Only `ralphie.sh` is needed at runtime. You can also plant that file directly in
-a project. The public `master` install URL follows the separate newer design;
-it does not install this local continuation branch.
+a project. To install the current continuation in the invocation directory and
+show help without running an engine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh | bash -s -- --help
+```
+
+Legacy `master` install links continue to serve the frozen simplified harness;
+new installations should use `main`.
 
 ### Start from an objective or document
 
