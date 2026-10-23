@@ -128,13 +128,61 @@ test_reviewed_no_work_handoff_and_resume() {
 }
 
 test_missing_or_changed_no_work_proof_is_not_recaptured() {
-    local variant ws proof_dir original_hash calls
+    local variant ws proof_dir original_hash calls prompt
     for variant in missing changed tree; do
         ws="$(new_continuation_workspace)"
         printf 'hidden-*.sh\n' >> "$ws/project with spaces/.gitignore"
         install_phase_contract_mock "$ws" handoff
         phase_contract_run "$ws" --objective 'Review the project for a no-work handoff' --max-iterations 2
-        [ "$PHASE_CONTRACT_EXIT" -eq 0 ] || { cat "$ws/run.out"; return 1; }
+        if [ "$PHASE_CONTRACT_EXIT" -ne 0 ]; then
+            cat "$ws/run.out"
+            (
+                printf '\nInitial no-work handoff failed: variant=%s workspace=%s\n' "$variant" "$ws"
+                printf '\nGenerated plan:\n'
+                cat "$ws/project with spaces/IMPLEMENTATION_PLAN.md" || true
+                printf '\nRecorded PLAN worker prompt:\n'
+                for prompt in "$ws/project with spaces/.mock-prime"/prompt.*.md; do
+                    if [ -f "$prompt" ] && grep -q '^# Ralphie Plan Phase Prompt' "$prompt"; then
+                        cat "$prompt" || true
+                        break
+                    fi
+                done
+                printf '\nSaved no-work flags after the failed run:\n'
+                grep -E '^(CURRENT_PHASE|SHELL_LOCAL_WORK_SEEN|SHELL_DEVELOPMENT_PHASE_STARTED)=' \
+                    "$ws/project with spaces/.ralphie/state.env" || true
+                printf '\nOriginal proof binding and raw manifest:\n'
+                cat "$ws/project with spaces/.ralphie/no-local-work.binding" \
+                    "$ws/project with spaces/.ralphie/no-local-work.manifest" || true
+                printf '\nGit status:\n'
+                git -C "$ws/project with spaces" status --porcelain=v1 --untracked-files=all || true
+                printf '\nPLAN phase before/after manifest diff:\n'
+                for prompt in "$ws/project with spaces/logs"/plan_*_manifest_before.txt; do
+                    [ -f "$prompt" ] || continue
+                    diff -u "$prompt" "${prompt%_before.txt}_after.txt" || true
+                done
+                # Reuse raw-tree capture in a child shell; diagnostics must not
+                # replace the original proof or change the failed assertion.
+                /bin/bash -s -- "$ws" <<'EOF_NO_WORK_DIAGNOSTIC'
+                set -euo pipefail
+                source "$1/ralphie.sh"
+                PROJECT_DIR="$1/project with spaces"
+                PLAN_FILE="$PROJECT_DIR/IMPLEMENTATION_PLAN.md"
+                RUNTIME_GUARD_DIR="$(mktemp -d "$PROJECT_DIR/.ralphie/no-work-diagnostic.XXXXXX")" || exit 1
+                if project_terminal_or_handoff_ready; then
+                    printf '\nCurrent plan declares a handoff and has no unchecked backlog.\n'
+                else
+                    printf '\nCurrent plan does not satisfy handoff/backlog readiness.\n'
+                fi
+                printf '\nOriginal versus post-run raw-tree manifest:\n'
+                if capture_no_local_work_tree "$RUNTIME_GUARD_DIR/current"; then
+                    diff -u "$PROJECT_DIR/.ralphie/no-local-work.manifest" "$RUNTIME_GUARD_DIR/current" || true
+                else
+                    printf 'Current raw-tree capture failed.\n'
+                fi
+EOF_NO_WORK_DIAGNOSTIC
+            ) >&2 || true
+            return 1
+        fi
         proof_dir="$ws/project with spaces/.ralphie"
         original_hash="$(file_sha256 "$proof_dir/no-local-work.manifest")"
         calls="$(wc -l < "$ws/project with spaces/.mock-prime/calls" | tr -d ' ')"
