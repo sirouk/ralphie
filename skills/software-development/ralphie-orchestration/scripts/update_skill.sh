@@ -147,7 +147,9 @@ if [ -L "$STORE" ] || { [ -e "$STORE" ] && [ ! -d "$STORE" ]; }; then
     fail 'Unsafe revision store; no update performed.'
 fi
 if [ "$ACTION" = install ]; then
-    [ ! -e "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail 'Destination already exists; refusing to replace or adopt it.'
+    if [ -e "$DESTINATION" ] || [ -L "$DESTINATION" ]; then
+        fail 'Destination already exists; refusing to replace or adopt it.'
+    fi
     checkout="$(git -C "$PARENT" rev-parse --show-toplevel 2>/dev/null || true)"
     [ -z "$checkout" ] || fail 'Install outside a writable project checkout; use the checkout directly for development.'
 else
@@ -197,7 +199,9 @@ if [ "$ACTION" = check ]; then
 fi
 RELEASE="$STORE/$LATEST"
 if [ -e "$RELEASE" ] || [ -L "$RELEASE" ]; then
-    [ -d "$RELEASE" ] && [ ! -L "$RELEASE" ] || fail 'Unsafe cached revision.'
+    if [ ! -d "$RELEASE" ] || [ -L "$RELEASE" ]; then
+        fail 'Unsafe cached revision.'
+    fi
     expected_source="$SOURCE"; expected_ref="$REF"; expected_destination="$DESTINATION"
     if ! read_meta "$RELEASE" || ! verify_release "$RELEASE"; then
         fail 'Cached revision differs; no files were overwritten.'
@@ -208,7 +212,9 @@ else
     for file in "${FILES[@]}"; do
         mkdir -p "$WORK/payload/$(dirname "$file")" || exit 1
         fetch "https://raw.githubusercontent.com/$SOURCE/$LATEST/$file" "$WORK/payload/$file" || fail "Incomplete update payload: $file; current install retained."
-        [ -s "$WORK/payload/$file" ] && [ ! -L "$WORK/payload/$file" ] || fail "Empty update payload: $file"
+        if [ ! -s "$WORK/payload/$file" ] || [ -L "$WORK/payload/$file" ]; then
+            fail "Empty update payload: $file"
+        fi
     done
     if ! /bin/bash -n "$WORK/payload/ralphie.sh" || ! /bin/bash -n "$WORK/payload/$SUBDIR/scripts/update_skill.sh"; then
         fail 'Candidate shell syntax is invalid; current install retained.'
@@ -225,7 +231,9 @@ if [ "$ACTION" != install ]; then
     verify_release "$ROOT" || fail 'LOCAL_CHANGED: current install changed while staging.'
     [ "$(readlink "$DESTINATION")" = "$OLD_TARGET" ] || fail 'Managed link changed while staging.'
 else
-    [ ! -e "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail 'Destination appeared while staging.'
+    if [ -e "$DESTINATION" ] || [ -L "$DESTINATION" ]; then
+        fail 'Destination appeared while staging.'
+    fi
 fi
 # The replacement link is staged beside its destination, on the same filesystem.
 SWITCH_DIR="$(mktemp -d "$PARENT/.${BASE}.link.XXXXXX")" || exit 1
@@ -235,8 +243,10 @@ ln -s new-target "$SWITCH_DIR/probe-new" || exit 1
 MOVE_LINK_FLAG=''
 for flag in -h -T; do
     if mv -f "$flag" "$SWITCH_DIR/probe-new" "$SWITCH_DIR/probe-old" 2>/dev/null; then
-        [ -L "$SWITCH_DIR/probe-old" ] && [ "$(readlink "$SWITCH_DIR/probe-old")" = new-target ] \
-            && [ ! -e "$SWITCH_DIR/probe-directory/probe-new" ] || fail 'mv cannot safely replace a directory symlink.'
+        if [ ! -L "$SWITCH_DIR/probe-old" ] || [ "$(readlink "$SWITCH_DIR/probe-old")" != new-target ] \
+            || [ -e "$SWITCH_DIR/probe-directory/probe-new" ]; then
+            fail 'mv cannot safely replace a directory symlink.'
+        fi
         MOVE_LINK_FLAG="$flag"
         break
     fi

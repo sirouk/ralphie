@@ -59,7 +59,11 @@ rm "$T/upstream/$D/$SUBDIR/references/supervising.md" || exit 1
 printf '\nprintf "unsafe candidate executed" > "%s"\n' "$T/payload-executed" >> "$T/upstream/$B/ralphie.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 has() { grep -Fq -- "$2" "$1" || fail "Missing [$2] in $1"; }
-absent() { [ ! -e "$1" ] && [ ! -L "$1" ] || fail "Unexpected path $1"; }
+absent() {
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        fail "Unexpected path $1"
+    fi
+}
 install_a() {
     local parent="$1"
     mkdir "$parent" || fail 'fixture parent'
