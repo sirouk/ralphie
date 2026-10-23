@@ -1,353 +1,102 @@
 ---
 name: ralphie-orchestration
-description: "Use when an agent needs to understand, run, debug, modify, or document `ralphie.sh`: the single-file Ralphie bootstrapper and autonomous lifecycle orchestrator for new or existing projects."
+description: "Use Ralphie to autonomously plan, build, test, refactor, lint and document a project. Launch or reconnect to a mission, observe evidence, queue feedback, supervise recovery, sequence dependent work, or maintain the single-file orchestrator."
 ---
 
 # Ralphie Orchestration
 
-## Core Idea
+Ralphie supplies durable lifecycle coordination around Prime Agent, Codex or
+Claude. The product is `ralphie.sh`; this skill explains how a supervising agent
+uses it without becoming a competing execution loop.
 
-`ralphie.sh` is the product. Everything else in this repository exists to explain, test, harden, or compare that one script.
+## On every use: choose the correct revision
 
-Treat `ralphie.sh` as a portable seed:
+**Reconnect to an existing mission first.** Recover its original physical
+runtime path, physical skill path, exact seed/checks/options and process owner
+from the supervising harness's existing records. Read that retained skill and
+use that runtime for observation, requests and resume. Do not apply an update
+underneath a running mission. If these records are missing, inspect the existing
+launcher and project evidence; do not guess a runtime or start another worker.
 
-- The user plants it in a project directory.
-- If it arrives through `curl | bash`, it writes itself to `./ralphie.sh` and re-execs from disk.
-- It discovers the surrounding project.
-- It unfolds local scaffolding: bootstrap context, prompts, research notes, specs, logs, state, and gates.
-- It drives the project through plan, build, test, refactor, lint, and document phases with Prime Agent, Codex, or Claude Code.
-
-Your job when using this skill is to preserve that seed behavior while making Ralphie easier to run, safer to resume, and clearer to debug.
-
-## How To Use `ralphie.sh`
-
-Use `--project` to bind the managed root, or plant the script in that root.
-
-Start from an unattended objective:
+**Before a new launch**, run the helper beside this loaded skill:
 
 ```bash
-./ralphie.sh --project /path/to/project --engine prime-agent \
-  --objective "Fix the failing tests and document the result" --accept './test.sh'
+/bin/bash /absolute/path/to/ralphie-orchestration/scripts/update_skill.sh --apply
 ```
 
-Use `--spec FILE` for an exact seed document, optionally `--plan-only` for
-research and approved planning without BUILD. Explicit seed launches do not
-read a terminal. Script locations, the invocation directory, project roots and
-owned runtime roots (including `TMPDIR` and initialized submodules) must not
-contain CR or LF bytes; those roots are refused before setup. Tab and LF filenames
-inside a supported project remain exact through ownership and Git saves. The
-target directory must already exist and, if inside Git, must be that repository's root. A different seed
-requires `--no-resume`. Prime-specific overrides use `--prime-provider`,
-`--prime-model` and `--prime-thinking`; explicit engine choices also bind
-handoff and consensus.
+Read its output as data; never `eval` or `source` it.
 
-Check definitions are bound to the saved mission as well. Changing
-`.ralphie/gates` or adding a different `--accept` requires reviewed checks and
-`--no-resume`. Plan-only work resumes into BUILD with the same seed and checks.
+- `DEVELOPMENT`: this is a repository checkout. It remains unchanged, including
+  dirty or unpublished work; use the printed runtime and guide paths. No
+  network request is made. This is the supported path before publication.
+- `UPDATED`, `UP_TO_DATE` or `SUPERSEDED`: read the printed physical `SKILL_PATH`
+  before continuing and retain it together with `RUNTIME_PATH` and `REVISION`.
+  An old physical helper reports the current revision instead of updating it.
+- `OFFLINE`: the installed revision passed its byte checks, but remote freshness
+  was not verified. Report that limit once; use the retained revision if the
+  task does not require the newest release.
+- Any error: preserve the existing installation and diagnose it. Do not bypass
+  dirty checks, change sources or reset a developer checkout.
 
-The default `main` branch continues the May 26 harness. Install and opt-in
-self-update use `https://raw.githubusercontent.com/sirouk/ralphie/main/ralphie.sh`.
-The old simplified harness is preserved at `tangent/simplified-harness` and a
-frozen nondefault `master` ref keeps its existing raw links working. It does not
-follow `main`; the old and current update contracts are incompatible.
+Managed installation instructions are in
+[supervising.md](references/supervising.md#install-or-use-a-local-checkout).
+Updates use the recorded GitHub repository/ref, resolving a branch or tag to a
+full commit and staging the guide, helper and runtime from that same commit.
+No downloaded installer is executed. This is trust in the selected upstream,
+not a code review or an operating-system sandbox. Git and optional HTTPS `curl`
+are used by maintenance; no new tool is required by Ralphie's loop.
 
-Local run:
+## Launch and supervise
+
+Read [the operating guide](references/supervising.md) for the launch receipt,
+request/recovery procedure and paste-ready instructions for another agent.
+
+For a fresh authorized mission, choose an existing project root, exact objective
+or spec, real shell checks, engine/model and finite spending limits. Seeded
+runs never read a terminal. Example using the physical runtime printed above:
 
 ```bash
-./ralphie.sh
+RALPHIE_SKIP_AUTO_UPDATE=1 /bin/bash /physical/revision/ralphie.sh \
+  --project /absolute/project --engine prime-agent \
+  --objective 'Fix the failing tests and document the result' \
+  --accept './test.sh' --max-session-cycles 24
 ```
 
-Useful control runs:
+Always set `RALPHIE_SKIP_AUTO_UPDATE=1` for a retained runtime. Ralphie's own
+opt-in startup updater is separate from this skill updater; the skip prevents
+operator update settings from replacing the pinned executable. Do not source
+project configuration or state into your supervising shell.
+
+Keep one worker per project. Own the process, console and final exit receipt in
+the harness already supervising the task; launching a background shell alone
+is not proof it will survive host logout. Never report success from a banner,
+process, reviewer GO or request presentation alone.
+
+Use the same physical runtime to steer an initialized, unfinished mission:
 
 ```bash
-./ralphie.sh --help
-./ralphie.sh --rebootstrap
-./ralphie.sh --resume
-./ralphie.sh --no-resume
-./ralphie.sh --engine-output-to-stdout true
+RALPHIE_SKIP_AUTO_UPDATE=1 /bin/bash /physical/revision/ralphie.sh \
+  --project /absolute/project --request 'Preserve the public API; cover empty input'
+RALPHIE_SKIP_AUTO_UPDATE=1 /bin/bash /physical/revision/ralphie.sh \
+  --project /absolute/project --requests-json
 ```
 
-Important behavior:
+Feedback is stored immediately when acknowledged and consumed at a safe
+boundary after an in-flight call/check finishes. Changed feedback returns work
+to PLAN. Active requests remain in worker and review prompts until archived
+while stopped. `presented` means an admitted worker prompt contained it; it
+never means implemented or verified. A known busy refusal stored nothing and
+may be retried after a bounded delay. Reconcile an unknown/lost command outcome
+with `--requests-json` before resubmitting, to avoid duplicates.
 
-- `curl | bash` uses stdin for the script stream. Any interactive prompt must read from `/dev/tty`.
-- Without an explicit seed, interactive bootstrap can collect project type, objective, constraints, success criteria, optional goals context, and plan-to-build consent.
-- Without a terminal or explicit seed, Ralphie uses deterministic fallback bootstrap values and keeps `build_consent: false`.
-- `--rebootstrap` refreshes legacy bootstrap context; seeded missions retain their exact supplied intent.
-- Resume is enabled by default; `--no-resume` starts fresh.
-- Invalid existing state stops resume before inference and stays intact. It
-  cannot silently become a fresh mission with reset spending counters.
-- Checkpoints preserve the previous state if serialization or checksum writes
-  fail; finite-budget inference cannot start without its admission checkpoint.
-- Only supported public config settings and aliases are loaded; internal or
-  unknown keys are ignored with diagnostics. Invalid reasoning and multiline
-  engine/scalar values fail before inference. Local capture failures stop paid
-  retries and fallback.
-- Consensus and handoff reduce private validated receipts. Public output/status
-  artifacts are diagnostic mirrors; later roles cannot rewrite earlier votes.
-  Unsupported raw review control bytes make that review invalid.
-- Automatic saves use a private Git index with hooks disabled. Required
-  validation belongs in `--accept` or `.ralphie/gates`, and unrelated operator
-  index entries remain intact on success and failure. Automatic saves refuse
-  pending Git operations; finish or abort them outside Ralphie before resume.
-- Ralphie may initialize git if the managed directory is not already a repository, depending on configuration.
+Consent, selected engines, protected checks and spending limits remain
+binding. Do not rewrite live seed/gate/state/request files or use historical
+`chat`, `/apply`, `start`, `watch` or `status` commands: those belong to the
+archived simplified harness, not this May continuation.
 
-### Continuing With A New Focus
+## When changing Ralphie itself
 
-Ralphie separates phase state from bootstrap intent:
-
-- `.ralphie/state.env` stores current phase, attempt, counters, and terminal
-  completion. Resume is enabled by default, so plain `./ralphie.sh` loads it.
-- `.ralphie/project-bootstrap.md` stores the operator's objective, constraints,
-  success criteria, architecture/technology preferences, and build consent.
-  For an unseeded legacy mission, `--rebootstrap` refreshes this context but
-  does not disable state resume. Seeded missions use the supplied exact intent.
-
-Use resume for the same mission after an interrupt, timeout, pause, or crash.
-Do not use resume to repurpose a completed mission for unrelated new work. If
-state says `CURRENT_PHASE=done`, plain `./ralphie.sh` will resume the completed
-mission and exit done again.
-
-When the previous loop met its goals and the operator wants Ralphie to work on
-another focus:
-
-1. Checkpoint the completed work with a project-local commit or equivalent.
-2. Update `IMPLEMENTATION_PLAN.md` with the new active objective.
-3. Add a focused steering/backlog file such as
-   `research/RALPHIE_NEXT_FOCUS_STEERING.md` when the objective needs detail.
-4. Use unchecked markdown tasks for remaining work that must block `done`.
-   Ralphie's terminal backlog guard scans configured backlog sources for
-   unchecked list tasks, including `- [ ]`, `* [ ]` and `1. [ ]`;
-   prose-only future slices may not prevent terminal
-   completion.
-5. Choose the right fresh-start mode.
-
-Interactive fresh mission, when the operator wants the questionnaire:
-
-```bash
-./ralphie.sh \
-  --no-resume \
-  --rebootstrap \
-  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
-```
-
-Prepared fresh mission, when `.ralphie/project-bootstrap.md` is already
-complete and should be reused without prompts:
-
-```bash
-./ralphie.sh \
-  --no-resume \
-  --backlog-sources research/RALPHIE_NEXT_FOCUS_STEERING.md,IMPLEMENTATION_PLAN.md
-```
-
-For the prepared path, `.ralphie/project-bootstrap.md` must be valid and
-intentionally pre-seeded with `interactive_prompted: true` and the desired
-`build_consent`. If it is missing, invalid, or marked `interactive_prompted:
-false` in a terminal, Ralphie will prompt. Do not pass `--rebootstrap` unless
-the operator wants to answer the bootstrap questions again.
-
-After that new mission is underway, plain `./ralphie.sh` is again appropriate
-because it resumes the current in-flight mission.
-
-For an unseeded legacy mission, `--rebootstrap` can enrich intent without
-resetting phase state. For seeded work, replace intent with
-`--no-resume --objective ...` or `--no-resume --spec ...`. Prefer these flags
-over manually deleting `.ralphie/state.env`.
-
-## What Ralphie Unfolds
-
-When planted in a project, `ralphie.sh` may create or update:
-
-- `./ralphie.sh`: persisted local copy when installed from stdin.
-- `.ralphie/project-bootstrap.md`: user/session intent and build consent.
-- `.ralphie/project-goals.md`: optional pasted goals or context.
-- `.ralphie/OBJECTIVE.md`: exact seeded objective.
-- `.ralphie/gates`: selected shell commands, one per line.
-- `.ralphie/verification.jsonl`: append-only executed-check outcomes.
-- `.ralphie/state.env`: resumable phase, attempt, token/cost, and git identity state.
-- `.ralphie/reasons.log`: reason-coded failures and blockers.
-- `.ralphie/last_gate_feedback.md`: latest gate blockers.
-- `.specify/memory/constitution.md`: baseline governance context.
-- `IMPLEMENTATION_PLAN.md`: plan artifact, initially a placeholder when missing.
-- `PROMPT_plan.md`, `PROMPT_build.md`, `PROMPT_test.md`, `PROMPT_refactor.md`, `PROMPT_lint.md`, `PROMPT_document.md`: phase prompts.
-- `research/`: discovery artifacts such as stack snapshot, codebase map, coverage matrix, dependency research, and summary.
-- `specs/`: project contracts and specifications.
-- `logs/`, `completion_log/`, `consensus/`: execution, output, and reviewer artifacts.
-
-Generated placeholders are not final work. They are soil preparation. The plan phase should replace generic placeholder content with project-specific artifacts before build gates pass.
-
-## How To Read `ralphie.sh`
-
-Use `rg` to find the relevant surface before editing:
-
-```bash
-rg -n "stream bootstrap|ensure_project_bootstrap|prompt_read_line|run_agent_with_prompt|ensure_engines_ready|save_state|phase" ralphie.sh
-rg -n "RB_REASON_CODE_OR_LOG_TEXT" ralphie.sh tests
-```
-
-Main conceptual regions:
-
-1. **Stream bootstrap**: detects stdin execution, writes `./ralphie.sh`, re-execs from disk.
-2. **Constants and paths**: defines project-local runtime paths such as `.ralphie/`, prompts, research, specs, logs, and state.
-3. **Config parsing**: merges defaults, `.ralphie/config.env`, environment, and CLI flags.
-4. **Prompt and bootstrap helpers**: collects or writes project objective, constraints, goals, and build consent.
-5. **Engine discovery and readiness**: chooses Prime, Codex or Claude, checks CLI capabilities, and builds invocation flags. CLI availability is distinct from working provider authentication.
-6. **Agent dispatch**: runs independent phase/reviewer prompts with retry policy, elapsed-time bounds and bounded output. Buffered print modes do not have a silence timeout.
-7. **Phase loop**: coordinates plan, build, test, refactor, lint, and document phases.
-8. **Gates and consensus**: validates outputs, manifests, no-op policy, markdown hygiene, reviewer verdicts and independently executed project checks. Reviewer prose cannot replace a check receipt or overrule a failing check.
-9. **State and resume**: saves checksummed state and resumes cleanly after crashes or interrupts.
-10. **Cleanup and signals**: handles locks, child processes, interrupts, pause/quit behavior, and notifications.
-
-## Debugging A Ralphie Run
-
-Start with state and reasons:
-
-```bash
-sed -n '1,120p' .ralphie/state.env
-sed -n '1,160p' .ralphie/reasons.log
-sed -n '1,200p' .ralphie/last_gate_feedback.md
-```
-
-Then inspect phase artifacts:
-
-```bash
-find logs completion_log consensus -maxdepth 2 -type f | sort
-sed -n '1,200p' completion_log/<phase>*.out
-sed -n '1,200p' logs/<phase>*.log
-```
-
-Common interpretations:
-
-- `SESSION_ATTEMPT_COUNT=0`: Ralphie did not reach agent dispatch.
-- `PHASE_ATTEMPT_IN_PROGRESS=true`: next resume should re-enter that phase/attempt.
-- `build_consent: false`: build is intentionally blocked after planning.
-- Placeholder `IMPLEMENTATION_PLAN.md`: plan phase has not yet produced a real project-specific plan.
-- Empty `logs/` and `completion_log/`: startup, bootstrap, engine selection, or prompt collection likely stopped before the phase loop.
-
-## Changing `ralphie.sh` Safely
-
-Use this loop for changes to Ralphie itself:
-
-1. Check the worktree:
-   ```bash
-   git status -sb
-   ```
-2. Find the narrow function or reason code:
-   ```bash
-   rg -n "exact option, prompt, log text, function, or reason code" ralphie.sh tests
-   ```
-3. Patch the smallest script surface.
-4. Add or update a focused durability test when behavior changes.
-5. Run syntax and targeted validation:
-   ```bash
-   bash -n ralphie.sh tests/notify-smoke.sh tests/durability/run-durability-suite.sh
-   ./tests/durability/run-durability-suite.sh
-   ```
-   Run behavioral suites from a frozen copy, never from a script another worker
-   is still editing. The offline harness shadows real engines and network tools;
-   preserve that guard. Deliberately break a relevant behavior and require the
-   regression to fail before trusting the green result.
-6. For broad orchestration, engine, notification, or setup changes, run:
-   ```bash
-   ./test.sh --skip-live
-   ```
-
-When editing:
-
-- Keep Bash dependency-light and guarded. Prefer existing helpers over new primitives.
-- Preserve `curl | bash` behavior.
-- Preserve direct `./ralphie.sh` behavior.
-- Preserve non-interactive behavior.
-- Preserve resume behavior.
-- Keep operator-supplied checks authoritative after reviewer activity; command-looking prose is not an execution receipt.
-- Checks must leave HEAD and nonignored project files unchanged; ignore generated test/build artifacts in Git.
-- Mode, staged-blob and initialized submodule worktree changes count as changes
-  during checks. A no-check handoff uses a separate persistent raw-tree witness,
-  independent of ignore rules, for paths outside defined planning/runtime
-  artifacts. Missing witness proof cannot authorize that exception on resume.
-- Never treat a reviewer explanation as phase history or let adaptive routes
-  bypass consent. A passing Test must follow the latest passing Refactor.
-- Keep explicit engine/model/provider selections authoritative across all phase and reviewer calls.
-- Preserve source-repo cleanliness during tests.
-- Do not commit generated runtime artifacts from ad hoc runs.
-
-## Failure Mode Recipes
-
-### Prompt Looks Frozen
-
-Likely area: `prompt_read_line`, `prompt_yes_no`, `prompt_multiline_block`, or `/dev/tty` handling.
-
-Check:
-
-- Does stdin carry the script stream?
-- Is the prompt printed to the controlling terminal?
-- Is command substitution capturing only the answer, not the prompt?
-- Is there a regression test using a pseudo-terminal and piped stdin?
-
-### Placeholders Were Created But Nothing Ran
-
-Likely area: startup bootstrap before phase dispatch.
-
-Check:
-
-- `.ralphie/state.env` for `SESSION_ATTEMPT_COUNT`.
-- `.ralphie/project-bootstrap.md` validity and `interactive_prompted`.
-- `/dev/tty` prompt path.
-- engine readiness logs and startup probe.
-
-### Build Will Not Start
-
-Likely intentional.
-
-Check:
-
-- `.ralphie/project-bootstrap.md` for `build_consent: false`.
-- `IMPLEMENTATION_PLAN.md` for `ralphie_fallback_placeholder: true`.
-- `.ralphie/last_gate_feedback.md` for build prerequisites.
-- markdown hygiene checks for local path or transcript leakage.
-
-### Resume Skips Or Repeats Work
-
-Likely area: `save_state`, `load_state`, phase attempt state, checkpoint placement, or resume blockers.
-
-Check:
-
-- `CURRENT_PHASE`, `CURRENT_PHASE_INDEX`, `CURRENT_PHASE_ATTEMPT`, `PHASE_ATTEMPT_IN_PROGRESS`.
-- checksum mismatch warnings.
-- phase transition history.
-- tests that kill mid-run and resume.
-
-### Engine Dispatch Fails
-
-Likely area: command discovery, capability probes, model/endpoint overrides, or engine-specific CLI flags.
-
-Check:
-
-- active engine in startup banner and any explicit Prime provider/model/thinking overrides.
-- `ensure_engines_ready`.
-- `run_agent_with_prompt`.
-- Codex and Claude capability variables.
-- mocked CLI contract tests before live runs.
-
-## Test Surfaces
-
-Use the support files as scaffolding for `ralphie.sh`, not as separate products:
-
-- `tests/durability/run-durability-suite.sh`: best place for isolated regressions against shell functions and mocked phase behavior.
-- `tests/durability/run-continuation-suite.sh`: Prime CLI, seeded/headless lifecycle, executable gates, operator ownership and process-boundary regressions.
-- `tests/durability/mock-prime-control.sh`: strict free Prime fixture; preserve its argument checks.
-- `tests/durability/offline-test-guards.sh`: prevents an unmocked test from invoking a real engine or network tool.
-- `tests/durability/run-claude-phase-stress.sh`: use for broader phase-loop stress.
-- `tests/durability/mock-claude-control.sh`: update only when mocked engine behavior must change.
-- `tests/notify-smoke.sh`: use for notification behavior and prompt helpers copied there.
-- `test.sh`: use as the pre-ship umbrella.
-- `README.md`: update when operator behavior changes.
-- `AGENTS.md`: keep as the pointer to this skill and the repo-level scaffolding summary.
-
-## Verification Checklist
-
-- [ ] The agent can explain what `ralphie.sh` does without relying on unrelated repo files.
-- [ ] The agent can run or recommend the correct `ralphie.sh` invocation for a fresh or existing project.
-- [ ] The agent can identify generated artifacts and avoid committing them accidentally.
-- [ ] The agent can debug a stalled run from `.ralphie/state.env`, reasons, logs, and completion outputs.
-- [ ] The agent can modify `ralphie.sh` with focused durability coverage.
-- [ ] `curl | bash`, direct execution, interactive bootstrap, non-interactive fallback, and resume remain coherent.
+Read [development.md](references/development.md). Preserve Bash 3.2 portability,
+one-file execution, independent shell checks, exact ownership, resumable state,
+explicit engine choices and the existing test/receipt boundaries. Use free
+mocks for regression tests; live inference requires the task's authorization.

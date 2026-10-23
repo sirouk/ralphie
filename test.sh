@@ -204,6 +204,10 @@ run_support_bash_syntax_checks() {
         ./tests/durability/run-persistence-contract-suite.sh
         ./tests/durability/run-phase-contract-suite.sh
         ./tests/durability/run-update-contract-suite.sh
+        ./tests/durability/run-steering-contract-suite.sh
+        ./tests/durability/run-menu-contract-suite.sh
+        ./skills/software-development/ralphie-orchestration/scripts/update_skill.sh
+        ./skills/software-development/ralphie-orchestration/scripts/tests/run-update-suite.sh
         ./engines/setup-agent-subrepos.sh
     )
     local file
@@ -220,6 +224,8 @@ run_support_shellcheck_if_available() {
         ./tests/durability/mock-claude-control.sh
         ./tests/durability/mock-prime-control.sh
         ./tests/durability/offline-test-guards.sh
+        ./skills/software-development/ralphie-orchestration/scripts/update_skill.sh
+        ./skills/software-development/ralphie-orchestration/scripts/tests/run-update-suite.sh
         ./engines/setup-agent-subrepos.sh
     )
 
@@ -578,12 +584,15 @@ main() {
     run_step "setup-agent-subrepos fixture" run_setup_agent_subrepos_fixture_check
     run_step "markdown hygiene fixture" run_markdown_hygiene_fixture_check
     run_step "self-update fixture" run_self_update_fixture_check
+    run_step "orchestration skill updater contracts" /bin/bash ./skills/software-development/ralphie-orchestration/scripts/tests/run-update-suite.sh
     run_step "durability suite" ./tests/durability/run-durability-suite.sh
     run_step "May continuation acceptance" /bin/bash ./tests/durability/run-continuation-suite.sh
     run_step "engine/config contracts" /bin/bash ./tests/durability/run-engine-contract-suite.sh
     run_step "persistence/Git contracts" /bin/bash ./tests/durability/run-persistence-contract-suite.sh
     run_step "phase/completion contracts" /bin/bash ./tests/durability/run-phase-contract-suite.sh
     run_step "update/input contracts" /bin/bash ./tests/durability/run-update-contract-suite.sh
+    run_step "durable steering contracts" /bin/bash ./tests/durability/run-steering-contract-suite.sh
+    run_step "terminal/menu contracts" /bin/bash ./tests/durability/run-menu-contract-suite.sh
 
     local -a stress_cmd=(./tests/durability/run-claude-phase-stress.sh --scenarios "$STRESS_SCENARIOS")
     if [ -n "$DISCORD_WEBHOOK_URL" ]; then

@@ -1309,14 +1309,18 @@ EOF
             printf '%s' "$default"
         }
 
-        ensure_project_bootstrap
+        local bootstrap_status=0
+        ensure_project_bootstrap || bootstrap_status=$?
 
+        [ "$bootstrap_status" -ne 0 ]
         [ -f "$PROJECT_BOOTSTRAP_FILE" ]
-        grep -q '^objective: guarded_objective_round2$' "$PROJECT_BOOTSTRAP_FILE"
-        grep -q '^constraints: avoid_vendor_lockin_round2$' "$PROJECT_BOOTSTRAP_FILE"
-        grep -q '^success_criteria: done_signal_round2$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^objective: guarded_objective_round1$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^constraints: avoid_vendor_lockin_round1$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^success_criteria: done_signal_round1$' "$PROJECT_BOOTSTRAP_FILE"
         grep -q '^architecture_shape: svc_cli_modular$' "$PROJECT_BOOTSTRAP_FILE"
         grep -q '^technology_choices: bash_tools$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^build_consent: false$' "$PROJECT_BOOTSTRAP_FILE"
+        [ "$(head -n 1 "$action_queue_file")" = d ]
     )
 }
 
@@ -1412,12 +1416,16 @@ EOF
             printf '%s' "$default"
         }
 
-        ensure_project_bootstrap
+        local bootstrap_status=0
+        ensure_project_bootstrap || bootstrap_status=$?
 
+        [ "$bootstrap_status" -ne 0 ]
         [ -f "$PROJECT_BOOTSTRAP_FILE" ]
-        grep -q '^objective: guard_fixed_objective$' "$PROJECT_BOOTSTRAP_FILE"
-        grep -q '^constraints: guard_fixed_constraints$' "$PROJECT_BOOTSTRAP_FILE"
-        grep -q '^success_criteria: guard_fixed_success$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^objective: guard_base_objective$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^constraints: No explicit constraints provided.$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^success_criteria: guard_base_success$' "$PROJECT_BOOTSTRAP_FILE"
+        grep -q '^build_consent: false$' "$PROJECT_BOOTSTRAP_FILE"
+        [ "$(head -n 1 "$action_queue_file")" = d ]
     )
 }
 

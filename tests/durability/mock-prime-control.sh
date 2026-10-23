@@ -90,13 +90,13 @@ next_phase() {
     esac
 }
 
-if printf '%s\n' "$prompt" | grep -q '^# Handoff Validation Prompt'; then
+if grep -q '^# Handoff Validation Prompt' ".mock-prime/prompt.$$.md"; then
     phase="$(printf '%s\n' "$prompt" | sed -n 's/^Phase: //p' | head -n 1)"
     printf 'handoff:%s\n' "$phase" >> .mock-prime/roles
     printf '<score>96</score>\n<verdict>GO</verdict>\n<gaps>none</gaps>\n'
     exit 0
 fi
-if printf '%s\n' "$prompt" | grep -q '^# Consensus Review:'; then
+if grep -q '^# Consensus Review:' ".mock-prime/prompt.$$.md"; then
     phase="$(printf '%s\n' "$prompt" | sed -n 's/^# Consensus Review: //p' | head -n 1)"
     phase="${phase%-gate}"
     printf 'consensus:%s\n' "$phase" >> .mock-prime/roles
@@ -129,7 +129,7 @@ fi
 
 phase=""
 for candidate in Plan Build Test Refactor Lint Document; do
-    if printf '%s\n' "$prompt" | grep -q "^# Ralphie $candidate Phase Prompt"; then
+    if grep -q "^# Ralphie $candidate Phase Prompt" ".mock-prime/prompt.$$.md"; then
         phase="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')"
         break
     fi

@@ -1,4 +1,4 @@
 interface:
   display_name: "Ralphie Orchestration"
-  short_description: "Operate ralphie.sh safely."
-  default_prompt: "Use the Ralphie orchestration skill to inspect, modify, test, or document this repository."
+  short_description: "Launch, steer and supervise Ralphie missions."
+  default_prompt: "Use the Ralphie orchestration skill to choose the correct runtime revision, launch or reconnect to a mission, observe evidence, steer safely and supervise verified completion or recovery."

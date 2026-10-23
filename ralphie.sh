@@ -111,7 +111,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 1
                 fi
                 ;;
-            --objective|--spec|--accept|--engine|--auto-engine-preference|--command|--prime-agent-command|--prime-agent-model|--prime-agent-reasoning|--prime-agent-provider|--prime-agent-url|--claude-command|--codex-command|--codex-model|--codex-reasoning|--gate-timeout-seconds)
+            --objective|--spec|--accept|--request|--request-file|--archive-request|--engine|--prime-provider|--prime-model|--prime-thinking|--auto-engine-preference|--command|--prime-agent-command|--prime-agent-model|--prime-agent-reasoning|--prime-agent-provider|--prime-agent-url|--claude-command|--codex-command|--codex-model|--codex-reasoning|--gate-timeout-seconds)
                 rb_early_index=$((rb_early_index + 1)) ;;
             --) break ;;
         esac
@@ -137,6 +137,20 @@ REASON_LOG_FILE="$CONFIG_DIR/reasons.log"
 NOTIFICATION_LOG_FILE="$CONFIG_DIR/notifications.log"
 GATE_FEEDBACK_FILE="$CONFIG_DIR/last_gate_feedback.md"
 STATE_FILE="$CONFIG_DIR/state.env"
+REQUESTS_DIR="$CONFIG_DIR/requests"
+REQUEST_CLAIM_DIR="$CONFIG_DIR/requests.lock"
+REQUEST_COMMAND=""
+REQUEST_TEXT=""
+REQUEST_FILE=""
+REQUEST_ARCHIVE_ID=""
+REQUESTS_ENABLED=false
+REQUEST_LOCK_TOKEN=""
+REQUEST_FROZEN_FINGERPRINT=""
+REQUEST_REVIEWED_FINGERPRINT=""
+REQUEST_CONTEXT_FILE=""
+REQUEST_SNAPSHOT_IDS=""
+REQUEST_ROLE=worker
+REQUEST_REFRESH_REQUIRED=false
 MISSION_OBJECTIVE_FILE="$CONFIG_DIR/OBJECTIVE.md"
 OWNED_PATHS_FILE="$CONFIG_DIR/owned-paths.nul"
 SHELL_GATES_FILE="$CONFIG_DIR/gates"
@@ -195,10 +209,10 @@ PROJECT_GOALS_FILE="$CONFIG_DIR/project-goals.md"
 SESSION_CHANGED_PATHS_FILE="$CONFIG_DIR/session-changed-paths.txt"
 
 # Shared logic for interactive questions and formatting.
-err() { echo -e "\033[1;31m$*\033[0m" >&2; }
-warn() { echo -e "\033[1;33m$*\033[0m" >&2; }
-info() { echo -e "\033[0;34m$*\033[0m"; }
-success() { echo -e "\033[0;32m$*\033[0m"; }
+err() { if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] && [ -z "${NO_COLOR+x}" ]; then printf '\033[1;31m%s\033[0m\n' "$*" >&2; else printf '%s\n' "$*" >&2; fi; }
+warn() { if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] && [ -z "${NO_COLOR+x}" ]; then printf '\033[1;33m%s\033[0m\n' "$*" >&2; else printf '%s\n' "$*" >&2; fi; }
+info() { if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ -z "${NO_COLOR+x}" ]; then printf '\033[0;34m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+success() { if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ -z "${NO_COLOR+x}" ]; then printf '\033[0;32m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
 ok() { success "$@"; }
 
 # Logging reasons for failures (doctrinal/state/inference)
@@ -1525,7 +1539,20 @@ Core options:
   --backlog-sources PATHS                 Comma-separated markdown backlog files (default: IMPLEMENTATION_PLAN.md)
   --help, -h                             Show this help and exit
 
+Durable steering (choose one; an initialized mission is required):
+  --request TEXT                        Queue 1-4096 exact bytes for the active mission
+  --request-file FILE                   Queue exact file bytes; relative to invocation directory
+  --requests                            List queued, presented and archived requests
+  --requests-json                       Emit stable request JSON (schema 1)
+  --archive-request ID|all               Archive requests only while the worker is stopped
+
+Requests are repeated in worker, handoff and gate-review prompts. A late request
+invalidates stale approval and returns to PLAN. Queued/presented is not completed.
+These controls do not launch an engine, initialize a mission or change its settings.
+Completed missions reject new requests. Do not combine steering with mission input.
+
 Project settings may also use config.env. Update enablement, source and trust options are operator-only.
+Output is plain when redirected, with TERM=dumb, or when NO_COLOR is set (even empty).
 
 Additional runtime env knobs:
   RALPHIE_ENGINE                        Engine selection: auto|prime-agent|codex|claude (prime is an alias)
@@ -1604,7 +1631,11 @@ parse_arg_value() {
 }
 
 parse_args() {
+    local request_has_run_options=false
     while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --objective|--spec|--accept|--plan-only|--no-resume|--rebootstrap) request_has_run_options=true ;;
+    esac
     case "$1" in
         --help|-h)
             print_usage
@@ -1642,6 +1673,23 @@ parse_args() {
         --project)
             parse_arg_value "--project" "${2:-}" >/dev/null
             shift 2
+            ;;
+        --request|--request-file|--archive-request)
+            [ -z "$REQUEST_COMMAND" ] || { err 'Choose exactly one durable steering control.'; return 1; }
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { err "Missing value for $1"; return 1; }
+            case "$1" in
+                --request) REQUEST_COMMAND=publish-text; REQUEST_TEXT="$2" ;;
+                --request-file) REQUEST_COMMAND=publish-file; REQUEST_FILE="$2" ;;
+                --archive-request) REQUEST_COMMAND=archive; REQUEST_ARCHIVE_ID="$2" ;;
+            esac
+            NO_TERMINAL_INPUT=true
+            shift 2
+            ;;
+        --requests|--requests-json)
+            [ -z "$REQUEST_COMMAND" ] || { err 'Choose exactly one durable steering control.'; return 1; }
+            case "$1" in --requests) REQUEST_COMMAND=list ;; --requests-json) REQUEST_COMMAND=json ;; esac
+            NO_TERMINAL_INPUT=true
+            shift
             ;;
         --objective)
             parse_arg_value "--objective" "${2:-}" >/dev/null
@@ -1943,7 +1991,101 @@ parse_args() {
                 ;;
         esac
     done
+    if [ -n "$REQUEST_COMMAND" ] && is_true "$request_has_run_options"; then
+        err 'Durable steering controls cannot be combined with mission input or fresh-start options.'
+        return 1
+    fi
+    return 0
 }
+
+# Sideband controls use their own short transaction, never the worker's
+# cleanup/state-saving traps. Mutation holds worker admission so owner
+# capability/stopped checks cannot race a different worker starting.
+request_control() (
+    local request_control_status=0 request_worker_claim_token='' request_body_tmp=''
+    local request_input='' request_holder_pid='' request_holder_token='' request_lock_dir="${LOCK_FILE}.d"
+    trap '
+        request_control_status=$?
+        if [ -n "$REQUEST_LOCK_TOKEN" ]; then request_unlock || request_control_status=1; fi
+        if [ -n "$request_worker_claim_token" ]; then
+            release_lock_claim "${LOCK_FILE}.claim" "$request_worker_claim_token" || request_control_status=1
+        fi
+        if [ -n "$request_body_tmp" ]; then rm -f "$request_body_tmp" || request_control_status=1; fi
+        exit "$request_control_status"
+    ' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+
+    if [ ! -d "$CONFIG_DIR" ] || [ -L "$CONFIG_DIR" ] || [ ! -f "$STATE_FILE" ]; then
+        err 'Durable steering requires an initialized saved mission; start Ralphie with an objective or specification first.'
+        return 1
+    fi
+    validate_runtime_directory "$CONFIG_DIR" && ensure_runtime_file "$STATE_FILE" || return 1
+    if [ "$REQUEST_COMMAND" = archive ] || [ "$REQUEST_COMMAND" = publish-text ] || [ "$REQUEST_COMMAND" = publish-file ]; then
+        acquire_lock_claim "${LOCK_FILE}.claim" 2 || return 1
+        request_worker_claim_token="$LOCK_CLAIM_TOKEN"
+        validate_runtime_directory "$request_lock_dir" && ensure_runtime_file "$LOCK_FILE" || return 1
+        if [ -d "$request_lock_dir" ] || [ -e "$LOCK_FILE" ]; then
+            ensure_runtime_file "$request_lock_dir/owner" || return 1
+            if [ ! -d "$request_lock_dir" ] || [ ! -f "$request_lock_dir/owner" ] || [ ! -f "$LOCK_FILE" ]; then
+                err 'Worker lock ownership is incomplete; inspect it with all launchers stopped before changing requests.'
+                return 1
+            fi
+            request_holder_pid="$(sed -n 's/^pid=//p' "$request_lock_dir/owner")"
+            request_holder_token="$(sed -n 's/^token=//p' "$request_lock_dir/owner")"
+            if ! is_number "$request_holder_pid" || [ "$request_holder_pid" -le 1 ] \
+                || [ -z "$request_holder_token" ] \
+                || [ "$request_holder_pid" != "$(head -n 1 "$LOCK_FILE")" ] \
+                || ! grep -Fxq -- "token=$request_holder_token" "$LOCK_FILE"; then
+                err 'Worker lock ownership cannot be verified; inspect it with all launchers stopped before changing requests.'
+                return 1
+            fi
+            if kill -0 "$request_holder_pid" 2>/dev/null; then
+                if [ "$REQUEST_COMMAND" = archive ]; then
+                    err 'Requests can be archived only after the worker has stopped.'
+                    return 1
+                fi
+                if ! grep -Fxq -- 'request_consumer=1' "$request_lock_dir/owner"; then
+                    err 'The live worker does not support durable requests. Stop it, then resume with this Ralphie version before submitting instructions.'
+                    return 1
+                fi
+            fi
+        fi
+    fi
+    # Never wait for a worker's queue claim while holding its admission claim:
+    # cleanup publishes state under the queue claim before releasing the worker.
+    if [ -n "$request_worker_claim_token" ]; then
+        request_lock 0 || return 1
+    else
+        request_lock || return 1
+    fi
+    if ! load_state || [ -z "$SESSION_ID" ] || ! request_validate_mission; then
+        err 'Saved mission or request binding is invalid; no engine was invoked.'
+        return 1
+    fi
+    case "$REQUEST_COMMAND" in
+        publish-text|publish-file)
+            if [ "$CURRENT_PHASE" = done ]; then
+                err 'The saved mission is completed; start a reviewed new mission before submitting another request.'
+                return 1
+            fi
+            if [ "$REQUEST_COMMAND" = publish-text ]; then
+                request_body_tmp="$(mktemp "${TMPDIR:-/tmp}/ralphie-request.XXXXXX")" || return 1
+                printf '%s' "$REQUEST_TEXT" > "$request_body_tmp" || return 1
+                request_input="$request_body_tmp"
+            else
+                request_input="$REQUEST_FILE"
+                case "$request_input" in /*) ;; *) request_input="$INVOCATION_DIR/$request_input" ;; esac
+            fi
+            request_publish_file "$request_input" || return 1
+            ;;
+        list) request_render_list human || return 1 ;;
+        json) request_render_list json || return 1 ;;
+        archive) request_archive "$REQUEST_ARCHIVE_ID" || return 1 ;;
+        *) err 'Unknown durable steering control.'; return 1 ;;
+    esac
+    return 0
+)
 
 # Global Registry for Background Processes (for atomic cleanup)
 declare -a RALPHIE_BG_PIDS=()
@@ -2942,6 +3084,7 @@ save_state() {
     # successful command must not conceal an earlier serialization failure.
     if ! printf '%s="%s"\n' \
         MISSION_SEED_SHA "$(state_escape_value "${MISSION_SEED_SHA:-}")" \
+        REQUEST_REVIEWED_FINGERPRINT "$(state_escape_value "${REQUEST_REVIEWED_FINGERPRINT:-}")" \
         OWNED_PATHS_SHA "$(state_escape_value "${OWNED_PATHS_SHA:-}")" \
         SHELL_GATES_FINGERPRINT "$(state_escape_value "${SHELL_GATES_FINGERPRINT:-}")" \
         SHELL_LOCAL_WORK_SEEN "$(state_escape_value "${SHELL_LOCAL_WORK_SEEN:-}")" \
@@ -3007,6 +3150,7 @@ save_state_or_exit() {
 load_state() {
     if [ ! -f "$STATE_FILE" ]; then return 1; fi
 
+    REQUEST_REVIEWED_FINGERPRINT=""
     CURRENT_PHASE="plan"
     CURRENT_PHASE_INDEX=0
     CURRENT_PHASE_ATTEMPT=1
@@ -3072,6 +3216,13 @@ load_state() {
         esac
         case "$key" in
             MISSION_SEED_SHA) MISSION_SEED_SHA="$value" ;;
+            REQUEST_REVIEWED_FINGERPRINT)
+                if [ -n "$value" ] && { [ "${#value}" -ne 64 ] || [[ "$value" == *[!0-9a-f]* ]]; }; then
+                    err 'Saved human-request generation is invalid.'
+                    return 1
+                fi
+                REQUEST_REVIEWED_FINGERPRINT="$value"
+                ;;
             OWNED_PATHS_SHA) OWNED_PATHS_SHA="$value" ;;
             SHELL_GATES_FINGERPRINT) SHELL_GATES_FINGERPRINT="$value" ;;
             SHELL_LOCAL_WORK_SEEN) SHELL_LOCAL_WORK_SEEN="$value" ;;
@@ -3311,31 +3462,42 @@ is_tty_input_available() {
 prompt_read_line() {
     local prompt="$1"
     local default="$2"
+    local secret="${3:-false}"
     local response=""
+    local -a read_options=(-r)
 
     if is_true "${NO_TERMINAL_INPUT:-false}"; then
         printf '%s\n' "$default"
         return 0
     fi
-    if [ -t 0 ]; then
-        read -rp "$prompt" response
-        echo "${response:-$default}"
-        return 0
+    if is_true "$secret"; then
+        read_options+=(-s)
+    elif [ "${TERM:-dumb}" != dumb ]; then
+        read_options+=(-e)
     fi
-
     if is_tty_input_available; then
         if { exec 9<>/dev/tty; } 2>/dev/null; then
-            printf '%s' "$prompt" >&9
-            if IFS= read -r -u 9 response; then
+            # Bash 3.2 Readline ignores -u; redirect stdin so a piped script
+            # remains untouched while editing reads the controlling terminal.
+            if IFS= read "${read_options[@]}" -p "$prompt" response <&9 2>&9; then
+                if is_true "$secret"; then printf '\n' >&9 || { exec 9>&- 9<&-; return 130; }; fi
                 exec 9>&- 9<&-
-                echo "${response:-$default}"
+                printf '%s\n' "${response:-$default}"
                 return 0
             fi
+            if is_true "$secret"; then printf '\n' >&9 || true; fi
             exec 9>&- 9<&-
+        elif [ -t 0 ]; then
+            if IFS= read "${read_options[@]}" -p "$prompt" response; then
+                if is_true "$secret"; then printf '\n' >&2 || return 130; fi
+                printf '%s\n' "${response:-$default}"
+                return 0
+            fi
+            if is_true "$secret"; then printf '\n' >&2 || true; fi
         fi
     fi
-
-    echo "$default"
+    warn "Input closed; no default was accepted."
+    return 130
 }
 
 prompt_yes_no() {
@@ -3349,11 +3511,14 @@ prompt_yes_no() {
         *) default_marker="[Y/n]" ;;
     esac
 
-    response="$(prompt_read_line "$prompt $default_marker: " "$default")"
-    case "${response}" in
-        [Yy]*) echo "true"; return 0 ;;
-        *) echo "false"; return 1 ;;
-    esac
+    while true; do
+        response="$(prompt_read_line "$prompt $default_marker: " "$default")" || return 130
+        case "$(to_lower "$response")" in
+            y|yes|true|on|1) printf '%s\n' true; return 0 ;;
+            n|no|false|off|0) printf '%s\n' false; return 0 ;;
+            *) warn "Please enter yes or no; Enter accepts the displayed default." ;;
+        esac
+    done
 }
 
 prompt_line() {
@@ -3365,7 +3530,11 @@ prompt_line() {
 prompt_optional_line() {
     local prompt="$1"
     local default="${2:-}"
-    prompt_read_line "$prompt: " "$default"
+    if [ -n "$default" ]; then
+        prompt_read_line "$prompt [$default]: " "$default"
+    else
+        prompt_read_line "$prompt [optional, Enter=skip]: " ""
+    fi
 }
 
 prompt_multiline_block() {
@@ -3375,10 +3544,11 @@ prompt_multiline_block() {
     local sentinel="${3:-EOF}"
     local line=""
     local result=""
+    local finished="false"
 
     if ! { exec 9<>/dev/tty; } 2>/dev/null; then
-        printf '%s' "$default"
-        return 0
+        warn "Input closed; goals paste cancelled."
+        return 130
     fi
 
     {
@@ -3395,6 +3565,7 @@ prompt_multiline_block() {
             return 0
         fi
         if [ "$line" = "$sentinel" ]; then
+            finished="true"
             break
         fi
         result="${result}${result:+$'\n'}$line"
@@ -3403,7 +3574,12 @@ prompt_multiline_block() {
     exec 9>&- 9<&-
 
     if [ -z "$result" ]; then
-        printf '%s' "$default"
+        if is_true "$finished"; then
+            printf '%s' "$default"
+        else
+            warn "Input closed; goals paste cancelled."
+            return 130
+        fi
     else
         printf '%s' "$result"
     fi
@@ -3412,19 +3588,26 @@ prompt_multiline_block() {
 prompt_override_value() {
     local label="$1"
     local current="${2:-}"
+    local secret="${3:-false}"
     local current_display="${current:-<default>}"
     local response=""
 
-    response="$(prompt_read_line "$label [current: $current_display, enter=keep, -=clear]: " "")"
+    if is_true "$secret"; then
+        current_display="<unset>"
+        [ -z "$current" ] || current_display="[configured]"
+        response="$(prompt_read_line "$label [current: $current_display, Enter=keep, -=clear; input hidden]: " "" true)" || return 130
+    else
+        response="$(prompt_read_line "$label [current: $current_display, Enter=keep, -=clear]: " "")" || return 130
+    fi
     if [ -z "$response" ]; then
-        echo "$current"
+        printf '%s\n' "$current"
         return 0
     fi
     if [ "$response" = "-" ]; then
-        echo ""
+        printf '\n'
         return 0
     fi
-    echo "$response"
+    printf '%s\n' "$response"
 }
 
 bootstrap_prompt_value() {
@@ -3862,6 +4045,8 @@ bootstrap_persona_feedback_lines() {
 }
 
 ensure_project_bootstrap() {
+    local prompt_response
+    local alignment_blocked=false
     local project_type objective build_consent interactive_source constraints success_criteria goals_text goals_doc_url architecture_shape technology_choices
     project_type="existing"
     objective="Improve project with a deterministic, evidence-first implementation path."
@@ -3874,7 +4059,7 @@ ensure_project_bootstrap() {
     architecture_shape="No explicit structure preference provided."
     technology_choices="No explicit technology preference provided."
 
-    mkdir -p "$(dirname "$PROJECT_BOOTSTRAP_FILE")"
+    ensure_runtime_directory "$(dirname "$PROJECT_BOOTSTRAP_FILE")" || return 1
     local existing_project_type=""
     local existing_objective=""
     local existing_build_consent=""
@@ -3944,22 +4129,28 @@ ensure_project_bootstrap() {
     if is_true "$needs_prompt" && is_tty_input_available; then
         interactive_source="true"
         if [ "$REBOOTSTRAP_REQUESTED" = true ] || ! bootstrap_context_is_valid || [ ! -f "$PROJECT_BOOTSTRAP_FILE" ]; then
-            if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "n")" = "true" ]; then
+            info "Project setup: Enter keeps the displayed value. Ctrl-D cancels without starting work."
+            prompt_response="$(prompt_yes_no "Is this a new project (no established implementation yet)?" "n")" || return 130
+            if [ "$prompt_response" = "true" ]; then
                 project_type="new"
+            else
+                project_type="existing"
             fi
-            objective="$(prompt_optional_line "What is the primary objective for this session (single line)" "$objective")"
-            constraints="$(prompt_optional_line "Key constraints or non-goals (single line, optional)" "$constraints")"
-            success_criteria="$(prompt_optional_line "Success criteria / definition of done (single line, optional)" "$success_criteria")"
-            goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")"
+            objective="$(prompt_optional_line "What is the primary objective for this session (single line)" "$objective")" || return 130
+            constraints="$(prompt_optional_line "Key constraints or non-goals (single line, optional)" "$constraints")" || return 130
+            success_criteria="$(prompt_optional_line "Success criteria / definition of done (single line, optional)" "$success_criteria")" || return 130
+            goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")" || return 130
 
-            if [ "$(prompt_yes_no "Paste a project goals document/URL block now?" "n")" = "true" ]; then
-                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
+            prompt_response="$(prompt_yes_no "Paste a project goals document/URL block now?" "n")" || return 130
+            if [ "$prompt_response" = "true" ]; then
+                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")" || return 130
             fi
 
-            architecture_shape="$(prompt_optional_line "Preferred project structure / architecture (single line, optional)" "$architecture_shape")"
-            technology_choices="$(prompt_optional_line "Preferred technology choices (single line, optional)" "$technology_choices")"
+            architecture_shape="$(prompt_optional_line "Preferred project structure / architecture (single line, optional)" "$architecture_shape")" || return 130
+            technology_choices="$(prompt_optional_line "Preferred technology choices (single line, optional)" "$technology_choices")" || return 130
 
-            if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "y")" = "true" ]; then
+            prompt_response="$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "y")" || return 130
+            if [ "$prompt_response" = "true" ]; then
                 build_consent="true"
             else
                 build_consent="false"
@@ -4019,15 +4210,16 @@ ensure_project_bootstrap() {
                     info "Persona blockers: $(join_with_commas "${blocking_personas[@]+"${blocking_personas[@]}"}")"
                 fi
 
-                alignment_action="$(to_lower "$(prompt_read_line "Alignment action [a=accept,m=modify,r=rerun,d=dismiss] (round ${alignment_round}/${alignment_max_rounds}): " "a")")"
+                alignment_action="$(prompt_read_line "Alignment action [a=accept,m=modify,r=rerun,d=dismiss] (round ${alignment_round}/${alignment_max_rounds}): " "a")" || return 130
+                alignment_action="$(to_lower "$alignment_action")"
                 case "$alignment_action" in
                     a|accept|ok|yes|y|"")
                         if [ "${#schema_missing_fields[@]}" -gt 0 ] || [ "${#blocking_personas[@]}" -gt 0 ]; then
                             warn "Accept blocked: missing fields=$(join_with_commas "${schema_missing_fields[@]+"${schema_missing_fields[@]}"}"), blockers=$(join_with_commas "${blocking_personas[@]+"${blocking_personas[@]}"}")."
                             info "Focused clarifiers required before accept:"
-                            objective="$(prompt_optional_line "Clarify primary user/workflow (single line)" "$objective")"
-                            constraints="$(prompt_optional_line "Clarify highest risk/non-goal (single line)" "$constraints")"
-                            success_criteria="$(prompt_optional_line "Clarify measurable done signal (single line)" "$success_criteria")"
+                            objective="$(prompt_optional_line "Clarify primary user/workflow (single line)" "$objective")" || return 130
+                            constraints="$(prompt_optional_line "Clarify highest risk/non-goal (single line)" "$constraints")" || return 130
+                            success_criteria="$(prompt_optional_line "Clarify measurable done signal (single line)" "$success_criteria")" || return 130
                             needs_arch_clarifier="false"
                             needs_tech_clarifier="false"
                             for schema_field in "${schema_missing_fields[@]}"; do
@@ -4038,10 +4230,10 @@ ensure_project_bootstrap() {
                                 esac
                             done
                             if [ "$needs_arch_clarifier" = "true" ]; then
-                                architecture_shape="$(prompt_optional_line "Clarify target structure/architecture (single line)" "$architecture_shape")"
+                                architecture_shape="$(prompt_optional_line "Clarify target structure/architecture (single line)" "$architecture_shape")" || return 130
                             fi
                             if [ "$needs_tech_clarifier" = "true" ]; then
-                                technology_choices="$(prompt_optional_line "Clarify target technology choices (single line)" "$technology_choices")"
+                                technology_choices="$(prompt_optional_line "Clarify target technology choices (single line)" "$technology_choices")" || return 130
                             fi
                         fi
                         [ "${#schema_missing_fields[@]}" -eq 0 ] && [ "${#blocking_personas[@]}" -eq 0 ] && break
@@ -4051,60 +4243,65 @@ ensure_project_bootstrap() {
                         break
                         ;;
                     r|rerun|again|loop)
-                        extra_context="$(prompt_optional_line "Add or correct context before rerun (optional)" "")"
+                        extra_context="$(prompt_optional_line "Add or correct context before rerun (optional)" "")" || return 130
                         if [ -n "$extra_context" ]; then
                             goals_text="${goals_text}${goals_text:+$'\n'}$extra_context"
                         fi
                         ;;
                     m|modify|edit)
-                        modify_target="$(to_lower "$(prompt_read_line "Modify field [goal|constraints|success|arch|tech|goals|type|build|all]: " "goal")")"
+                        modify_target="$(prompt_read_line "Modify field [goal|constraints|success|arch|tech|goals|type|build|all]: " "goal")" || return 130
+                        modify_target="$(to_lower "$modify_target")"
                         case "$modify_target" in
                             goal|objective)
-                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")"
+                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")" || return 130
                                 ;;
                             constraints|constraint|non-goals|nongoals)
-                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")"
+                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")" || return 130
                                 ;;
                             success|done|criteria|success_criteria)
-                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")"
+                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")" || return 130
                                 ;;
                             arch|architecture|structure)
-                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")"
+                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")" || return 130
                                 ;;
                             tech|stack|technology|technology_choices)
-                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")"
+                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")" || return 130
                                 ;;
                             goals|goals_doc|goals_document)
-                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
+                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")" || return 130
                                 ;;
                             type|project_type)
-                                if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" = "true" ]; then
+                                prompt_response="$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" || return 130
+                                if [ "$prompt_response" = "true" ]; then
                                     project_type="new"
                                 else
                                     project_type="existing"
                                 fi
                                 ;;
                             build|build_consent|autobuild)
-                                if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" = "true" ]; then
+                                prompt_response="$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" || return 130
+                                if [ "$prompt_response" = "true" ]; then
                                     build_consent="true"
                                 else
                                     build_consent="false"
                                 fi
                                 ;;
                             all)
-                                if [ "$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" = "true" ]; then
+                                prompt_response="$(prompt_yes_no "Is this a new project (no established implementation yet)?" "$( [ "$project_type" = "new" ] && echo y || echo n )")" || return 130
+                                if [ "$prompt_response" = "true" ]; then
                                     project_type="new"
                                 else
                                     project_type="existing"
                                 fi
-                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")"
-                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")"
-                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")"
-                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")"
-                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")"
-                                goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")"
-                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")"
-                                if [ "$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" = "true" ]; then
+                                objective="$(prompt_optional_line "Primary objective (single line)" "$objective")" || return 130
+                                constraints="$(prompt_optional_line "Constraints or non-goals (single line)" "$constraints")" || return 130
+                                success_criteria="$(prompt_optional_line "Success criteria / done (single line)" "$success_criteria")" || return 130
+                                architecture_shape="$(prompt_optional_line "Project structure / architecture (single line)" "$architecture_shape")" || return 130
+                                technology_choices="$(prompt_optional_line "Technology choices (single line)" "$technology_choices")" || return 130
+                                goals_doc_url="$(prompt_optional_line "Project goals document URL (optional)" "$goals_doc_url")" || return 130
+                                goals_text="$(prompt_multiline_block "Project goals/context input" "$goals_text" "EOF")" || return 130
+                                prompt_response="$(prompt_yes_no "Proceed automatically from PLAN -> BUILD when all gates pass" "$(is_true "$build_consent" && echo y || echo n)")" || return 130
+                                if [ "$prompt_response" = "true" ]; then
                                     build_consent="true"
                                 else
                                     build_consent="false"
@@ -4128,26 +4325,10 @@ ensure_project_bootstrap() {
                 fi
 
                 if [ "$alignment_round" -ge "$alignment_max_rounds" ] || [ "$no_change_rounds" -ge 2 ]; then
-                    local guard_reason
-                    guard_reason="max_rounds"
-                    if [ "$no_change_rounds" -ge 2 ]; then
-                        guard_reason="no_change"
-                    fi
-                    if [ "$alignment_round" -ge "$alignment_max_rounds" ] && [ "$no_change_rounds" -ge 2 ]; then
-                        guard_reason="max_rounds+no_change"
-                    fi
-                    warn "Alignment loop guard triggered ($guard_reason). Asking focused clarifiers."
-                    objective="$(prompt_optional_line "Clarify primary user/workflow (single line)" "$objective")"
-                    constraints="$(prompt_optional_line "Clarify highest risk/non-goal (single line)" "$constraints")"
-                    success_criteria="$(prompt_optional_line "Clarify measurable done signal (single line)" "$success_criteria")"
-                    if ! bootstrap_required_text_value_is_set "$architecture_shape"; then
-                        architecture_shape="$(prompt_optional_line "Clarify target structure/architecture (single line)" "$architecture_shape")"
-                    fi
-                    if ! bootstrap_required_text_value_is_set "$technology_choices"; then
-                        technology_choices="$(prompt_optional_line "Clarify target technology choices (single line)" "$technology_choices")"
-                    fi
-                    alignment_round=0
-                    no_change_rounds=0
+                    warn "Alignment paused after $alignment_round rounds without an accepted outcome."
+                    build_consent="false"
+                    alignment_blocked=true
+                    break
                 fi
             done
             info "Project bootstrap captured from interactive input."
@@ -4168,13 +4349,18 @@ ensure_project_bootstrap() {
         info "Non-interactive bootstrap fallback retained: objective defaults were applied and build consent remains false."
     fi
 
-    write_project_goals_file "$goals_text"
-    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source" "$constraints" "$success_criteria" "$([ -s "$PROJECT_GOALS_FILE" ] && echo true || echo false)" "$goals_doc_url" "$architecture_shape" "$technology_choices"
+    write_project_goals_file "$goals_text" || return 1
+    write_bootstrap_context_file "$project_type" "$objective" "$build_consent" "$interactive_source" "$constraints" "$success_criteria" "$([ -s "$PROJECT_GOALS_FILE" ] && echo true || echo false)" "$goals_doc_url" "$architecture_shape" "$technology_choices" || return 1
     info "Captured project bootstrap context: $(path_for_display "$PROJECT_BOOTSTRAP_FILE")"
     if [ -s "$PROJECT_GOALS_FILE" ]; then
         info "Captured project goals document: $(path_for_display "$PROJECT_GOALS_FILE")"
     fi
     REBOOTSTRAP_REQUESTED=false
+    if is_true "$alignment_blocked"; then
+        err "Bootstrap context was saved with BUILD consent disabled. Run --rebootstrap to finish alignment."
+        return 1
+    fi
+    return 0
 }
 
 append_bootstrap_context_to_plan_prompt() {
@@ -4848,6 +5034,7 @@ persist_notification_value() {
 }
 
 run_first_deploy_notification_wizard() {
+    local prompt_response
     if is_true "$NOTIFICATION_WIZARD_BOOTSTRAPPED"; then
         return 1
     fi
@@ -4865,7 +5052,8 @@ run_first_deploy_notification_wizard() {
     info "Channels supported: Telegram bot, Discord webhook, optional Chutes TTS voice attachments."
     info "Anti-spam policy: only high-signal events are sent; repeated incident alerts are batched with periodic reminders."
 
-    if [ "$(prompt_yes_no "Configure notifications now (Telegram/Discord/Chutes TTS)?" "n")" != "true" ]; then
+    prompt_response="$(prompt_yes_no "Configure notifications now (Telegram/Discord/Chutes TTS)?" "n")" || return 130
+    if [ "$prompt_response" != "true" ]; then
         info "Skipping first-deploy notification setup."
         persist_notification_wizard_bootstrap_flag || true
         return 1
@@ -4879,17 +5067,18 @@ run_first_deploy_notification_wizard() {
     info "  1) Open Telegram @BotFather, run /newbot, copy bot token."
     info "  2) Send one message to your bot/chat/channel."
     info "  3) Open https://api.telegram.org/bot<token>/getUpdates and copy chat.id (or let Ralphie auto-discover it)."
-    if [ "$(prompt_yes_no "Configure Telegram notifications?" "$(is_true "$NOTIFY_TELEGRAM_ENABLED" && echo y || echo n)")" = "true" ]; then
+    prompt_response="$(prompt_yes_no "Configure Telegram notifications?" "$(is_true "$NOTIFY_TELEGRAM_ENABLED" && echo y || echo n)")" || return 130
+    if [ "$prompt_response" = "true" ]; then
         local suggested_chat_id=""
         telegram_selected="true"
-        TG_BOT_TOKEN="$(prompt_override_value "Telegram bot token (TG_BOT_TOKEN)" "$TG_BOT_TOKEN")"
+        TG_BOT_TOKEN="$(prompt_override_value "Telegram bot token (TG_BOT_TOKEN)" "$TG_BOT_TOKEN" true)" || return 130
         if [ -z "$TG_CHAT_ID" ] && [ -n "$TG_BOT_TOKEN" ]; then
             suggested_chat_id="$(telegram_suggest_chat_id_raw "$TG_BOT_TOKEN")"
             if [ -n "$suggested_chat_id" ]; then
                 TG_CHAT_ID="$suggested_chat_id"
             fi
         fi
-        TG_CHAT_ID="$(prompt_override_value "Telegram chat id (TG_CHAT_ID)" "$TG_CHAT_ID")"
+        TG_CHAT_ID="$(prompt_override_value "Telegram chat id (TG_CHAT_ID)" "$TG_CHAT_ID")" || return 130
         if [ -z "$TG_CHAT_ID" ] && [ -n "$TG_BOT_TOKEN" ]; then
             suggested_chat_id="$(telegram_suggest_chat_id_raw "$TG_BOT_TOKEN")"
             if [ -n "$suggested_chat_id" ]; then
@@ -4910,9 +5099,10 @@ run_first_deploy_notification_wizard() {
     info "Discord setup guide:"
     info "  1) Open Server Settings -> Integrations -> Webhooks."
     info "  2) Create webhook, copy URL, and paste it here."
-    if [ "$(prompt_yes_no "Configure Discord webhook notifications?" "$(is_true "$NOTIFY_DISCORD_ENABLED" && echo y || echo n)")" = "true" ]; then
+    prompt_response="$(prompt_yes_no "Configure Discord webhook notifications?" "$(is_true "$NOTIFY_DISCORD_ENABLED" && echo y || echo n)")" || return 130
+    if [ "$prompt_response" = "true" ]; then
         discord_selected="true"
-        NOTIFY_DISCORD_WEBHOOK_URL="$(prompt_override_value "Discord webhook URL" "$NOTIFY_DISCORD_WEBHOOK_URL")"
+        NOTIFY_DISCORD_WEBHOOK_URL="$(prompt_override_value "Discord webhook URL" "$NOTIFY_DISCORD_WEBHOOK_URL" true)" || return 130
         if [ -z "$NOTIFY_DISCORD_WEBHOOK_URL" ]; then
             warn "Discord webhook URL is empty; disabling Discord channel."
             discord_selected="false"
@@ -4927,13 +5117,14 @@ run_first_deploy_notification_wizard() {
         info "Optional Chutes TTS setup guide:"
         info "  1) Create API key at https://chutes.ai"
         info "  2) Provide CHUTES_API_KEY to enable voice notifications (Telegram and/or Discord)."
-        if [ "$(prompt_yes_no "Enable Chutes TTS voice notifications?" "$(is_true "$NOTIFY_TTS_ENABLED" && echo y || echo n)")" = "true" ]; then
+        prompt_response="$(prompt_yes_no "Enable Chutes TTS voice notifications?" "$(is_true "$NOTIFY_TTS_ENABLED" && echo y || echo n)")" || return 130
+        if [ "$prompt_response" = "true" ]; then
             tts_selected="true"
-            CHUTES_API_KEY="$(prompt_override_value "Chutes API key (CHUTES_API_KEY)" "$CHUTES_API_KEY")"
-            NOTIFY_TTS_STYLE="$(prompt_override_value "TTS narration style (standard|friendly|ralph_wiggum)" "$NOTIFY_TTS_STYLE")"
+            CHUTES_API_KEY="$(prompt_override_value "Chutes API key (CHUTES_API_KEY)" "$CHUTES_API_KEY" true)" || return 130
+            NOTIFY_TTS_STYLE="$(prompt_override_value "TTS narration style (standard|friendly|ralph_wiggum)" "$NOTIFY_TTS_STYLE")" || return 130
             NOTIFY_TTS_STYLE="$(normalize_notify_tts_style "$NOTIFY_TTS_STYLE")"
-            NOTIFY_CHUTES_VOICE="$(prompt_override_value "Chutes voice id" "$NOTIFY_CHUTES_VOICE")"
-            NOTIFY_CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.0)" "$NOTIFY_CHUTES_SPEED")"
+            NOTIFY_CHUTES_VOICE="$(prompt_override_value "Chutes voice id" "$NOTIFY_CHUTES_VOICE")" || return 130
+            NOTIFY_CHUTES_SPEED="$(prompt_override_value "Chutes speed (example 1.0)" "$NOTIFY_CHUTES_SPEED")" || return 130
             if ! is_decimal_number "$NOTIFY_CHUTES_SPEED"; then
                 warn "Invalid Chutes speed; defaulting to $DEFAULT_NOTIFY_CHUTES_SPEED."
                 NOTIFY_CHUTES_SPEED="$DEFAULT_NOTIFY_CHUTES_SPEED"
@@ -4975,10 +5166,11 @@ run_first_deploy_notification_wizard() {
         fi
     fi
 
-    if [ "$(prompt_yes_no "Adjust anti-spam notification cadence?" "n")" = "true" ]; then
+    prompt_response="$(prompt_yes_no "Adjust anti-spam notification cadence?" "n")" || return 130
+    if [ "$prompt_response" = "true" ]; then
         local dedup_candidate reminder_candidate
-        dedup_candidate="$(prompt_optional_line "Duplicate-event suppression window seconds (0 disables suppression)" "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS")"
-        reminder_candidate="$(prompt_optional_line "Incident reminder interval minutes (0 disables reminders)" "$NOTIFY_INCIDENT_REMINDER_MINUTES")"
+        dedup_candidate="$(prompt_optional_line "Duplicate-event suppression window seconds (0 disables suppression)" "$NOTIFY_EVENT_DEDUP_WINDOW_SECONDS")" || return 130
+        reminder_candidate="$(prompt_optional_line "Incident reminder interval minutes (0 disables reminders)" "$NOTIFY_INCIDENT_REMINDER_MINUTES")" || return 130
         if dedup_candidate="$(normalize_non_negative_decimal "$dedup_candidate")"; then
             NOTIFY_EVENT_DEDUP_WINDOW_SECONDS="$dedup_candidate"
         else
@@ -5050,6 +5242,7 @@ persist_engine_override_value() {
 }
 
 run_first_deploy_engine_override_wizard() {
+    local prompt_response
     # A first-run questionnaire must not replace an engine or model the
     # operator already selected in config, environment or this invocation.
     if is_true "${ENGINE_SELECTION_EXPLICIT:-false}" || is_true "${PRIME_OPTIONS_EXPLICIT:-false}"; then
@@ -5066,7 +5259,8 @@ run_first_deploy_engine_override_wizard() {
     info "Requested engine mode: $ENGINE_SELECTION_REQUESTED (auto preference: $AUTO_ENGINE_PREFERENCE)"
     info "Healthy engines from readiness checks: $(healthy_engines_for_display)"
 
-    if [ "$(prompt_yes_no "Configure engine selection and provider/model/thinking overrides now?" "y")" != "true" ]; then
+    prompt_response="$(prompt_yes_no "Configure engine selection and provider/model/thinking overrides now?" "y")" || return 130
+    if [ "$prompt_response" != "true" ]; then
         info "Skipping first-deploy engine override setup."
         persist_engine_override_bootstrap_flag || true
         return 1
@@ -5078,7 +5272,8 @@ run_first_deploy_engine_override_wizard() {
     local codex_schema_enabled_choice codex_schema_file_choice
     local claude_endpoint_choice claude_model_choice claude_thinking_choice
 
-    selected_engine_choice="$(normalize_engine_name "$(prompt_read_line "Engine mode (auto|prime-agent|codex|claude) [current: $ENGINE_SELECTION_REQUESTED]: " "$ENGINE_SELECTION_REQUESTED")")"
+    selected_engine_choice="$(prompt_read_line "Engine mode (auto|prime-agent|codex|claude) [current: $ENGINE_SELECTION_REQUESTED]: " "$ENGINE_SELECTION_REQUESTED")" || return 130
+    selected_engine_choice="$(normalize_engine_name "$selected_engine_choice")"
     case "$selected_engine_choice" in
         auto|prime-agent|codex|claude) ;;
         *)
@@ -5093,7 +5288,8 @@ run_first_deploy_engine_override_wizard() {
     persist_engine_override_value "RALPHIE_ENGINE" "$ENGINE_SELECTION_REQUESTED" || true
 
     if [ "$ENGINE_SELECTION_REQUESTED" = "auto" ]; then
-        preferred_auto_choice="$(normalize_engine_name "$(prompt_read_line "AUTO preference (prime-agent|codex|claude) [current: $AUTO_ENGINE_PREFERENCE]: " "$AUTO_ENGINE_PREFERENCE")")"
+        preferred_auto_choice="$(prompt_read_line "AUTO preference (prime-agent|codex|claude) [current: $AUTO_ENGINE_PREFERENCE]: " "$AUTO_ENGINE_PREFERENCE")" || return 130
+        preferred_auto_choice="$(normalize_engine_name "$preferred_auto_choice")"
         case "$preferred_auto_choice" in
             prime-agent|codex|claude) ;;
             *)
@@ -5109,10 +5305,12 @@ run_first_deploy_engine_override_wizard() {
     fi
 
     if [ "$CODEX_HEALTHY" = "true" ]; then
-        if [ "$(prompt_yes_no "Configure Codex endpoint/model/thinking/schema overrides?" "n")" = "true" ]; then
-            codex_endpoint_choice="$(prompt_override_value "Codex endpoint (OPENAI_BASE_URL)" "$CODEX_ENDPOINT")"
-            codex_model_choice="$(prompt_override_value "Codex model" "${CODEX_MODEL:-}")"
-            codex_thinking_choice="$(to_lower "$(prompt_override_value "Codex thinking override (none|minimal|low|medium|high|xhigh)" "$CODEX_THINKING_OVERRIDE")")"
+        prompt_response="$(prompt_yes_no "Configure Codex endpoint/model/thinking/schema overrides?" "n")" || return 130
+        if [ "$prompt_response" = "true" ]; then
+            codex_endpoint_choice="$(prompt_override_value "Codex endpoint (OPENAI_BASE_URL)" "$CODEX_ENDPOINT")" || return 130
+            codex_model_choice="$(prompt_override_value "Codex model" "${CODEX_MODEL:-}")" || return 130
+            codex_thinking_choice="$(prompt_override_value "Codex thinking override (none|minimal|low|medium|high|xhigh)" "$CODEX_THINKING_OVERRIDE")" || return 130
+            codex_thinking_choice="$(to_lower "$codex_thinking_choice")"
             case "$codex_thinking_choice" in
                 none|minimal|low|medium|high|xhigh|"") ;;
                 *)
@@ -5121,9 +5319,10 @@ run_first_deploy_engine_override_wizard() {
                     ;;
             esac
 
-            if [ "$(prompt_yes_no "Enable Codex output schema?" "$(is_true "$CODEX_USE_RESPONSES_SCHEMA" && echo y || echo n)")" = "true" ]; then
+            prompt_response="$(prompt_yes_no "Enable Codex output schema?" "$(is_true "$CODEX_USE_RESPONSES_SCHEMA" && echo y || echo n)")" || return 130
+            if [ "$prompt_response" = "true" ]; then
                 codex_schema_enabled_choice="true"
-                codex_schema_file_choice="$(prompt_override_value "Codex schema file path" "$CODEX_RESPONSES_SCHEMA_FILE")"
+                codex_schema_file_choice="$(prompt_override_value "Codex schema file path" "$CODEX_RESPONSES_SCHEMA_FILE")" || return 130
             else
                 codex_schema_enabled_choice="false"
                 codex_schema_file_choice="$CODEX_RESPONSES_SCHEMA_FILE"
@@ -5150,10 +5349,12 @@ run_first_deploy_engine_override_wizard() {
     fi
 
     if [ "$CLAUDE_HEALTHY" = "true" ]; then
-        if [ "$(prompt_yes_no "Configure Claude endpoint/model/thinking overrides?" "n")" = "true" ]; then
-            claude_endpoint_choice="$(prompt_override_value "Claude endpoint (ANTHROPIC_BASE_URL)" "$CLAUDE_ENDPOINT")"
-            claude_model_choice="$(prompt_override_value "Claude model" "${CLAUDE_MODEL:-}")"
-            claude_thinking_choice="$(to_lower "$(prompt_override_value "Claude thinking override (none|off|low|medium|high|xhigh)" "$CLAUDE_THINKING_OVERRIDE")")"
+        prompt_response="$(prompt_yes_no "Configure Claude endpoint/model/thinking overrides?" "n")" || return 130
+        if [ "$prompt_response" = "true" ]; then
+            claude_endpoint_choice="$(prompt_override_value "Claude endpoint (ANTHROPIC_BASE_URL)" "$CLAUDE_ENDPOINT")" || return 130
+            claude_model_choice="$(prompt_override_value "Claude model" "${CLAUDE_MODEL:-}")" || return 130
+            claude_thinking_choice="$(prompt_override_value "Claude thinking override (none|off|low|medium|high|xhigh)" "$CLAUDE_THINKING_OVERRIDE")" || return 130
+            claude_thinking_choice="$(to_lower "$claude_thinking_choice")"
             case "$claude_thinking_choice" in
                 none|off|low|medium|high|xhigh|"") ;;
                 *)
@@ -5271,6 +5472,7 @@ smoke_test_engine() {
     local prompt_file output_file log_file stream_output_file canary_token smoke_pid
     local smoke_exit=1 result=1 permanent=false
 
+    request_check_generation || return $?
     [ -n "$engine_cmd" ] && command -v "$engine_cmd" >/dev/null 2>&1 || return 1
     [ "$engine_name" != codex ] || validate_codex_schema_requirement || return 1
     engine_scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralphie_engine.XXXXXX")" || return 1
@@ -5307,6 +5509,9 @@ smoke_test_engine() {
         cleanup_engine_attempt_files "$engine_scratch_dir"
         return 1
     fi
+    local request_preflight_status=0
+    request_check_generation || request_preflight_status=$?
+    if [ "$request_preflight_status" -ne 0 ]; then cleanup_engine_attempt_files "$engine_scratch_dir"; return "$request_preflight_status"; fi
     if ! admit_session_attempt "$engine_name readiness canary"; then cleanup_engine_attempt_files "$engine_scratch_dir"; return 75; fi
     (
         trap "$(printf 'cleanup_engine_attempt_files %q; exit 143' "$engine_scratch_dir")" HUP INT TERM
@@ -5342,6 +5547,7 @@ smoke_test_engine() {
         warn "$engine_name readiness failed permanently; not retrying this configuration."
         return 126
     fi
+    request_check_generation || return $?
     if is_true "$ENGINE_HEALTH_RETRY_VERBOSE"; then
         if [ "$result" -eq 0 ]; then info "Smoke test $engine_name: PASS"; else warn "Smoke test $engine_name: FAIL (exit=$smoke_exit)"; fi
     fi
@@ -5633,6 +5839,7 @@ probe_engine_capabilities() {
             else
                 is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && return 75
                 is_true "${ENGINE_PERMANENT_FAILURE:-false}" && return 126
+                is_true "$REQUEST_REFRESH_REQUIRED" && return 76
                 CLAUDE_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
                 CLAUDE_SMOKE_PASS="false"
             fi
@@ -5675,6 +5882,7 @@ probe_engine_capabilities() {
             else
                 is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && return 75
                 is_true "${ENGINE_PERMANENT_FAILURE:-false}" && return 126
+                is_true "$REQUEST_REFRESH_REQUIRED" && return 76
                 CODEX_CAP_NOTE="smoke test failed: engine unresponsive or returned wrong output"
                 CODEX_SMOKE_PASS="false"
             fi
@@ -5868,6 +6076,348 @@ release_lock_claim() {
     rm -f "$claim/owner" && rmdir "$claim"
 }
 
+# Requests are mission-bound inputs, never completion evidence. Publication and
+# the final done checkpoint share this short claim; no engine runs under it.
+request_lock() {
+    [ -z "$REQUEST_LOCK_TOKEN" ] || { err 'Request claim is already held.'; return 1; }
+    acquire_lock_claim "$REQUEST_CLAIM_DIR" "${1:-2}" || return 1
+    REQUEST_LOCK_TOKEN="$LOCK_CLAIM_TOKEN"
+}
+
+request_unlock() {
+    [ -n "$REQUEST_LOCK_TOKEN" ] || return 0
+    release_lock_claim "$REQUEST_CLAIM_DIR" "$REQUEST_LOCK_TOKEN" || return 1
+    REQUEST_LOCK_TOKEN=""
+}
+
+request_read_binding() {
+    local path="$1" lines
+    ensure_runtime_file "$path" && [ -f "$path" ] || return 1
+    lines="$(wc -l < "$path")" || return 1
+    [ "$lines" -eq 2 ] && [ "$(file_size_bytes_safe "$path")" -le 256 ] || return 1
+    REQUEST_BOUND_SESSION="$(sed -n '1p' "$path")" || return 1
+    REQUEST_BOUND_SEED="$(sed -n '2p' "$path")" || return 1
+    case "$REQUEST_BOUND_SESSION" in ''|*[!a-zA-Z0-9_.-]*) return 1;; esac
+    case "$REQUEST_BOUND_SEED" in *[!0-9a-f]*) return 1;; esac
+    [ -z "$REQUEST_BOUND_SEED" ] || [ "${#REQUEST_BOUND_SEED}" -eq 64 ]
+}
+
+request_body_valid() {
+    local file="$1" bytes invalid
+    [ -f "$file" ] && [ -r "$file" ] || return 1
+    bytes="$(file_size_bytes_safe "$file")" || return 1
+    [ "$bytes" -ge 1 ] && [ "$bytes" -le 4096 ] || {
+        err 'A human request must contain 1–4096 bytes.'; return 1;
+    }
+    invalid="$(LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' < "$file" | wc -c)" || return 1
+    [ "$invalid" -eq 0 ] || {
+        err 'Human requests cannot contain NUL, unsupported control bytes or DEL.'; return 1;
+    }
+    # JSON exposes the exact text, so binary or malformed UTF-8 cannot be accepted.
+    LC_ALL=C od -An -v -tu1 < "$file" | LC_ALL=C awk '
+        { for (i=1; i<=NF; i++) {
+            b=$i+0
+            if (need) {
+                if (b<lo || b>hi) { bad=1; exit }
+                need--; lo=128; hi=191
+            } else if (b<=127) { continue }
+            else if (b>=194 && b<=223) { need=1; lo=128; hi=191 }
+            else if (b>=224 && b<=239) { need=2; lo=(b==224?160:128); hi=(b==237?159:191) }
+            else if (b>=240 && b<=244) { need=3; lo=(b==240?144:128); hi=(b==244?143:191) }
+            else { bad=1; exit }
+        }}
+        END { if (bad || need) exit 1 }
+    ' || { err 'Human requests must contain valid UTF-8 text.'; return 1; }
+}
+
+request_record_valid() {
+    local record="$1" name expected actual receipt_generation receipt_hash receipt_role
+    [ -d "$record" ] && [ ! -L "$record" ] || return 1
+    name="${record##*/}"
+    case "$name" in req-*) ;; *) return 1;; esac
+    case "$name" in *[!a-zA-Z0-9_-]*) return 1;; esac
+    for name in "$record"/*; do
+        [ -e "$name" ] || [ -L "$name" ] || continue
+        case "${name##*/}" in body|binding|sha256|worker|review) ;; *) return 1;; esac
+        ensure_runtime_file "$name" && [ -f "$name" ] || return 1
+    done
+    ensure_runtime_file "$record/body" && request_body_valid "$record/body" || return 1
+    request_read_binding "$record/binding" || return 1
+    ensure_runtime_file "$record/sha256" && [ -f "$record/sha256" ] || return 1
+    expected="$(cat "$record/sha256")" || return 1
+    case "$expected" in *[!0-9a-f]*) return 1;; esac
+    [ "${#expected}" -eq 64 ] || return 1
+    actual="$(sha256_file_sum "$record/body")" || return 1
+    [ "$expected" = "$actual" ] || return 1
+    REQUEST_RECORD_SHA="$actual"
+    for name in worker review; do
+        if [ -e "$record/$name" ] || [ -L "$record/$name" ]; then
+            ensure_runtime_file "$record/$name" && [ -s "$record/$name" ] \
+                && [ "$(file_size_bytes_safe "$record/$name")" -le 512 ] || return 1
+            [ "$(wc -l < "$record/$name")" -eq 3 ] || return 1
+            receipt_generation="$(sed -n 's/^generation=//p' "$record/$name")" || return 1
+            receipt_hash="$(sed -n 's/^prompt_sha256=//p' "$record/$name")" || return 1
+            receipt_role="$(sed -n 's/^role=//p' "$record/$name")" || return 1
+            [ "${#receipt_generation}" -eq 64 ] && [ "${#receipt_hash}" -eq 64 ] || return 1
+            case "$receipt_generation$receipt_hash" in *[!0-9a-f]*) return 1;; esac
+            case "$name:$receipt_role" in worker:worker|review:handoff|review:consensus) ;; *) return 1;; esac
+        fi
+    done
+    return 0
+}
+
+request_write_inventory() {
+    local record bound_session="$1" bound_seed="$2" count=0 LC_ALL=C
+    printf 'mission=%s\nseed=%s\n' "$bound_session" "$bound_seed" || return 1
+    for record in "$REQUESTS_DIR/active"/*; do
+        [ -e "$record" ] || [ -L "$record" ] || continue
+        request_record_valid "$record" || return 1
+        [ "$REQUEST_BOUND_SESSION" = "$bound_session" ] && [ "$REQUEST_BOUND_SEED" = "$bound_seed" ] || return 1
+        count=$((count + 1))
+        [ "$count" -le 32 ] || return 1
+        printf '%s %s\n' "${record##*/}" "$REQUEST_RECORD_SHA" || return 1
+    done
+    REQUEST_ACTIVE_COUNT="$count"
+}
+
+request_scan() {
+    local manifest bound_session bound_seed record
+    REQUEST_ACTIVE_COUNT=0
+    REQUEST_CURRENT_FINGERPRINT=""
+    REQUEST_BOUND_SESSION=""
+    REQUEST_BOUND_SEED=""
+    validate_runtime_directory "$REQUESTS_DIR" || return 1
+    [ -d "$REQUESTS_DIR" ] || return 0
+    validate_runtime_directory "$REQUESTS_DIR/active" && validate_runtime_directory "$REQUESTS_DIR/archive" || return 1
+    if [ ! -e "$REQUESTS_DIR/mission" ] && [ ! -L "$REQUESTS_DIR/mission" ]; then
+        for record in "$REQUESTS_DIR/active"/*; do
+            [ ! -e "$record" ] && [ ! -L "$record" ] || return 1
+        done
+        return 0
+    fi
+    request_read_binding "$REQUESTS_DIR/mission" || return 1
+    bound_session="$REQUEST_BOUND_SESSION"
+    bound_seed="$REQUEST_BOUND_SEED"
+    manifest="$(mktemp "$REQUESTS_DIR/.inventory.XXXXXX")" || return 1
+    if ! request_write_inventory "$bound_session" "$bound_seed" > "$manifest" \
+        || ! REQUEST_CURRENT_FINGERPRINT="$(sha256_file_sum "$manifest")"; then
+        rm -f "$manifest"
+        err 'Human request storage is corrupt or unsafe; refusing to continue.'
+        return 1
+    fi
+    rm -f "$manifest" || return 1
+    REQUEST_BOUND_SESSION="$bound_session"
+    REQUEST_BOUND_SEED="$bound_seed"
+}
+
+request_validate_mission() {
+    request_scan || return 1
+    [ -n "$REQUEST_CURRENT_FINGERPRINT" ] \
+        && [ "$REQUEST_BOUND_SESSION" = "$SESSION_ID" ] \
+        && [ "$REQUEST_BOUND_SEED" = "${MISSION_SEED_SHA:-}" ] || {
+        err 'Requests require an initialized saved mission; start or resume Ralphie first.'; return 1;
+    }
+}
+
+request_fresh_start_allowed() {
+    request_scan || return 1
+    [ "$REQUEST_ACTIVE_COUNT" -eq 0 ] || {
+        err 'Active requests belong to the previous mission. Stop the worker and explicitly archive them before --no-resume.'; return 1;
+    }
+}
+
+request_publish_file() (
+    local source="$1" staging="" id hash
+    trap 'if [ -n "$staging" ]; then rm -f "$staging/body" "$staging/binding" "$staging/sha256"; rmdir "$staging" 2>/dev/null || true; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    request_validate_mission && request_body_valid "$source" || return 1
+    [ "$CURRENT_PHASE" != done ] || { err 'This mission is complete; start a new mission before submitting a request.'; return 1; }
+    [ "$REQUEST_ACTIVE_COUNT" -lt 32 ] || { err 'The mission already has 32 active requests; archive requests while the worker is stopped.'; return 1; }
+    staging="$(mktemp -d "$REQUESTS_DIR/.pending.XXXXXX")" || return 1
+    id="req-$(new_lock_owner_token)"
+    if head -c 4097 "$source" > "$staging/body" \
+        && request_body_valid "$staging/body" \
+        && hash="$(sha256_file_sum "$staging/body")" \
+        && printf '%s\n%s\n' "$SESSION_ID" "${MISSION_SEED_SHA:-}" > "$staging/binding" \
+        && printf '%s\n' "$hash" > "$staging/sha256" \
+        && [ ! -e "$REQUESTS_DIR/active/$id" ] && [ ! -L "$REQUESTS_DIR/active/$id" ] \
+        && mv "$staging" "$REQUESTS_DIR/active/$id"; then
+        staging=""
+        printf 'Queued request %s (pending worker presentation; not completion).\n' "$id"
+        return $?
+    fi
+    rm -f "$staging/body" "$staging/binding" "$staging/sha256"
+    rmdir "$staging" 2>/dev/null || true
+    return 1
+)
+
+request_archive() {
+    local selected="$1" record found=false
+    request_validate_mission || return 1
+    case "$selected" in all|req-*) ;; *) err 'Use a request ID or all.'; return 1;; esac
+    case "$selected" in *[!a-zA-Z0-9_-]*) return 1;; esac
+    for record in "$REQUESTS_DIR/active"/*; do
+        [ -e "$record" ] || [ -L "$record" ] || continue
+        [ "$selected" = all ] || [ "${record##*/}" = "$selected" ] || continue
+        request_record_valid "$record" || return 1
+        [ ! -e "$REQUESTS_DIR/archive/${record##*/}" ] && [ ! -L "$REQUESTS_DIR/archive/${record##*/}" ] || return 1
+        mv "$record" "$REQUESTS_DIR/archive/${record##*/}" || return 1
+        found=true
+    done
+    is_true "$found" || [ "$selected" = all ] || { err 'No active request has that ID.'; return 1; }
+    printf 'Archived %s; earlier presentation or work is not undone.\n' "$selected"
+}
+
+request_render_list() {
+    local format="$1" record status worker review text bytes comma="" binding
+    request_validate_mission || return 1
+    if [ "$format" = json ]; then
+        printf '{"schema":1,"mission_id":"%s","requests":[' "$(json_escape_string "$SESSION_ID")" || return 1
+    fi
+    for record in "$REQUESTS_DIR/active"/* "$REQUESTS_DIR/archive"/*; do
+        [ -e "$record" ] || [ -L "$record" ] || continue
+        request_record_valid "$record" || return 1
+        binding="$REQUEST_BOUND_SESSION"
+        status=queued; worker=false; review=false
+        [ ! -s "$record/worker" ] || { worker=true; status=presented; }
+        [ ! -s "$record/review" ] || review=true
+        case "$record" in "$REQUESTS_DIR/archive/"*) status=archived;; esac
+        bytes="$(file_size_bytes_safe "$record/body")" || return 1
+        text="$(cat "$record/body" && printf '.')" || return 1
+        text="${text%.}"
+        if [ "$format" = json ]; then
+            printf '%s{"id":"%s","mission_id":"%s","status":"%s","bytes":%s,"worker_presented":%s,"review_presented":%s,"text":"%s"}' \
+                "$comma" "${record##*/}" "$(json_escape_string "$binding")" "$status" "$bytes" "$worker" "$review" "$(json_escape_string "$text")" || return 1
+            comma=,
+        else
+            printf '%s  %s  worker=%s review=%s  ' "${record##*/}" "$status" "$worker" "$review" || return 1
+            LC_ALL=C tr '\n\r\t' '   ' < "$record/body" | head -c 160 || return 1
+            printf '\n' || return 1
+        fi
+    done
+    [ "$format" != json ] || printf ']}\n'
+}
+
+request_prepare_mission() {
+    local binding
+    request_lock || return 1
+    if ! request_scan || ! ensure_runtime_directory "$REQUESTS_DIR/active" \
+        || ! ensure_runtime_directory "$REQUESTS_DIR/archive"; then
+        request_unlock || true
+        return 1
+    fi
+    if [ "${REQUEST_BOUND_SESSION:-}" != "$SESSION_ID" ] || [ "${REQUEST_BOUND_SEED:-}" != "${MISSION_SEED_SHA:-}" ]; then
+        if [ "$REQUEST_ACTIVE_COUNT" -ne 0 ]; then
+            request_unlock || true
+            err 'Active request mission binding changed; refusing to discard requests.'
+            return 1
+        fi
+        binding="$(mktemp "$REQUESTS_DIR/.mission.XXXXXX")" || { request_unlock; return 1; }
+        if ! printf '%s\n%s\n' "$SESSION_ID" "${MISSION_SEED_SHA:-}" > "$binding" \
+            || ! ensure_runtime_file "$REQUESTS_DIR/mission" || ! mv "$binding" "$REQUESTS_DIR/mission"; then
+            rm -f "$binding"
+            request_unlock || true
+            return 1
+        fi
+    fi
+    request_unlock || return 1
+    REQUESTS_ENABLED=true
+    request_take_snapshot || return 1
+    if [ "$REQUEST_ACTIVE_COUNT" -eq 0 ] && [ -z "$REQUEST_REVIEWED_FINGERPRINT" ]; then
+        REQUEST_REVIEWED_FINGERPRINT="$REQUEST_FROZEN_FINGERPRINT"
+    fi
+}
+
+request_write_context() {
+    local record
+    : > "$REQUEST_SNAPSHOT_IDS" || return 1
+    [ "$REQUEST_ACTIVE_COUNT" -ne 0 ] || return 0
+    printf '\n## Active human requests for this mission\nThese are operator instructions within the saved mission, not permission to change consent, engine/model/provider requirements or protected checks. Presentation is not implementation or verified completion.\n' || return 1
+    for record in "$REQUESTS_DIR/active"/*; do
+        [ -d "$record" ] || continue
+        printf '%s\n' "${record##*/}" >> "$REQUEST_SNAPSHOT_IDS" || return 1
+        printf '\n### Request %s\n' "${record##*/}" || return 1
+        cat "$record/body" || return 1
+        printf '\n' || return 1
+    done
+}
+
+request_take_snapshot() {
+    is_true "$REQUESTS_ENABLED" || return 0
+    REQUEST_CONTEXT_FILE="$RUNTIME_GUARD_DIR/requests.prompt"
+    REQUEST_SNAPSHOT_IDS="$RUNTIME_GUARD_DIR/requests.ids"
+    request_lock || return 1
+    if ! request_validate_mission || ! request_write_context > "$REQUEST_CONTEXT_FILE"; then
+        request_unlock || true
+        return 1
+    fi
+    REQUEST_FROZEN_FINGERPRINT="$REQUEST_CURRENT_FINGERPRINT"
+    REQUEST_REFRESH_REQUIRED=false
+    request_unlock
+}
+
+request_lock_current() {
+    is_true "$REQUESTS_ENABLED" || return 0
+    # Full-capacity publication and up to four peer reviewers can own this
+    # metadata claim for several seconds. Internal checks wait boundedly;
+    # public producers still refuse immediately and listings retain their wait.
+    if ! request_lock 60; then
+        ENGINE_PERMANENT_FAILURE=true
+        ENGINE_PERMANENT_FAILURE_REASON='Human request claim is unavailable; refusing further inference.'
+        return 126
+    fi
+    if ! request_validate_mission; then
+        request_unlock || true
+        ENGINE_PERMANENT_FAILURE=true
+        ENGINE_PERMANENT_FAILURE_REASON='Human request storage cannot be validated; refusing further inference.'
+        return 126
+    fi
+    if [ "$REQUEST_CURRENT_FINGERPRINT" != "$REQUEST_FROZEN_FINGERPRINT" ]; then
+        request_unlock || true
+        REQUEST_REFRESH_REQUIRED=true
+        return 76
+    fi
+}
+
+request_check_generation() {
+    is_true "$REQUESTS_ENABLED" || return 0
+    request_lock_current || return $?
+    request_unlock
+}
+
+request_record_presentation() {
+    local prompt="$1" id record receipt role=review hash
+    is_true "$REQUESTS_ENABLED" || return 0
+    request_lock_current || return $?
+    hash="$(sha256_file_sum "$prompt")" || { request_unlock; return 126; }
+    [ "$REQUEST_ROLE" != worker ] || role=worker
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        record="$REQUESTS_DIR/active/$id"
+        receipt="$(mktemp "$record/.presented.XXXXXX")" || { request_unlock; return 126; }
+        if ! printf 'generation=%s\nprompt_sha256=%s\nrole=%s\n' "$REQUEST_FROZEN_FINGERPRINT" "$hash" "$REQUEST_ROLE" > "$receipt" \
+            || ! ensure_runtime_file "$record/$role" || ! mv "$receipt" "$record/$role"; then
+            rm -f "$receipt"
+            request_unlock || true
+            return 126
+        fi
+    done < "$REQUEST_SNAPSHOT_IDS"
+    request_unlock
+}
+
+request_checkpoint_plan_refresh() {
+    local phase="$1" attempt="$2"
+    log_reason_code RB_HUMAN_REQUEST_REFRESH "$phase approval is stale; new human requests require PLAN"
+    write_gate_feedback "$phase" 'New human requests arrived; prior approval cannot promote this work. Refreshing PLAN without resetting inference counters.'
+    phase_transition_history_append "$phase" "$attempt" plan hold 'human requests changed'
+    CURRENT_PHASE=plan
+    CURRENT_PHASE_INDEX=0
+    CURRENT_PHASE_ATTEMPT=1
+    PHASE_ATTEMPT_IN_PROGRESS=false
+    save_state_or_exit 'human request PLAN refresh'
+}
+
 write_lock_owner_files() {
     local lock_dir="$1"
     local token="$2"
@@ -5878,7 +6428,7 @@ write_lock_owner_files() {
     owner_tmp="$lock_dir/owner.tmp.$$"
     ensure_runtime_file "$owner_tmp" || return 1
     created_at="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
-    printf 'pid=%s\ntoken=%s\ncreated_at=%s\n' "$$" "$token" "$created_at" > "$owner_tmp" || return 1
+    printf 'pid=%s\ntoken=%s\ncreated_at=%s\nrequest_consumer=1\n' "$$" "$token" "$created_at" > "$owner_tmp" || return 1
     mv "$owner_tmp" "$lock_dir/owner" || return 1
     printf '%s\n%s\ntoken=%s\n' "$$" "$created_at" "$token" > "$LOCK_FILE"
 }
@@ -5953,7 +6503,9 @@ acquire_lock() {
 release_lock() {
     is_true "$LOCK_ACQUIRED" || return 0
     local claim="${LOCK_FILE}.claim" claim_token lock_dir="${LOCK_FILE}.d"
-    if ! acquire_lock_claim "$claim" 1; then
+    # A full-capacity request publication can legitimately own admission for
+    # several seconds; wait boundedly for it before removing our worker owner.
+    if ! acquire_lock_claim "$claim" 60; then
         warn 'Lock release could not obtain admission; retaining lock metadata for safe recovery.'
         return 1
     fi
@@ -6076,6 +6628,9 @@ cleanup_resources() {
     if is_true "$RALPHIE_CLEANUP_STATE_ENABLED"; then
         save_state 2>/dev/null || true
     fi
+    # An interruption during done publication must keep producers outside the
+    # claim until the final in-memory checkpoint has been made durable.
+    request_unlock || warn 'Request claim was retained; inspect its owner before recovery.'
     release_lock
     if [ -n "${RUNTIME_GUARD_DIR:-}" ] && [ -d "$RUNTIME_GUARD_DIR" ] && [ ! -L "$RUNTIME_GUARD_DIR" ]; then
         find "$RUNTIME_GUARD_DIR" -maxdepth 1 -type f -delete 2>/dev/null || true
@@ -6100,7 +6655,13 @@ show_interrupt_menu() {
         warn "  [p] persist state and pause"
         warn "  [q] immediate stop"
         warn "  [h] help"
-        choice="$(prompt_read_line "Action [r/l/p/q/h]: " "r")"
+        warn "Enter resumes. Ctrl-D saves and pauses. Ctrl-C stops."
+        if ! choice="$(prompt_read_line "Action [r/l/p/q/h]: " "r")"; then
+            save_state || { err "Could not save paused state."; cleanup_resources; exit 1; }
+            info "State saved. Paused because terminal input closed."
+            cleanup_resources
+            exit 0
+        fi
         case "$(to_lower "$choice")" in
             r|"")
                 info "Resuming..."
@@ -6113,11 +6674,11 @@ show_interrupt_menu() {
                     ENGINE_OUTPUT_TO_STDOUT="true"
                 fi
                 info "Live engine output is now $(is_true "$ENGINE_OUTPUT_TO_STDOUT" && echo enabled || echo suppressed)."
-                save_state
+                save_state || { err "Could not save output preference."; cleanup_resources; exit 1; }
                 ;;
             p)
-                info "Persisted state and paused."
-                save_state
+                save_state || { err "Could not save paused state."; cleanup_resources; exit 1; }
+                info "State saved and paused."
                 cleanup_resources
                 exit 0
                 ;;
@@ -6137,6 +6698,11 @@ show_interrupt_menu() {
 }
 
 handle_interrupt() {
+    if [ -n "$REQUEST_LOCK_TOKEN" ]; then
+        warn 'Interrupt received during a request boundary; saving state and stopping.'
+        cleanup_resources
+        exit 130
+    fi
     if [ "$INTERRUPT_MENU_ACTIVE" = "true" ]; then
         warn "Second interrupt received. Exiting immediately."
         cleanup_resources
@@ -6324,6 +6890,16 @@ run_agent_with_prompt() {
         err "Prompt file not found: $prompt_file"
         return 2
     fi
+    request_check_generation || return $?
+    if is_true "$REQUESTS_ENABLED" && [ -s "$REQUEST_CONTEXT_FILE" ]; then
+        local request_prompt="$log_file.requests.prompt.md"
+        if ! ensure_runtime_file "$request_prompt" || ! cat "$prompt_file" "$REQUEST_CONTEXT_FILE" > "$request_prompt"; then
+            ENGINE_PERMANENT_FAILURE=true
+            ENGINE_PERMANENT_FAILURE_REASON='Could not record the human-request prompt; refusing further inference.'
+            return 126
+        fi
+        prompt_file="$request_prompt"
+    fi
     if [ -z "${ACTIVE_CMD:-}" ] || ! command -v "$ACTIVE_CMD" >/dev/null 2>&1; then
         err "Active engine command unavailable: ${ACTIVE_CMD:-<unset>}"
         return 2
@@ -6432,6 +7008,7 @@ run_agent_with_prompt() {
     fi
 
     while [ "$attempt" -le "$max_run_attempts" ]; do
+        request_check_generation || return $?
         info "Dispatching ${ACTIVE_ENGINE} for attempt ${attempt}/${max_run_attempts} (phase attempt ${attempt_no}) with prompt $(path_for_display "$prompt_file")."
         : > "$log_file"
         : > "$output_file"
@@ -6458,6 +7035,17 @@ run_agent_with_prompt() {
         if ! admit_session_attempt "${ACTIVE_ENGINE} attempt ${attempt}/${max_run_attempts}"; then
             cleanup_engine_attempt_files "$engine_scratch_dir"
             return 75
+        fi
+        local request_presentation_status=0
+        request_record_presentation "$prompt_file" || request_presentation_status=$?
+        if [ "$request_presentation_status" -ne 0 ]; then
+            cleanup_engine_attempt_files "$engine_scratch_dir"
+            if [ "$request_presentation_status" -ne 76 ]; then
+                ENGINE_PERMANENT_FAILURE=true
+                ENGINE_PERMANENT_FAILURE_REASON='Could not record human-request presentation; refusing further inference.'
+                return 126
+            fi
+            return 76
         fi
         if [ "$ACTIVE_ENGINE" = prime-agent ]; then
             (
@@ -6524,6 +7112,9 @@ run_agent_with_prompt() {
             : > "$output_file" || true
             err "$ENGINE_PERMANENT_FAILURE_REASON"
             return 126
+        fi
+        if [ "$exit_code" -eq 0 ] || ! is_true "$permanent_detected"; then
+            request_check_generation || return $?
         fi
         if [ "$exit_code" -eq 0 ]; then
             break
@@ -6600,6 +7191,10 @@ run_agent_with_prompt() {
         log_reason_code "RB_RUN_AGENT_RETRY_EXHAUSTED" "run_agent failed after ${attempt} attempts (limit ${max_run_attempts}) for $(path_for_display "$prompt_file") with last_exit=$exit_code"
     fi
 
+    # 76 is private boundary control only when our generation check returns it.
+    # Preserve the engine's observed status above, but never treat its failure
+    # as a human request or silently spend a fresh PLAN cycle for it.
+    [ "$exit_code" -ne 76 ] || return 1
     return "$exit_code"
 }
 
@@ -6642,7 +7237,7 @@ write_reviewer_status() {
     local path="$1" reviewer_index="$2" engine="$3" command="$4" exit_code="$5" reason="$6"
     local status=failure failure_kind=''
     [ "$exit_code" -ne 0 ] || status=success
-    case "$exit_code" in 75) failure_kind=budget;; 126) failure_kind=permanent;; esac
+    case "$exit_code" in 75) failure_kind=budget;; 76) failure_kind=request;; 126) failure_kind=permanent;; esac
     printf 'reviewer_index=%s\nengine=%s\ncommand=%s\nexit_code=%s\nfailure_kind=%s\nfailure_reason=%s\nstatus=%s\n' \
         "$reviewer_index" "$engine" "$command" "$exit_code" "$failure_kind" \
         "$(sanitize_text_for_log "$reason")" "$status" > "$path"
@@ -6680,11 +7275,13 @@ run_swarm_reviewer() {
     local used_cmd="${primary_cmd}"
     local invalid_reason=""
     local validation_mode="consensus"
+    local REQUEST_ROLE=consensus
     ACTIVE_ENGINE="unknown"
     ACTIVE_CMD=""
 
     if [ "$reviewer_index" = "handoff" ]; then
         validation_mode="handoff"
+        REQUEST_ROLE=handoff
     fi
 
     for attempt_cmd in "${candidate_cmds[@]}"; do
@@ -6727,7 +7324,7 @@ run_swarm_reviewer() {
             attempt_exit=$?
             # A provider/model requirement is not authority to try another
             # engine, even for an otherwise automatic reviewer schedule.
-            case "$attempt_exit" in 75|126) break;; esac
+            case "$attempt_exit" in 75|76|126) break;; esac
         fi
     done
 
@@ -6932,7 +7529,7 @@ run_swarm_consensus() {
                 "${primary_cmds[$i]}" \
                 "${fallback_cmds[$i]}" \
                 "$review_receipts_dir/reviewer_$((i + 1))" || reviewer_exit=$?
-            case "$reviewer_exit" in 75|126) break;; esac
+            case "$reviewer_exit" in 75|76|126) break;; esac
         done
     else
         runtime_guard_prepare || return 1
@@ -7013,6 +7610,28 @@ run_swarm_consensus() {
         ACTIVE_ENGINE="$saved_engine"
         ACTIVE_CMD="$saved_cmd"
         return 75
+    fi
+    local request_status_file
+    for request_status_file in "${review_status_files[@]}"; do
+        if [ -f "$request_status_file" ] && grep -qx 'exit_code=126' "$request_status_file"; then
+            ENGINE_PERMANENT_FAILURE=true
+            ENGINE_PERMANENT_FAILURE_REASON='Reviewer failed permanently; refusing further inference.'
+            LAST_CONSENSUS_FAILURE_KIND=permanent
+            LAST_CONSENSUS_FAILURE_REASON="$ENGINE_PERMANENT_FAILURE_REASON"
+            ACTIVE_ENGINE="$saved_engine"
+            ACTIVE_CMD="$saved_cmd"
+            return 126
+        fi
+        if [ -f "$request_status_file" ] && grep -qx 'exit_code=76' "$request_status_file"; then
+            REQUEST_REFRESH_REQUIRED=true
+        fi
+    done
+    if is_true "$REQUEST_REFRESH_REQUIRED"; then
+        LAST_CONSENSUS_FAILURE_KIND=request
+        LAST_CONSENSUS_FAILURE_REASON='Human requests changed during consensus; refresh PLAN.'
+        ACTIVE_ENGINE="$saved_engine"
+        ACTIVE_CMD="$saved_cmd"
+        return 76
     fi
     if [ "$swarm_timed_out" = true ]; then
         log_reason_code "RB_SWARM_TIMEOUT" "consensus reviewers exceeded timeout (${swarm_timeout}s) for stage $stage"
@@ -7350,6 +7969,12 @@ run_handoff_validation() {
         "$primary_cmd" \
         "$fallback_cmd" \
         "$review_receipt_dir" || reviewer_exit=$?
+    if [ "$reviewer_exit" -eq 76 ]; then
+        REQUEST_REFRESH_REQUIRED=true
+        ACTIVE_ENGINE="$saved_engine"
+        ACTIVE_CMD="$saved_cmd"
+        return 76
+    fi
     read_handoff_review_output "$review_receipt_dir/answer"
 
     # Restore engine state
@@ -10237,6 +10862,11 @@ run_shell_gates() {
     guard_operator_inputs || { SHELL_GATES_STATUS=tampered; SHELL_GATES_FAILURE='Protected operator inputs changed during execution.'; return 1; }
     while IFS= read -r cmd || [ -n "$cmd" ]; do
         [ -n "$cmd" ] || continue
+        if ! request_check_generation; then
+            SHELL_GATES_STATUS=request
+            SHELL_GATES_FAILURE='Human requests changed before a project check; refresh PLAN.'
+            return 76
+        fi
         n=$((n + 1))
         output="$RUNTIME_GUARD_DIR/gate-$n.log"
         phase_capture_worktree_manifest "$before" || return 1
@@ -10266,6 +10896,11 @@ run_shell_gates() {
             "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(json_escape_string "$phase")" "$(json_escape_string "$cmd")" "$rc" >> "$SHELL_VERIFICATION_LOG" || return 1
         cp "$SHELL_VERIFICATION_LOG" "$RUNTIME_GUARD_DIR/verification.jsonl" || return 1
         rm -f "$RUNTIME_GUARD_DIR/verification.jsonl.absent"
+        if ! request_check_generation; then
+            SHELL_GATES_STATUS=request
+            SHELL_GATES_FAILURE='Human requests changed during a project check; refresh PLAN.'
+            return 76
+        fi
         if ! guard_operator_inputs; then
             SHELL_GATES_STATUS=tampered
             SHELL_GATES_FAILURE='A project check changed protected operator inputs.'
@@ -10554,7 +11189,11 @@ format_retry_budget_block_reason() {
 }
 
 main() {
-    parse_args "$@"
+    parse_args "$@" || return $?
+    if [ -n "$REQUEST_COMMAND" ]; then
+        request_control
+        return $?
+    fi
     validate_effective_engine_config || return 1
     apply_notification_prerequisites
     normalize_integer_setting GATE_TIMEOUT_SECONDS 1 || return 1
@@ -10572,6 +11211,7 @@ main() {
     acquire_lock || exit 1
     install_cleanup_traps
 
+    request_lock || return 1
     local resume_reentry_pending="false"
     if is_true "$RESUME_REQUESTED" && { [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; }; then
         if ! load_state; then
@@ -10582,10 +11222,12 @@ main() {
         success "Resuming mission..."
         RALPHIE_CLEANUP_STATE_ENABLED="true"
     else
+        request_fresh_start_allowed || { request_unlock; return 1; }
         rm -f "$SESSION_CHANGED_PATHS_FILE" 2>/dev/null || true
         save_state_or_exit "session bootstrap initialization"
         RALPHIE_CLEANUP_STATE_ENABLED="true"
     fi
+    request_unlock || return 1
     if is_true "$ENGINE_OUTPUT_TO_STDOUT_EXPLICIT"; then
         ENGINE_OUTPUT_TO_STDOUT="$ENGINE_OUTPUT_TO_STDOUT_OVERRIDE"
     fi
@@ -10681,12 +11323,13 @@ main() {
     setup_phase_prompts
     ensure_gitignore_guardrails
     if [ -z "${MISSION_SEED_SHA:-}" ]; then
-        ensure_project_bootstrap
+        ensure_project_bootstrap || return $?
     fi
     prepare_shell_gates || return 1
     capture_scaffold_ownership || return 1
     prepare_no_local_work_witness "$resume_reentry_pending" || return 1
     snapshot_operator_inputs || return 1
+    request_prepare_mission || return 1
     refresh_git_identity_status || true
     prepare_phase_auto_commit_mode || return 1
     save_state_or_exit "post-startup bootstrap"
@@ -10748,9 +11391,22 @@ main() {
     local notification_wizard_bootstrap_checked="false"
     local session_start_notified="false"
     while true; do
+        request_take_snapshot || return 1
+        if [ "$start_phase_index" -gt 0 ] \
+            && [ "$REQUEST_FROZEN_FINGERPRINT" != "$REQUEST_REVIEWED_FINGERPRINT" ] \
+            && { [ "$start_phase_index" -lt "${#phases[@]}" ] || [ "$REQUEST_ACTIVE_COUNT" -gt 0 ]; }; then
+            request_checkpoint_plan_refresh "$CURRENT_PHASE" "$CURRENT_PHASE_ATTEMPT"
+            start_phase_index=0
+            resume_reentry_pending=false
+        fi
         if [ "$start_phase_index" -lt "${#phases[@]}" ]; then
         ENGINE_CAPABILITIES_PROBED=false  # force fresh probe (including smoke test) each iteration
         if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
+            if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                request_checkpoint_plan_refresh "$CURRENT_PHASE" "$CURRENT_PHASE_ATTEMPT"
+                start_phase_index=0
+                continue
+            fi
             should_exit="true"
             log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
             notify_event "session_error" "engine_selection_failed" "$LAST_ENGINE_SELECTION_BLOCK_REASON" || true
@@ -10761,16 +11417,26 @@ main() {
             if run_first_deploy_engine_override_wizard; then
                 ENGINE_CAPABILITIES_PROBED=false
                 if ! ensure_engines_ready "$ENGINE_SELECTION_REQUESTED"; then
+                    if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                        request_checkpoint_plan_refresh "$CURRENT_PHASE" "$CURRENT_PHASE_ATTEMPT"
+                        start_phase_index=0
+                        continue
+                    fi
                     should_exit="true"
                     log_reason_code "RB_ENGINE_SELECTION_FAILED" "$LAST_ENGINE_SELECTION_BLOCK_REASON"
                     notify_event "session_error" "engine_selection_failed" "$LAST_ENGINE_SELECTION_BLOCK_REASON" || true
                     break
                 fi
+            else
+                local wizard_status=$?
+                [ "$wizard_status" -ne 130 ] || return 130
             fi
         fi
         if [ "$notification_wizard_bootstrap_checked" = "false" ]; then
             notification_wizard_bootstrap_checked="true"
-            run_first_deploy_notification_wizard || true
+            local notification_wizard_status=0
+            run_first_deploy_notification_wizard || notification_wizard_status=$?
+            [ "$notification_wizard_status" -ne 130 ] || return 130
         fi
         if [ "$session_start_notified" = "false" ]; then
             session_start_notified="true"
@@ -10849,6 +11515,14 @@ main() {
             local phase_stagnation_signature=""
             local phase_stagnation_count=0
             while phase_attempt_within_budget "$phase_attempt" "$PHASE_COMPLETION_MAX_ATTEMPTS"; do
+                request_take_snapshot || return 1
+                if [ "$phase" != plan ] && [ "$REQUEST_FROZEN_FINGERPRINT" != "$REQUEST_REVIEWED_FINGERPRINT" ]; then
+                    phase_next_target=plan
+                    phase_route=true
+                    phase_route_reason='human requests changed; refresh PLAN'
+                    request_checkpoint_plan_refresh "$phase" "$phase_attempt"
+                    break
+                fi
                 CURRENT_PHASE="$phase"
                 CURRENT_PHASE_INDEX="$phase_index"
                 CURRENT_PHASE_ATTEMPT="$phase_attempt"
@@ -11163,6 +11837,7 @@ main() {
                         break
                     fi
 
+                    if ! is_true "$REQUEST_REFRESH_REQUIRED"; then
                     consensus_evaluated="true"
                     local consensus_infra_retry_streak=0
                     local consensus_infra_signature=""
@@ -11185,6 +11860,7 @@ main() {
                         fi
                         is_true "${ENGINE_PERMANENT_FAILURE:-false}" && break
                         is_true "${ENGINE_BUDGET_EXHAUSTED:-false}" && break
+                        is_true "$REQUEST_REFRESH_REQUIRED" && break
                         record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "hold"
 
                         if [ "$LAST_CONSENSUS_FAILURE_KIND" = "infra" ]; then
@@ -11228,6 +11904,7 @@ main() {
                         fi
                         break
                     done
+                    fi
                 else
                     if [ "${#phase_failures[@]}" -eq 0 ]; then
                         phase_failures+=("agent execution failed in $phase")
@@ -11247,6 +11924,21 @@ main() {
                     should_exit=true
                     PHASE_ATTEMPT_IN_PROGRESS=false
                     save_state_or_exit "consensus reviewer budget exhausted"
+                    break
+                fi
+
+                request_check_generation || true
+                if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    err "$ENGINE_PERMANENT_FAILURE_REASON"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    break
+                fi
+                if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                    phase_next_target=plan
+                    phase_route=true
+                    phase_route_reason='human requests changed; refresh PLAN'
+                    request_checkpoint_plan_refresh "$phase" "$phase_attempt"
                     break
                 fi
 
@@ -11270,6 +11962,21 @@ main() {
                     fi
                 fi
 
+                request_check_generation || true
+                if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    err "$ENGINE_PERMANENT_FAILURE_REASON"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    break
+                fi
+                if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                    phase_next_target=plan
+                    phase_route=true
+                    phase_route_reason='human requests changed; refresh PLAN'
+                    request_checkpoint_plan_refresh "$phase" "$phase_attempt"
+                    break
+                fi
+
                 if [ "${#phase_failures[@]}" -eq 0 ] && is_true "$AUTO_COMMIT_SESSION_ENABLED"; then
                     phase_commit_target="${LAST_CONSENSUS_NEXT_PHASE:-$(phase_default_next "$phase")}"
                     [ -n "$phase_commit_target" ] || phase_commit_target="$(phase_default_next "$phase")"
@@ -11291,6 +11998,21 @@ main() {
                         save_state_or_exit "unsaved phase checkpoint"
                         break
                     fi
+                fi
+
+                request_check_generation || true
+                if is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    err "$ENGINE_PERMANENT_FAILURE_REASON"
+                    should_exit=true
+                    PHASE_ATTEMPT_IN_PROGRESS=false
+                    break
+                fi
+                if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                    phase_next_target=plan
+                    phase_route=true
+                    phase_route_reason='human requests changed; refresh PLAN'
+                    request_checkpoint_plan_refresh "$phase" "$phase_attempt"
+                    break
                 fi
 
                 if [ "${#phase_failures[@]}" -gt 0 ]; then
@@ -11538,11 +12260,26 @@ main() {
                 elif [ -z "$phase_route_reason" ]; then
                     phase_route_reason="no explicit phase-routing rationale"
                 fi
+                if ! request_lock_current; then
+                    if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                        phase_next_target=plan
+                        phase_route=true
+                        phase_route_reason='human requests changed; refresh PLAN'
+                        request_checkpoint_plan_refresh "$phase" "$phase_attempt"
+                    else
+                        err "${ENGINE_PERMANENT_FAILURE_REASON:-Could not validate the human-request queue.}"
+                        should_exit=true
+                        PHASE_ATTEMPT_IN_PROGRESS=false
+                    fi
+                    break
+                fi
                 record_gate_decision "$phase" "$phase_attempt" "$phase-gate" "pass" "$phase_next_target" "$phase_route_reason"
                 phase_transition_history_append "$phase" "$phase_attempt" "$phase_next_target" "pass" "$phase_route_reason"
+                REQUEST_REVIEWED_FINGERPRINT="$REQUEST_FROZEN_FINGERPRINT"
                 PHASE_ATTEMPT_IN_PROGRESS="false"
                 CURRENT_PHASE_ATTEMPT=1
                 save_state_or_exit "phase completion checkpoint ($phase)"
+                request_unlock || return 1
                 ACTIVE_PHASE_MANIFEST_BEFORE=""
 
                 success "Phase $phase completed."
@@ -11662,6 +12399,11 @@ main() {
         # or natural completion of all phases), exit the outer loop
         if [ "$start_phase_index" -ge "${#phases[@]}" ]; then
             if ! shell_terminal_verified; then
+                if is_true "$REQUEST_REFRESH_REQUIRED" && ! is_true "${ENGINE_PERMANENT_FAILURE:-false}"; then
+                    request_checkpoint_plan_refresh "$CURRENT_PHASE" "$CURRENT_PHASE_ATTEMPT"
+                    start_phase_index=0
+                    continue
+                fi
                 err "Final accepted tree is not verified: ${SHELL_GATES_FAILURE:-protected input changed}"
                 log_reason_code RB_FINAL_VERIFICATION_FAILED "${SHELL_GATES_FAILURE:-protected input changed}"
                 should_exit=true
@@ -11670,13 +12412,24 @@ main() {
                 PHASE_ATTEMPT_IN_PROGRESS=false
                 break
             fi
-            info "All phases completed. Session done."
-            notify_event "session_done" "ok" "all phases completed successfully" || true
+            if ! request_lock_current; then
+                if is_true "$REQUEST_REFRESH_REQUIRED"; then
+                    request_checkpoint_plan_refresh "$CURRENT_PHASE" "$CURRENT_PHASE_ATTEMPT"
+                    start_phase_index=0
+                    continue
+                fi
+                err "${ENGINE_PERMANENT_FAILURE_REASON:-Could not validate the human-request queue.}"
+                should_exit=true
+                break
+            fi
             CURRENT_PHASE="done"
             CURRENT_PHASE_INDEX="${#phases[@]}"
             CURRENT_PHASE_ATTEMPT=1
             PHASE_ATTEMPT_IN_PROGRESS="false"
             save_state_or_exit "session completion checkpoint"
+            request_unlock || return 1
+            info "All phases completed. Session done."
+            notify_event "session_done" "ok" "all phases completed successfully" || true
             break
         fi
         if [ "$MAX_ITERATIONS" -gt 0 ] && [ "$ITERATION_COUNT" -ge "$MAX_ITERATIONS" ]; then

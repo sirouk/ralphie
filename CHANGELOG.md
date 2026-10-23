@@ -6,6 +6,27 @@ This branch continues commit `e1c7d15` from May 26, 2026. It retains PLAN,
 BUILD, TEST, REFACTOR, LINT and DOCUMENT, scored consensus review, adaptive
 phase routing, plan freshness checks and interruption recovery.
 
+- Add an agent supervision guide and explicit managed skill installer/updater.
+  New uses stage the skill and runtime from one commit; dirty developer copies
+  remain untouched and existing missions retain their original physical pair.
+  Local unpublished checkout use requires no global install or network fetch.
+- Add durable mission-bound feedback through `--request`, `--request-file`,
+  `--requests`, `--requests-json` and `--archive-request`. New requests return
+  work to PLAN at a safe boundary; presentation is not completion. Active
+  requests remain in worker and review prompts until archived while stopped.
+  Consent, selected engines, protected checks and spending limits still apply.
+- Serialize request publication with completion and interruption checkpoints.
+  Refuse busy publication without storing or acknowledging a request, and
+  refuse publication to an older live worker without request support.
+  A saved completion with unseen active requests returns to PLAN on resume.
+- Make terminal prompts preserve whitespace and support native line editing
+  without consuming piped script input. Require complete yes/no answers;
+  EOF cancels single-line setup, while EOF in the interrupt menu saves and pauses.
+  Seeded runs remain unattended. Redirected output, `TERM=dumb` and `NO_COLOR`
+  suppress decorative colors.
+- Stop unresolved bootstrap alignment after 12 rounds or two unchanged rounds,
+  retaining context with BUILD consent disabled. Hide configured credential
+  values and newly typed secrets in first-deploy wizards.
 - Publish the May continuation on the default `main` branch and use its raw
   source for opt-in self-update. Preserve the simplified harness at
   `tangent/simplified-harness`; a frozen nondefault `master` keeps legacy raw
